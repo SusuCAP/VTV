@@ -1,6 +1,6 @@
 # 项目进度
 
-最后更新：2026-07-22
+最后更新：2026-07-23
 
 ## 总览
 
@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 86% | 五阶段 Assembly→Evidence DAG 与自动质量报告/镜头清单资产 |
+| Phase 3 自动生产 | 进行中 | 96% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 自动 Delivery Draft |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -224,15 +224,26 @@
 - [x] Scheduler 从实际 Stage 输出、Model/Benchmark、seed、Attempt cost 和 provider usage 生成编辑链证据。
 - [x] Evidence Worker 使用 FFprobe 复核 Master，并确定性输出质量报告与完整镜头清单 JSON。
 - [x] 镜头清单强制从 0 连续覆盖全集；质量报告记录实际编码、指标 evaluator/version 与成本。
+- [x] Evidence Stage 完成时自动创建 Delivery Draft，绑定上游完成资产（quality report、shot list、master）。
+- [x] 新增 `c2pa_status` 列（NOT_REQUESTED/PENDING/SIGNING/SIGNED/SIGN_FAILED）与迁移 0011。
+- [x] C2PA passthrough Adapter（`packages/c2pa`）：生成 content-credentials.json 占位，不依赖真实 SDK。
+- [x] Scheduler 在 DELIVERY_EVIDENCE 完成且 c2pa_requested=True 时自动创建 C2PA_SIGN StageRun。
+- [x] 新增 A–F 六级视觉路由分类器（`packages/routing`）：PRESERVE/SUBTITLE_CLEAN/CHARACTER_REPLACE/BACKGROUND_REPLACE/JOINT_REPLACE/FULL_REGEN。
+- [x] ShotVisualFeatures 聚合 PersonObservation/OcrObservation/Utterance 派生路由特征；EpisodeWorkflowPlan 记录路由分布与成本等级。
+- [x] SHOT_ROUTING Worker Stage：读取分析文档，输出 WORKFLOW_PLAN domain artifact。
+- [x] 视觉生产合同：SegmentationRequest/Result/Adapter、VisualGenerationRequest、VisualCandidate、SubtitleCleanRequest/Result/Adapter。
+- [x] PassthroughSegmentationAdapter（全白 alpha-matte）、PassthroughVisualGenerationAdapter（copy-codec + 首帧预览）、PassthroughSubtitleCleanAdapter。
+- [x] 新包 `workers/visual`：VisualProductionWorker 处理 VISUAL_CHARACTER_REPLACE/BACKGROUND_REPLACE/JOINT_REPLACE/FULL_REGEN/SUBTITLE_CLEAN/KEYFRAME_PREVIEW 六个阶段。
+- [x] Stage Router：VISUAL_STAGES frozenset 路由到 VisualProductionWorker；C2PA_SIGN 路由到 C2paWorker。
+- [ ] `POST /v1/projects/{id}:produce`：基于 WorkflowPlan 为每集生成视觉生产 DAG，接受预算与路由配置。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: automate delivery draft creation`
+`feat: add production DAG trigger API`
 
-本提交完成后，下一步在 Evidence Stage 完成时自动创建 Delivery Draft，并补齐 C2PA 签名状态机；
-同时在 Modal API 网络恢复后补跑云端验收。
+实现 `POST /v1/projects/{id}:produce`，读取 WorkflowPlan，为每个非 PRESERVE 镜头创建对应的视觉生产 StageRun，支持预算上限与路由覆盖。
 
 ## 决策日志
 

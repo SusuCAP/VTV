@@ -15,7 +15,15 @@ from .candidates import (
 )
 from .enums import JobStatus, ProjectStatus, StageStatus
 from .episodes import EpisodeRead
-from .jobs import AssetRef, DomainArtifact, JobAccepted, StageJob, StageResult, VariantResult
+from .jobs import (
+    AssetRef,
+    DomainArtifact,
+    JobAccepted,
+    ProduceRequest,
+    StageJob,
+    StageResult,
+    VariantResult,
+)
 from .model_releases import (
     ModelAutomationUpdate,
     ModelLicenseReview,
@@ -71,6 +79,7 @@ __all__ = [
     "JobAccepted",
     "JobStatus",
     "OutputSpec",
+    "ProduceRequest",
     "ProjectCreate",
     "ProjectRead",
     "ProjectStatus",

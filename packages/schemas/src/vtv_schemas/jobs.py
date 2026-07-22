@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
@@ -78,3 +79,17 @@ class JobRead(BaseModel):
     progress: float = Field(ge=0, le=1)
     total_stages: int = Field(default=0, ge=0)
     completed_stages: int = Field(default=0, ge=0)
+
+
+class ProduceRequest(BaseModel):
+    """Trigger visual production DAG for a project's episodes."""
+
+    expected_project_state_version: int = Field(ge=1)
+    budget_usd_limit: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    budget_warning_at_usd: Decimal | None = Field(default=None, ge=0, decimal_places=2)
+    # Routes to include; omit = all non-A routes
+    include_routes: tuple[str, ...] = ()  # VisualRoute values: B/C/D/E/F
+    # Max ratio of shots allowed to go to FULL_REGEN (F)
+    max_full_regen_ratio: float = Field(default=0.12, ge=0, le=1)
+    # Per-shot override: {shot_id_str: route_value}
+    shot_route_overrides: dict[str, str] = Field(default_factory=dict)

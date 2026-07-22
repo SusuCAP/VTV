@@ -50,7 +50,7 @@ from vtv_schemas.candidates import (
 )
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobRead
+from vtv_schemas.jobs import JobRead, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
@@ -380,6 +380,45 @@ class MemoryRepository:
             self._projects[project.id] = project.model_copy(
                 update={
                     "status": ProjectStatus.ANALYZING,
+                    "state_version": project.state_version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        return job
+
+    async def create_production_job(
+        self, workspace_id: UUID, project_id: UUID, payload: ProduceRequest
+    ) -> JobRead:
+        project = await self.get_project(workspace_id, project_id)
+        if project.state_version != payload.expected_project_state_version:
+            raise ProductionNotReadyError(
+                f"project state version mismatch: "
+                f"expected {payload.expected_project_state_version}, "
+                f"actual {project.state_version}"
+            )
+        with self._lock:
+            episodes = [
+                ep
+                for ep in self._episodes.get(project_id, [])
+                if ep.source_asset_id is not None
+            ]
+        if not episodes:
+            raise ProductionNotReadyError(
+                "visual production requires at least one uploaded episode"
+            )
+        job = JobRead(
+            id=uuid4(),
+            project_id=project_id,
+            kind="VISUAL_PRODUCTION",
+            status=JobStatus.QUEUED,
+            progress=0,
+            total_stages=len(episodes),
+            completed_stages=0,
+        )
+        with self._lock:
+            self._jobs[job.id] = job
+            self._projects[project.id] = project.model_copy(
+                update={
                     "state_version": project.state_version + 1,
                     "updated_at": datetime.now(UTC),
                 }

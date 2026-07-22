@@ -27,7 +27,7 @@ from vtv_schemas.candidates import (
     CandidateVariantRead,
 )
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobAccepted, JobRead
+from vtv_schemas.jobs import JobAccepted, JobRead, ProduceRequest
 from vtv_schemas.model_releases import (
     ModelAutomationUpdate,
     ModelLicenseReview,
@@ -300,6 +300,26 @@ def create_app(
         status_url = f"/v1/jobs/{job.id}"
         response.headers["Location"] = status_url
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
+
+    @app.post(
+        "/v1/projects/{project_id}:produce",
+        response_model=JobRead,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def produce_project(
+        project_id: UUID,
+        payload: ProduceRequest,
+        response: Response,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> JobRead:
+        try:
+            job = await repo.create_production_job(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProductionNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response.headers["Location"] = f"/v1/jobs/{job.id}"
+        return job
 
     @app.post(
         "/v1/projects/{project_id}/deliveries",

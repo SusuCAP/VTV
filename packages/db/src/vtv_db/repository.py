@@ -34,6 +34,7 @@ from vtv_production import (
     VoiceRelease,
     VoiceRightsSnapshot,
 )
+from vtv_routing.contracts import EpisodeWorkflowPlan
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -46,7 +47,7 @@ from vtv_schemas.candidates import (
 )
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobRead
+from vtv_schemas.jobs import JobRead, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import (
     DubbingJobCreate,
@@ -407,6 +408,10 @@ class ProjectRepository(Protocol):
     async def list_jobs(self, workspace_id: UUID, project_id: UUID) -> list[JobRead]: ...
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead: ...
+
+    async def create_production_job(
+        self, workspace_id: UUID, project_id: UUID, payload: ProduceRequest
+    ) -> JobRead: ...
 
     async def get_job(self, workspace_id: UUID, job_id: UUID) -> JobRead: ...
 
@@ -1002,6 +1007,212 @@ class SqlAlchemyProjectRepository:
                         "job_id": str(job.id),
                         "project_id": str(project_id),
                         "episode_ids": [str(episode.id) for episode in episodes],
+                    },
+                )
+            )
+            await session.flush()
+            return _job_read(job)
+
+    async def create_production_job(
+        self, workspace_id: UUID, project_id: UUID, payload: ProduceRequest
+    ) -> JobRead:
+        _ROUTE_TO_STAGE: dict[str, str] = {
+            "B": "VISUAL_SUBTITLE_CLEAN",
+            "C": "VISUAL_CHARACTER_REPLACE",
+            "D": "VISUAL_BACKGROUND_REPLACE",
+            "E": "VISUAL_JOINT_REPLACE",
+            "F": "VISUAL_FULL_REGEN",
+        }
+        include_routes: set[str] = (
+            set(payload.include_routes) if payload.include_routes else {"B", "C", "D", "E", "F"}
+        )
+
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project)
+                .where(Project.id == project_id, Project.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            if project.state_version != payload.expected_project_state_version:
+                raise ProductionNotReadyError(
+                    f"project state version mismatch: "
+                    f"expected {payload.expected_project_state_version}, "
+                    f"actual {project.state_version}"
+                )
+            control = await session.get(ExecutionControl, project_id)
+            if control is None:
+                raise RuntimeError("project execution control is missing")
+            episodes = list(
+                await session.scalars(
+                    select(Episode)
+                    .where(
+                        Episode.project_id == project_id,
+                        Episode.source_asset_id.is_not(None),
+                    )
+                    .order_by(Episode.episode_no)
+                    .with_for_update()
+                )
+            )
+            if not episodes:
+                raise ProductionNotReadyError(
+                    "visual production requires at least one uploaded episode"
+                )
+
+            # Resolve WORKFLOW_PLAN per episode
+            episode_plans: dict[UUID, EpisodeWorkflowPlan | None] = {}
+            for episode in episodes:
+                doc = await session.scalar(
+                    select(AnalysisDocument)
+                    .where(
+                        AnalysisDocument.project_id == project_id,
+                        AnalysisDocument.episode_id == episode.id,
+                        AnalysisDocument.document_type == "WORKFLOW_PLAN",
+                    )
+                    .order_by(AnalysisDocument.created_at.desc())
+                    .limit(1)
+                )
+                episode_plans[episode.id] = (
+                    EpisodeWorkflowPlan.model_validate(doc.payload) if doc is not None else None
+                )
+
+            # Gather all non-A shots that will be processed (for ratio check)
+            planned_shots: list[tuple[UUID, str]] = []  # (shot_id, effective_route)
+            for episode in episodes:
+                plan = episode_plans[episode.id]
+                if plan is None:
+                    continue
+                for decision in plan.decisions:
+                    route = payload.shot_route_overrides.get(
+                        str(decision.shot_id), str(decision.route)
+                    )
+                    if route == "A" or route not in include_routes:
+                        continue
+                    planned_shots.append((decision.shot_id, route))
+
+            # Enforce max_full_regen_ratio gate
+            if planned_shots:
+                full_regen_count = sum(1 for _, r in planned_shots if r == "F")
+                if full_regen_count / len(planned_shots) > payload.max_full_regen_ratio:
+                    raise ProductionNotReadyError(
+                        f"FULL_REGEN shot count {full_regen_count} of {len(planned_shots)} "
+                        f"exceeds max_full_regen_ratio {payload.max_full_regen_ratio}"
+                    )
+
+            # Pre-compute total_stages
+            total_stages = 0
+            for episode in episodes:
+                plan = episode_plans[episode.id]
+                if plan is None:
+                    total_stages += 1  # SHOT_ROUTING
+                else:
+                    for decision in plan.decisions:
+                        route = payload.shot_route_overrides.get(
+                            str(decision.shot_id), str(decision.route)
+                        )
+                        if route != "A" and route in include_routes:
+                            total_stages += 2  # VISUAL_KEYFRAME_PREVIEW + route stage
+
+            job = Job(
+                id=self._id_factory(),
+                project_id=project_id,
+                kind="VISUAL_PRODUCTION",
+                status=JobStatus.QUEUED,
+                idempotency_key=f"visual-production:{payload.expected_project_state_version}",
+                total_stages=total_stages,
+            )
+            session.add(job)
+
+            # Build stage runs; track (keyframe_run_id, route_run) pairs for dependency wiring
+            dep_pairs: list[tuple[UUID, StageRun]] = []
+
+            for episode in episodes:
+                plan = episode_plans[episode.id]
+                if plan is None:
+                    session.add(
+                        StageRun(
+                            id=self._id_factory(),
+                            job_id=job.id,
+                            project_id=project_id,
+                            episode_id=episode.id,
+                            stage_type="SHOT_ROUTING",
+                            status="READY",
+                            idempotency_key=f"{job.id}:shot_routing:{episode.id}",
+                            runtime_profile_id="cpu-standard",
+                            observed_control_version=control.control_version,
+                            params={
+                                "episode_id": str(episode.id),
+                                "source_asset_id": str(episode.source_asset_id),
+                            },
+                        )
+                    )
+                else:
+                    for decision in plan.decisions:
+                        route = payload.shot_route_overrides.get(
+                            str(decision.shot_id), str(decision.route)
+                        )
+                        if route == "A" or route not in include_routes:
+                            continue
+                        stage_type = _ROUTE_TO_STAGE[route]
+                        kf_run = StageRun(
+                            id=self._id_factory(),
+                            job_id=job.id,
+                            project_id=project_id,
+                            episode_id=episode.id,
+                            shot_id=decision.shot_id,
+                            stage_type="VISUAL_KEYFRAME_PREVIEW",
+                            status="READY",
+                            idempotency_key=f"{job.id}:keyframe_preview:{decision.shot_id}",
+                            runtime_profile_id="gpu-visual",
+                            observed_control_version=control.control_version,
+                            params={
+                                "shot_id": str(decision.shot_id),
+                                "episode_id": str(episode.id),
+                            },
+                        )
+                        session.add(kf_run)
+                        rt_run = StageRun(
+                            id=self._id_factory(),
+                            job_id=job.id,
+                            project_id=project_id,
+                            episode_id=episode.id,
+                            shot_id=decision.shot_id,
+                            stage_type=stage_type,
+                            status="PENDING",
+                            idempotency_key=f"{job.id}:{stage_type.lower()}:{decision.shot_id}",
+                            runtime_profile_id="gpu-visual",
+                            observed_control_version=control.control_version,
+                            params={
+                                "shot_id": str(decision.shot_id),
+                                "episode_id": str(episode.id),
+                                "route": route,
+                            },
+                        )
+                        session.add(rt_run)
+                        dep_pairs.append((kf_run.id, rt_run))
+
+            await session.flush()
+
+            for kf_id, rt_run in dep_pairs:
+                session.add(
+                    StageDependency(
+                        stage_run_id=rt_run.id,
+                        depends_on_stage_run_id=kf_id,
+                    )
+                )
+
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="job",
+                    aggregate_id=job.id,
+                    event_type="production_job.created",
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(project_id),
+                        "episode_ids": [str(ep.id) for ep in episodes],
                     },
                 )
             )
