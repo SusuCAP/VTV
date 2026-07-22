@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 34% | 可执行音频/视觉分析 Worker 与模型 Adapter 边界 |
+| Phase 2 全剧分析 | 进行中 | 40% | 音视频分析与项目级本土化资产合成契约 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -72,13 +72,17 @@
 - [x] 修正分析 DAG，使 `VISION_ANALYSIS` 同时消费代理视频和镜头清单。
 - [x] 实现 `VISION_ANALYSIS` Worker，严格校验媒体类型、镜头连续性和时长覆盖。
 - [x] 输出人物、场景、OCR、几何结果，并记录四类模型 release provenance。
+- [x] 固化 Localization Bible、Anchor Pack、Continuity Snapshot 的不可变版本化契约。
+- [x] 强制 Bible 内角色/地点 ID 唯一，并让 Anchor/Continuity 显式锁定 Bible 版本。
+- [x] 实现确定性项目合成器，从 track、scene 与镜头几何生成可审核草稿。
+- [x] 使用 `pending://` 明确区分候选锚点与已确认生产资产。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add project synthesis domain contracts`
+`feat: add project synthesis stage worker`
 
-下一步建立 Localization Bible、Anchor Pack 与 Continuity Snapshot 的版本化领域契约和合成规则。
+下一步让 `PROJECT_SYNTHESIS` Worker 消费音频和视觉分析资产，并输出三类版本关联的项目草稿。
 
 ## 决策日志
 
@@ -128,3 +132,5 @@
 | 2026-07-22 | `pytest` | 35 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | VISION_ANALYSIS Worker 组件测试 | 1 passed；真实合成视频与连续镜头清单，校验视觉结果及 release |
 | 2026-07-22 | `pytest` | 36 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 项目合成领域测试 | 2 passed；覆盖版本关联草稿与重复角色 ID 拒绝 |
+| 2026-07-22 | `pytest` | 38 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

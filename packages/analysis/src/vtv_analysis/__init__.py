@@ -11,6 +11,18 @@ from .contracts import (
 )
 from .mock import DeterministicAsr, DeterministicDiarization, DeterministicVad
 from .pipeline import AudioAnalysisPipeline
+from .synthesis import (
+    Anchor,
+    AnchorPack,
+    CharacterContinuity,
+    CharacterProfile,
+    ContinuitySnapshot,
+    DeterministicProjectSynthesizer,
+    GlossaryEntry,
+    LocalizationBible,
+    LocationProfile,
+    ProjectSynthesis,
+)
 from .vision import (
     DeterministicGeometryAdapter,
     DeterministicOcrAdapter,
@@ -32,11 +44,17 @@ from .vision import (
 
 __all__ = [
     "AsrAdapter",
+    "Anchor",
+    "AnchorPack",
     "AudioAnalysis",
     "AudioAnalysisPipeline",
+    "CharacterContinuity",
+    "CharacterProfile",
+    "ContinuitySnapshot",
     "DeterministicAsr",
     "DeterministicDiarization",
     "DeterministicVad",
+    "DeterministicProjectSynthesizer",
     "DeterministicGeometryAdapter",
     "DeterministicOcrAdapter",
     "DeterministicPersonAdapter",
@@ -44,11 +62,15 @@ __all__ = [
     "DiarizationAdapter",
     "GeometryAdapter",
     "GeometryObservation",
+    "GlossaryEntry",
+    "LocalizationBible",
+    "LocationProfile",
     "NormalizedBox",
     "OcrAdapter",
     "OcrObservation",
     "PersonAdapter",
     "PersonObservation",
+    "ProjectSynthesis",
     "SceneAdapter",
     "SceneObservation",
     "ShotSpan",

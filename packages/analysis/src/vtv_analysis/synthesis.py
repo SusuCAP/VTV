@@ -1,0 +1,184 @@
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .contracts import AudioAnalysis
+from .vision import VisionAnalysis
+
+
+class CharacterProfile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    character_id: str = Field(min_length=1)
+    source_track_ids: tuple[str, ...] = Field(min_length=1)
+    localized_name: str = Field(min_length=1)
+    voice_profile_id: str | None = None
+    visual_constraints: tuple[str, ...] = ()
+
+
+class LocationProfile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    location_id: str = Field(min_length=1)
+    source_scene_ids: tuple[str, ...] = Field(min_length=1)
+    localized_name: str = Field(min_length=1)
+    visual_constraints: tuple[str, ...] = ()
+
+
+class GlossaryEntry(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    source: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    note: str | None = None
+
+
+class LocalizationBible(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    bible_id: str = Field(min_length=1)
+    version: int = Field(ge=1)
+    status: Literal["DRAFT", "CONFIRMED", "RELEASED"]
+    source_locale: str = Field(min_length=2)
+    target_locale: str = Field(min_length=2)
+    characters: tuple[CharacterProfile, ...]
+    locations: tuple[LocationProfile, ...]
+    glossary: tuple[GlossaryEntry, ...] = ()
+    style_rules: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_unique_ids(self) -> "LocalizationBible":
+        character_ids = [item.character_id for item in self.characters]
+        location_ids = [item.location_id for item in self.locations]
+        if len(character_ids) != len(set(character_ids)):
+            raise ValueError("character IDs must be unique")
+        if len(location_ids) != len(set(location_ids)):
+            raise ValueError("location IDs must be unique")
+        return self
+
+
+class Anchor(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    anchor_id: str = Field(min_length=1)
+    kind: Literal["CHARACTER", "OUTFIT", "LOCATION", "VOICE"]
+    subject_id: str = Field(min_length=1)
+    asset_uri: str = Field(min_length=1)
+    asset_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class AnchorPack(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    pack_id: str = Field(min_length=1)
+    version: int = Field(ge=1)
+    status: Literal["DRAFT", "CONFIRMED", "RELEASED"]
+    bible_id: str = Field(min_length=1)
+    bible_version: int = Field(ge=1)
+    anchors: tuple[Anchor, ...]
+
+
+class CharacterContinuity(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    character_id: str = Field(min_length=1)
+    outfit_id: str | None = None
+    emotional_state: str | None = None
+    props: tuple[str, ...] = ()
+
+
+class ContinuitySnapshot(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    snapshot_id: str = Field(min_length=1)
+    episode_id: str = Field(min_length=1)
+    shot_no: int = Field(ge=1)
+    bible_id: str = Field(min_length=1)
+    bible_version: int = Field(ge=1)
+    location_id: str | None = None
+    time_of_day: str | None = None
+    characters: tuple[CharacterContinuity, ...] = ()
+
+
+class ProjectSynthesis(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    bible: LocalizationBible
+    anchor_pack: AnchorPack
+    continuity: tuple[ContinuitySnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DeterministicProjectSynthesizer:
+    def synthesize(
+        self,
+        project_id: str,
+        episode_id: str,
+        source_locale: str,
+        target_locale: str,
+        audio: AudioAnalysis,
+        vision: VisionAnalysis,
+    ) -> ProjectSynthesis:
+        del audio
+        tracks = sorted({person.track_id for person in vision.people})
+        scenes = sorted({scene.scene_id for scene in vision.scenes})
+        bible_id = f"bible-{project_id}"
+        bible = LocalizationBible(
+            bible_id=bible_id,
+            version=1,
+            status="DRAFT",
+            source_locale=source_locale,
+            target_locale=target_locale,
+            characters=tuple(
+                CharacterProfile(
+                    character_id=f"character-{index:03d}",
+                    source_track_ids=(track,),
+                    localized_name=f"角色{index}",
+                )
+                for index, track in enumerate(tracks, 1)
+            ),
+            locations=tuple(
+                LocationProfile(
+                    location_id=f"location-{index:03d}",
+                    source_scene_ids=(scene,),
+                    localized_name=f"场景{index}",
+                )
+                for index, scene in enumerate(scenes, 1)
+            ),
+        )
+        anchors = tuple(
+            Anchor(
+                anchor_id=f"anchor-{character.character_id}",
+                kind="CHARACTER",
+                subject_id=character.character_id,
+                asset_uri=f"pending://{character.character_id}",
+                asset_sha256=sha256(character.character_id.encode()).hexdigest(),
+            )
+            for character in bible.characters
+        )
+        anchor_pack = AnchorPack(
+            pack_id=f"anchors-{project_id}",
+            version=1,
+            status="DRAFT",
+            bible_id=bible_id,
+            bible_version=1,
+            anchors=anchors,
+        )
+        continuity = tuple(
+            ContinuitySnapshot(
+                snapshot_id=f"continuity-{episode_id}-{index}",
+                episode_id=episode_id,
+                shot_no=index,
+                bible_id=bible_id,
+                bible_version=1,
+                location_id=(bible.locations[0].location_id if bible.locations else None),
+                characters=tuple(
+                    CharacterContinuity(character_id=character.character_id)
+                    for character in bible.characters
+                ),
+            )
+            for index in range(1, len(vision.geometry) + 1)
+        )
+        return ProjectSynthesis(bible=bible, anchor_pack=anchor_pack, continuity=continuity)
