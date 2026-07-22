@@ -13,9 +13,11 @@ REMOTE_ROOT = "/opt/vtv"
 SOURCE_PATHS = (
     "packages/schemas/src",
     "packages/analysis/src",
+    "packages/audio/src",
     "packages/media/src",
     "packages/storage/src",
     "workers/analysis/src",
+    "workers/audio/src",
     "workers/media/src",
     "apps/orchestrator/src",
 )
@@ -25,6 +27,7 @@ image = (
     .apt_install("ffmpeg")
     .uv_pip_install(
         "boto3==1.40.61",
+        "demucs==4.1.0",
         "faster-whisper==1.2.1",
         "httpx==0.28.1",
         "pydantic==2.12.3",

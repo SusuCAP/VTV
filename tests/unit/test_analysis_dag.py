@@ -14,11 +14,24 @@ def test_project_analysis_dag_is_topologically_valid() -> None:
     dag = build_project_analysis_dag(episodes)
 
     validate_dag(dag)
-    assert len(dag) == 11
+    assert len(dag) == 13
     assert [stage.stage_type for stage in dag].count("INGEST_VALIDATE") == 2
+    assert [stage.stage_type for stage in dag].count("AUDIO_STEM_SEPARATION") == 2
     assert dag[-1].stage_type == "PROJECT_SYNTHESIS"
     assert len(dag[-1].depends_on) == 4
     assert {stage.episode_id for stage in dag[:-1]} == set(episodes)
+    for episode in episodes:
+        stems = next(
+            stage
+            for stage in dag
+            if stage.episode_id == episode and stage.stage_type == "AUDIO_STEM_SEPARATION"
+        )
+        asr = next(
+            stage
+            for stage in dag
+            if stage.episode_id == episode and stage.stage_type == "ASR_ALIGN"
+        )
+        assert asr.depends_on == (stems.key,)
 
 
 def test_project_analysis_dag_rejects_empty_episode_set() -> None:

@@ -1,0 +1,13 @@
+[project]
+name = "vtv-audio"
+version = "0.1.0"
+description = "Audio stem separation contracts and adapters for VTV"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.10.6", "vtv-media"]
+
+[tool.uv.sources]
+vtv-media = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

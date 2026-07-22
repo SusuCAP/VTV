@@ -27,6 +27,7 @@ def build_project_analysis_dag(
         ingest = f"{prefix}:ingest"
         proxy = f"{prefix}:proxy"
         shots = f"{prefix}:shots"
+        stems = f"{prefix}:audio-stems"
         asr = f"{prefix}:asr"
         vision = f"{prefix}:vision"
         definitions.extend(
@@ -38,7 +39,10 @@ def build_project_analysis_dag(
                 ScopedStageDefinition(
                     shots, "SHOT_DETECT", "gpu-analysis-light", (proxy,), episode_id
                 ),
-                ScopedStageDefinition(asr, "ASR_ALIGN", "gpu-audio", (proxy,), episode_id),
+                ScopedStageDefinition(
+                    stems, "AUDIO_STEM_SEPARATION", "gpu-audio", (proxy,), episode_id
+                ),
+                ScopedStageDefinition(asr, "ASR_ALIGN", "gpu-audio", (stems,), episode_id),
                 ScopedStageDefinition(
                     vision, "VISION_ANALYSIS", "gpu-analysis", (proxy, shots), episode_id
                 ),

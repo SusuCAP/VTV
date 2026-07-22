@@ -21,11 +21,13 @@ members = [
   "packages/db",
   "packages/evaluation",
   "packages/analysis",
+  "packages/audio",
   "packages/media",
   "packages/schemas",
   "packages/storage",
   "workers/media",
   "workers/analysis",
+  "workers/audio",
 ]
 
 [tool.pytest.ini_options]

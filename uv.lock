@@ -10,6 +10,8 @@ resolution-markers = [
 members = [
     "vtv-analysis",
     "vtv-analysis-worker",
+    "vtv-audio",
+    "vtv-audio-worker",
     "vtv-control-api",
     "vtv-db",
     "vtv-evaluation",
@@ -1463,6 +1465,38 @@ requires-dist = [
 ]
 
 [[package]]
+name = "vtv-audio"
+version = "0.1.0"
+source = { editable = "packages/audio" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "vtv-media" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.10.6" },
+    { name = "vtv-media", editable = "packages/media" },
+]
+
+[[package]]
+name = "vtv-audio-worker"
+version = "0.1.0"
+source = { editable = "workers/audio" }
+dependencies = [
+    { name = "pydantic-settings" },
+    { name = "vtv-audio" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic-settings", specifier = ">=2.8.1" },
+    { name = "vtv-audio", editable = "packages/audio" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
+
+[[package]]
 name = "vtv-control-api"
 version = "0.1.0"
 source = { editable = "apps/control-api" }
@@ -1548,6 +1582,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "vtv-analysis-worker" },
+    { name = "vtv-audio-worker" },
     { name = "vtv-db" },
     { name = "vtv-media-worker" },
     { name = "vtv-schemas" },
@@ -1560,6 +1595,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.8.1" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
     { name = "vtv-analysis-worker", editable = "workers/analysis" },
+    { name = "vtv-audio-worker", editable = "workers/audio" },
     { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-media-worker", editable = "workers/media" },
     { name = "vtv-schemas", editable = "packages/schemas" },

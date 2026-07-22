@@ -89,7 +89,7 @@
 - [x] 创建 superseding 版本时自动失效旧版本及全部下游，消除客户端竞态窗口。
 - [x] API 将状态错误、依赖门禁和 CAS 冲突稳定映射为 HTTP 409。
 - [x] 项目分析按每个已上传 Episode 展开 ingest/proxy/shots/ASR/vision 五阶段链。
-- [x] 单一 `PROJECT_SYNTHESIS` 依赖所有集的 ASR 和视觉结果，N 集总阶段数为 `5N+1`。
+- [x] 单一 `PROJECT_SYNTHESIS` 依赖所有集的 ASR 和视觉结果；加入 Stem 后总阶段数为 `6N+1`。
 - [x] 空项目分析返回 409，阻止创建没有源资产且无法执行的 DAG。
 - [x] Stage 输出资产透传 episode/stage 元数据，项目合成按集严格配对输入。
 - [x] 合成器跨集合并 track/scene，并生成逐集 Continuity Snapshot 与异构 release provenance。
@@ -146,15 +146,20 @@
 - [x] 实现音频 Golden 批处理 runner，直接生成 benchmark API 的强类型提交对象。
 - [x] 每个 Golden 源文件执行 SHA-256 与 50 ms 时长漂移门禁，数据污染不计为模型失败。
 - [x] 单样本推理失败隔离并记录异常类型，整批继续采集指标、延迟与按计算秒成本。
+- [x] 新增 `vtv-audio` 领域包与独立 Audio Worker，固化四类 stem 和 50 ms 时长不变量。
+- [x] 分析 DAG 新增 `AUDIO_STEM_SEPARATION`，ASR 改为只消费唯一 DIALOGUE stem。
+- [x] 实现 passthrough 合同 Adapter 与惰性 Demucs 4.1.0 候选 Adapter，不伪造 MUSIC/EFFECTS。
+- [x] Scheduler 保留 Worker 输出 metadata，使 stem kind/model release 可跨数据库边界传递。
+- [x] Registry 新增 Stem 模型选择注入；Modal 模式把 Stem Stage 一并派发到 L4 计算平面。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add dialogue stem separation contracts`
+`feat: add stem separation golden metrics`
 
-下一步实现 Dialogue/Stem 分离领域契约、Worker Stage 与候选 Adapter；同时在 Modal API
-网络恢复后补跑权重下载、Golden runner 和云端 benchmark API 验收。
+下一步实现对白泄漏、背景保真和 stem 重建误差 Golden 指标，并把 Stem 候选接入 benchmark
+runner；同时在 Modal API 网络恢复后补跑权重下载和云端验收。
 
 ## 决策日志
 
@@ -212,7 +217,7 @@
 | 2026-07-22 | `pytest` | 42 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Artifact Release API 集成测试 | 3 passed；覆盖发布链、CAS 冲突及 supersede 自动传递失效 |
 | 2026-07-22 | `pytest` | 45 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
-| 2026-07-22 | 多集分析 DAG 与汇聚测试 | 通过；两集生成 11 stages、空集拒绝、四份分析资产按集配对 |
+| 2026-07-22 | 多集分析 DAG 与汇聚测试 | 通过；两集当前生成 13 stages、空集拒绝、分析资产按集配对 |
 | 2026-07-22 | `pytest` | 47 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Stage Router 测试 | 2 passed；覆盖三路分发、本地输出隔离和异常标准化 |
 | 2026-07-22 | `pytest` | 49 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
@@ -241,3 +246,5 @@
 | 2026-07-22 | `pytest` | 83 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 音频 Golden runner | 3 passed；覆盖强类型提交、模型失败隔离、源 hash 与时长漂移拒绝 |
 | 2026-07-22 | `pytest` | 86 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Stem/DAG/Audio Worker 聚焦测试 | 13 passed；覆盖 stem 不变量、Demucs 映射、真实 FFmpeg Worker 与路由 |
+| 2026-07-22 | `pytest` | 90 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

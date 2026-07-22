@@ -71,10 +71,15 @@ class AnalysisWorker:
             return self._execute_vision(job)
         if job.stage_type != "ASR_ALIGN":
             raise ValueError(f"unsupported analysis stage: {job.stage_type}")
-        if not job.input_assets:
-            raise ValueError("ASR_ALIGN requires at least one input asset")
+        dialogue_assets = [
+            asset
+            for asset in job.input_assets
+            if asset.metadata.get("stem_kind") == "DIALOGUE"
+        ]
+        if len(dialogue_assets) != 1:
+            raise ValueError("ASR_ALIGN requires exactly one DIALOGUE stem")
 
-        source = _local_path(job.input_assets[0].uri)
+        source = _local_path(dialogue_assets[0].uri)
         output_directory = _local_path(job.output_prefix)
         output_directory.mkdir(parents=True, exist_ok=True)
         probe = probe_media(source, require_video=False)

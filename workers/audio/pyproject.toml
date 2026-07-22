@@ -1,0 +1,14 @@
+[project]
+name = "vtv-audio-worker"
+version = "0.1.0"
+description = "Dialogue and background stem separation worker for VTV"
+requires-python = ">=3.12"
+dependencies = ["pydantic-settings>=2.8.1", "vtv-audio", "vtv-schemas"]
+
+[tool.uv.sources]
+vtv-audio = { workspace = true }
+vtv-schemas = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

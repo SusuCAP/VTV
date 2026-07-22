@@ -656,7 +656,11 @@ class SqlAlchemyProjectRepository:
                 model_key: await _select_model_release(
                     session, workspace_id, model_key, job.id
                 )
-                for model_key in ("AUDIO_ANALYSIS", "VISION_ANALYSIS")
+                for model_key in (
+                    "AUDIO_STEM_SEPARATION",
+                    "AUDIO_ANALYSIS",
+                    "VISION_ANALYSIS",
+                )
             }
             runs: dict[str, StageRun] = {}
             for definition in definitions:
@@ -675,6 +679,7 @@ class SqlAlchemyProjectRepository:
                 if definition.stage_type == "PROJECT_SYNTHESIS":
                     params["release_versions"] = next_release_versions
                 model_key = {
+                    "AUDIO_STEM_SEPARATION": "AUDIO_STEM_SEPARATION",
                     "ASR_ALIGN": "AUDIO_ANALYSIS",
                     "VISION_ANALYSIS": "VISION_ANALYSIS",
                 }.get(definition.stage_type)

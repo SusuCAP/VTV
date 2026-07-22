@@ -190,6 +190,7 @@ class Scheduler:
                             size_bytes=asset.size_bytes,
                             content_type=asset.media_type,
                             metadata={
+                                **asset.metadata,
                                 "stage_attempt_id": str(claim.stage_attempt_id),
                                 "variant_no": variant.variant_no,
                                 "stage_type": claim.stage_type,

@@ -6,7 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from vtv_analysis_worker import execute
+from vtv_audio_worker import execute
 from vtv_schemas.jobs import AssetRef, StageJob
 
 FFMPEG_AVAILABLE = bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
@@ -39,40 +39,39 @@ def _audio_fixture(path: Path) -> Path:
     return path
 
 
-def test_asr_align_worker_writes_analysis_and_model_provenance(tmp_path: Path) -> None:
-    source = _audio_fixture(tmp_path / "dialogue.wav")
-    output_directory = tmp_path / "result"
+def test_audio_worker_outputs_typed_dialogue_stem(tmp_path: Path) -> None:
+    source = _audio_fixture(tmp_path / "source.wav")
     digest = sha256(source.read_bytes()).hexdigest()
+    output = tmp_path / "stems"
     job = StageJob(
         stage_run_id=uuid4(),
         stage_attempt_id=uuid4(),
         project_id=uuid4(),
         episode_id=uuid4(),
-        idempotency_key="test:asr-align",
-        stage_type="ASR_ALIGN",
+        idempotency_key="audio-stems:test",
+        stage_type="AUDIO_STEM_SEPARATION",
         input_assets=[
             AssetRef(
                 uri=source.resolve().as_uri(),
                 sha256=digest,
                 media_type="audio/wav",
                 size_bytes=source.stat().st_size,
-                metadata={"stem_kind": "DIALOGUE"},
             )
         ],
-        output_prefix=output_directory.resolve().as_uri(),
+        output_prefix=output.resolve().as_uri(),
         runtime_profile_id="gpu-audio",
         observed_control_version=1,
-        params={"language_hint": "zh-CN"},
-        trace_id="analysis-component-test",
+        trace_id="audio-worker-test",
     )
 
     result = execute(job)
 
     assert result.status == "OUTPUT_READY"
-    payload = json.loads((output_directory / "audio-analysis.json").read_text())
-    assert payload["analysis"]["language"] == "zh-CN"
-    assert payload["analysis"]["transcript"][0]["words"]
-    assert payload["model_releases"] == result.variants[0].raw_metrics["model_releases"]
-    assert payload["model_releases"]["asr_align"] == "mock-asr-align@1"
-    assert result.domain_artifacts[0].document_type == "AUDIO_ANALYSIS"
-    assert result.domain_artifacts[0].episode_id == job.episode_id
+    assert len(result.variants[0].output_assets) == 1
+    dialogue = result.variants[0].output_assets[0]
+    assert dialogue.metadata["stem_kind"] == "DIALOGUE"
+    assert dialogue.sha256 == sha256((output / "dialogue.wav").read_bytes()).hexdigest()
+    artifact = result.domain_artifacts[0]
+    assert artifact.document_type == "AUDIO_STEMS"
+    assert artifact.source_asset_sha256 == digest
+    json.dumps(artifact.payload)

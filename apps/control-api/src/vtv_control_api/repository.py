@@ -335,7 +335,7 @@ class MemoryRepository:
             kind="PROJECT_ANALYSIS",
             status=JobStatus.QUEUED,
             progress=0,
-            total_stages=len(episodes) * 5 + 1,
+            total_stages=len(episodes) * 6 + 1,
             completed_stages=0,
         )
         with self._lock:

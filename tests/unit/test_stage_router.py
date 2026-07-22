@@ -34,15 +34,18 @@ def test_router_sends_concrete_stages_to_local_workers(tmp_path: Path) -> None:
         tmp_path,
         media_executor=_successful,
         analysis_executor=_successful,
+        audio_executor=_successful,
         fallback_executor=_successful,
     )
 
     media = router.execute(_job("PROXY_GENERATE"))
     analysis = router.execute(_job("ASR_ALIGN"))
+    audio = router.execute(_job("AUDIO_STEM_SEPARATION"))
     fallback = router.execute(_job("MOCK_RENDER"))
 
     assert media.attempt_usage["output_prefix"].startswith("file://")
     assert analysis.attempt_usage["output_prefix"].startswith("file://")
+    assert audio.attempt_usage["output_prefix"].startswith("file://")
     assert fallback.attempt_usage["output_prefix"] == "memory://old"
 
 

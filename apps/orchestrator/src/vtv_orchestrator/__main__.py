@@ -25,7 +25,12 @@ async def run(database_url: str, max_stages: int, worker_mode: str, work_root: P
             modal_executor = ModalStageExecutor().execute
 
             def executor(job):
-                if job.stage_type in {"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"}:
+                if job.stage_type in {
+                    "AUDIO_STEM_SEPARATION",
+                    "ASR_ALIGN",
+                    "VISION_ANALYSIS",
+                    "PROJECT_SYNTHESIS",
+                }:
                     return modal_executor(job)
                 return local_router.execute(job)
 
