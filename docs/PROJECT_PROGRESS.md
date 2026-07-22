@@ -10,8 +10,7 @@
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
-| Phase 4 QC 与批量 | 进行中 | 75% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark |
-| Phase 4 QC 与批量 | 未开始 | 0% | — |
+| Phase 4 QC 与批量 | 已完成 | 100% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark + 视觉模型基准准入门控 |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
 ## 已完成
@@ -242,9 +241,13 @@
 
 ## 下一提交目标
 
-`feat: add production DAG trigger API`
+`chore: await modal network recovery for cloud validation`
 
-实现 `POST /v1/projects/{id}:produce`，读取 WorkflowPlan，为每个非 PRESERVE 镜头创建对应的视觉生产 StageRun，支持预算上限与路由覆盖。
+Phase 4 本地实现完成（100%）。等待 api.modal.com Envoy 503 恢复后：
+1. modal deploy vtv-analysis（重试）
+2. 首次 Modal S3 分析 Stage 云端验收
+3. Docker Hub 恢复后 PostgreSQL + MinIO 全链验收
+下一个本地开发阶段：Phase 5（Mac 签名/公证、C2PA 正式 SDK、多市场配置）
 
 ## 决策日志
 
@@ -393,3 +396,14 @@
 | 2026-07-23 | 生产 DAG 触发 API | 8 files, 517 insertions；ProduceRequest、create_production_job、POST /v1/projects/{id}:produce |
 | 2026-07-23 | `ruff check .` | 通过 |
 | 2026-07-23 | `pytest` | 230 passed，16 skipped |
+| 2026-07-23 | QC 评估器框架 | 12 unit + 6 Postgres stub；migration 0012，硬失败门控，QC_PASSED 提升 |
+| 2026-07-23 | `pytest` | 257 passed，27 skipped |
+| 2026-07-23 | 视觉 QC Runner + 熔断器 | 10 unit + 5 component；VISUAL_QC stage，50% 失败率熔断 |
+| 2026-07-23 | `pytest` | 274 passed，27 skipped |
+| 2026-07-23 | 交付包下载 + 批量 Job 状态 | 11 unit + 7 integration stub；DeliveryPackage, JobSummary, JobProgress |
+| 2026-07-23 | `pytest` | 293 passed，27 skipped |
+| 2026-07-23 | 视觉 Golden Benchmark runner | 11 unit；4项视觉指标，VISUAL_GENERATION_POLICY，VisualGoldenBenchmarkRunner |
+| 2026-07-23 | `pytest` | 313 passed，27 skipped |
+| 2026-07-23 | 视觉模型基准准入门控 | run_visual_benchmark CLI，passthrough benchmark payload |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 321 passed，27 skipped |

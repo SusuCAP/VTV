@@ -54,8 +54,10 @@ __all__ = [
     "VisualGenerationBenchmarkPayload",
     "VisualGoldenBenchmarkRunner",
     "VisualGoldenSample",
+    "run_visual_benchmark",
 ]
 from .audio_metrics import TimedSpeakerLabel, diarization_overlap_accuracy, transcript_accuracy
+from .benchmark_runner_cli import run_visual_benchmark
 from .visual_generation_metrics import (
     background_preservation_score,
     character_identity_score,
