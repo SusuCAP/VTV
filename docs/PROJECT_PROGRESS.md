@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 18% | 媒体处理与 VAD/ASR/对齐/说话人 Adapter 契约 |
+| Phase 2 全剧分析 | 进行中 | 23% | 媒体处理与可执行 ASR_ALIGN 音频分析 Worker |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -62,13 +62,16 @@
 - [x] 固化 VAD、ASR/词级对齐、说话人分离 Protocol 与版本标识边界。
 - [x] 固化音频分析时间区间、语言、置信度和音频时长范围不变量。
 - [x] 实现确定性参考 Adapter 与统一 Audio Analysis Pipeline，支持无 GPU 合同测试。
+- [x] 扩展 ffprobe 媒体探测以接受纯音频，同时保留视频摄取的严格校验默认值。
+- [x] 实现 `ASR_ALIGN` Worker：音频规范化、结构化转录、词级时间戳和说话人区间输出。
+- [x] 在结果资产和 Stage Result 中双写 VAD/ASR/diarization 模型 release provenance。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add audio analysis stage worker`
+`feat: add vision analysis adapter contracts`
 
-下一步把音频抽取和 Audio Analysis Pipeline 接入标准 Stage Job/Result，持久化结构化转录资产与模型 release provenance。
+下一步建立人物、场景、OCR 与画面几何分析契约，并形成 `VISION_ANALYSIS` 的可替换 Adapter 边界。
 
 ## 决策日志
 
@@ -112,3 +115,5 @@
 | 2026-07-22 | `pytest` | 28 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 音频分析 Adapter 合同测试 | 3 passed；覆盖确定性流水线、反向区间和越界区间拒绝 |
 | 2026-07-22 | `pytest` | 31 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | ASR_ALIGN Worker 组件测试 | 1 passed；真实 FFmpeg 合成 WAV，校验结构化结果与模型 provenance |
+| 2026-07-22 | `pytest` | 32 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

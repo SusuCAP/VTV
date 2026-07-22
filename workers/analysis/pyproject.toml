@@ -1,0 +1,19 @@
+[project]
+name = "vtv-analysis-worker"
+version = "0.1.0"
+description = "Audio and multimodal analysis stage worker for VTV"
+requires-python = ">=3.12"
+dependencies = [
+  "vtv-analysis",
+  "vtv-media",
+  "vtv-schemas",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+vtv-analysis = { workspace = true }
+vtv-media = { workspace = true }
+vtv-schemas = { workspace = true }

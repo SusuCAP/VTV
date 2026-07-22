@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "vtv-analysis",
+    "vtv-analysis-worker",
     "vtv-control-api",
     "vtv-db",
     "vtv-media",
@@ -825,6 +826,23 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+
+[[package]]
+name = "vtv-analysis-worker"
+version = "0.1.0"
+source = { editable = "workers/analysis" }
+dependencies = [
+    { name = "vtv-analysis" },
+    { name = "vtv-media" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "vtv-analysis", editable = "packages/analysis" },
+    { name = "vtv-media", editable = "packages/media" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
 
 [[package]]
 name = "vtv-control-api"

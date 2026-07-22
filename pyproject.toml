@@ -23,6 +23,7 @@ members = [
   "packages/schemas",
   "packages/storage",
   "workers/media",
+  "workers/analysis",
 ]
 
 [tool.pytest.ini_options]

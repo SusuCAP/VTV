@@ -62,6 +62,7 @@ def _frame_rate(value: Any) -> float | None:
 def probe_media(
     path: Path,
     *,
+    require_video: bool = True,
     ffprobe_executable: str = "ffprobe",
     timeout_seconds: int = 60,
 ) -> MediaProbe:
@@ -116,6 +117,8 @@ def probe_media(
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MediaProbeError(f"invalid ffprobe response: {exc}") from exc
-    if not probe.video_streams:
+    if require_video and not probe.video_streams:
         raise MediaProbeError("media does not contain a video stream")
+    if not probe.streams:
+        raise MediaProbeError("media does not contain a supported stream")
     return probe

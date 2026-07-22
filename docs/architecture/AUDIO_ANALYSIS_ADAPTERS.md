@@ -18,3 +18,7 @@ GPU 执行后端在不改变编排协议的情况下替换。
 将依次接入 VAD、ASR/对齐和 diarization，并使用同一组契约测试、Golden Dataset、模型
 许可与 release 门禁进行准入。
 
+`vtv-analysis-worker` 已实现 `ASR_ALIGN` Stage：它接受纯音频或含音轨视频，本地模式下
+把非 WAV 输入规范化为 48 kHz 双声道 PCM，再写出 `audio-analysis.json`。JSON 和
+Stage Result 同时记录 VAD、ASR/对齐、diarization 的 release，避免结果与实际模型版本
+脱钩。生产对象存储传输仍由后续 Worker I/O 边界接入。
