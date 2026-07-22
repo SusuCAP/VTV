@@ -1,3 +1,4 @@
+import json
 import subprocess
 from hashlib import sha256
 from pathlib import Path
@@ -201,6 +202,61 @@ def test_subtitle_mix_and_burned_episode_master_pipeline(tmp_path: Path) -> None
     assert probe.audio_streams
     assert abs(probe.duration_seconds - 2) <= 0.05
     assert master_asset.metadata["burned_subtitles"] is True
+
+    evidence_stage_id = uuid4()
+    evidence = worker.execute(
+        _job(
+            tmp_path,
+            "DELIVERY_EVIDENCE",
+            inputs=(master_asset,),
+            params={
+                "delivery_evidence_request": {
+                    "source_video_sha256": source.sha256,
+                    "master_video_sha256": master_asset.sha256,
+                    "project_state_version": 4,
+                    "duration_ms": 2000,
+                    "edit_chain": [
+                        {
+                            "stage_run_id": str(evidence_stage_id),
+                            "stage_type": "ASSEMBLE_EPISODE",
+                            "input_sha256s": [source.sha256, mixed_asset.sha256],
+                            "output_sha256s": [master_asset.sha256],
+                            "parameters_sha256": "f" * 64,
+                        }
+                    ],
+                    "shots": [
+                        {
+                            "shot_id": str(uuid4()),
+                            "shot_no": 1,
+                            "start_ms": 0,
+                            "end_ms": 2000,
+                            "route": "L0",
+                            "qc_verdict": "SOURCE_UNCHANGED",
+                        }
+                    ],
+                    "cost": {"currency": "USD", "total": "0", "by_stage": {}},
+                    "final_encoding": {"requested_video_codec": "h264"},
+                }
+            },
+        )
+    )
+    quality_asset, shot_list_asset = evidence.variants[0].output_assets
+    quality = json.loads(Path(quality_asset.uri.removeprefix("file://")).read_text())
+    shot_list = json.loads(Path(shot_list_asset.uri.removeprefix("file://")).read_text())
+    assert quality["schema_version"] == "vtv.quality-report.v1"
+    assert {item["metric_name"] for item in quality["qc"]} == {
+        "master_duration",
+        "master_stream_integrity",
+    }
+    assert quality_asset.metadata["edit_chain"][0]["output_sha256s"] == [
+        master_asset.sha256
+    ]
+    assert shot_list["shots"][0]["end_ms"] == 2000
+    assert shot_list_asset.metadata["schema_version"] == "vtv.shot-list.v1"
+    assert {item.document_type for item in evidence.domain_artifacts} == {
+        "QUALITY_REPORT",
+        "DELIVERY_SHOT_LIST",
+    }
 
 
 def test_picture_conform_replaces_only_adopted_shot_interval(tmp_path: Path) -> None:

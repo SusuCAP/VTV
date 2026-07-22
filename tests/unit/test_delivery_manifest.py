@@ -8,6 +8,7 @@ from vtv_delivery import (
     ApprovalEvidence,
     CostSummary,
     DeliveredAsset,
+    DeliveryEvidenceRequest,
     DeliveryManifestBuilder,
     EditStageEvidence,
     QcEvidence,
@@ -145,3 +146,44 @@ def test_manifest_rejects_hard_failure_and_incomplete_asset_set() -> None:
     values["assets"] = tuple(asset for asset in values["assets"] if asset.role != "SHOT_LIST")
     with pytest.raises(ValidationError, match="requires source, master"):
         DeliveryManifestBuilder.build(**values)
+
+
+def test_delivery_evidence_requires_full_timeline_and_traceable_master() -> None:
+    master_hash = _hash("b")
+    values = {
+        "source_video_sha256": _hash("a"),
+        "master_video_sha256": master_hash,
+        "project_state_version": 2,
+        "duration_ms": 2000,
+        "edit_chain": (
+            EditStageEvidence(
+                stage_run_id=uuid4(),
+                stage_type="ASSEMBLE_EPISODE",
+                output_sha256s=(master_hash,),
+                parameters_sha256=_hash("f"),
+            ),
+        ),
+        "shots": (
+            ShotDeliveryEntry(
+                shot_id=uuid4(),
+                shot_no=1,
+                start_ms=0,
+                end_ms=2000,
+                route="L0",
+                qc_verdict="SOURCE_UNCHANGED",
+            ),
+        ),
+        "cost": CostSummary(total=Decimal()),
+        "final_encoding": {"video_codec": "h264"},
+    }
+    request = DeliveryEvidenceRequest.model_validate(values)
+    assert request.shots[-1].end_ms == request.duration_ms
+
+    with pytest.raises(ValidationError, match="span the full episode"):
+        DeliveryEvidenceRequest.model_validate(
+            {**values, "shots": (values["shots"][0].model_copy(update={"end_ms": 1999}),)}
+        )
+    with pytest.raises(ValidationError, match="traceable"):
+        DeliveryEvidenceRequest.model_validate(
+            {**values, "master_video_sha256": _hash("9")}
+        )

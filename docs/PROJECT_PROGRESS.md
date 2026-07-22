@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 82% | Delivery Release、CAS 批准与服务端 Provenance Manifest 发布 API |
+| Phase 3 自动生产 | 进行中 | 86% | 五阶段 Assembly→Evidence DAG 与自动质量报告/镜头清单资产 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -220,14 +220,18 @@
 - [x] Delivery Draft 捕获 Project state version；批准时使用 Delivery CAS 并拒绝项目漂移。
 - [x] Manifest 仅由服务端从不可变资产 evidence metadata 生成，客户端不能伪造 provenance。
 - [x] Delivery 批准与 `delivery.approved` Outbox 同事务提交，并提供 Workspace 隔离的创建/详情/列表 API。
+- [x] Episode Assembly 扩展为第五个 `DELIVERY_EVIDENCE` Stage，仅在 Master 完成后推进。
+- [x] Scheduler 从实际 Stage 输出、Model/Benchmark、seed、Attempt cost 和 provider usage 生成编辑链证据。
+- [x] Evidence Worker 使用 FFprobe 复核 Master，并确定性输出质量报告与完整镜头清单 JSON。
+- [x] 镜头清单强制从 0 连续覆盖全集；质量报告记录实际编码、指标 evaluator/version 与成本。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: generate delivery evidence assets`
+`feat: automate delivery draft creation`
 
-本提交完成后，下一步实现质量报告与镜头清单资产生成 Worker，并将其接入 Assembly→Delivery DAG；
+本提交完成后，下一步在 Evidence Stage 完成时自动创建 Delivery Draft，并补齐 C2PA 签名状态机；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -358,3 +362,7 @@
 | 2026-07-22 | SQLAlchemy metadata | 26 tables loaded；`deliveries` 与 `delivery_assets` 约束和外键可解析 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 151 passed，5 skipped；仅保留 Starlette TestClient 上游弃用提示 |
+| 2026-07-22 | Delivery Evidence Worker/DAG | 9 passed，5 个真实 PostgreSQL 用例待外部数据库执行；覆盖真实 FFprobe、规范报告、连续镜头与五阶段 DAG |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 152 passed，5 skipped；仅保留 Starlette TestClient 上游弃用提示 |
+| 2026-07-22 | `uv sync --all-packages` | 外部 Codex 用量授权限制阻止访问 uv cache；既有 `.venv` 测试通过，锁文件同步待权限恢复 |

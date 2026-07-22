@@ -8,6 +8,7 @@ dependencies = [
   "vtv-assembly",
   "vtv-media",
   "vtv-schemas",
+  "vtv-delivery",
 ]
 
 [build-system]
@@ -18,3 +19,4 @@ build-backend = "hatchling.build"
 vtv-assembly = { workspace = true }
 vtv-media = { workspace = true }
 vtv-schemas = { workspace = true }
+vtv-delivery = { workspace = true }

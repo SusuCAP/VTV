@@ -120,6 +120,27 @@ def _setup():
         "end_seconds": 2.0,
         "duration_seconds": 1.0,
     }
+    leading_shot_id = uuid4()
+    trailing_shot_id = uuid4()
+    repository._lipsync_shots[leading_shot_id] = {
+        "id": leading_shot_id,
+        "episode_id": episode_id,
+        "shot_no": 1,
+        "start_seconds": 0.0,
+        "end_seconds": 1.0,
+        "duration_seconds": 1.0,
+        "route": "L0",
+    }
+    repository._lipsync_shots[shot_id]["shot_no"] = 2
+    repository._lipsync_shots[trailing_shot_id] = {
+        "id": trailing_shot_id,
+        "episode_id": episode_id,
+        "shot_no": 3,
+        "start_seconds": 2.0,
+        "end_seconds": 3.0,
+        "duration_seconds": 1.0,
+        "route": "L0",
+    }
     picture_group = _adopted_group(
         project_id, "LIPSYNC", picture_id, shot_id=shot_id
     )
@@ -167,7 +188,7 @@ def _setup():
     return repository, client, project, payload, picture_group, dialogue_group
 
 
-def test_assembly_job_builds_four_stage_authoritative_dag_idempotently() -> None:
+def test_assembly_job_builds_delivery_ready_dag_idempotently() -> None:
     repository, client, project, payload, _, _ = _setup()
     try:
         accepted = client.post(
@@ -186,6 +207,7 @@ def test_assembly_job_builds_four_stage_authoritative_dag_idempotently() -> None
             "SUBTITLE_RENDER",
             "AUDIO_MIX",
             "ASSEMBLE_EPISODE",
+            "DELIVERY_EVIDENCE",
         ]
         assert params[0]["picture_conform_request"]["edits"][0]["start_seconds"] == 1
         assert {item["role"] for item in params[2]["audio_mix_request"]["tracks"]} == {
@@ -195,6 +217,7 @@ def test_assembly_job_builds_four_stage_authoritative_dag_idempotently() -> None
         assert params[2]["audio_mix_request"]["preset"]["integrated_lufs"] == -16
         assert params[3]["episode_assembly_template"]["width"] == 320
         assert params[3]["episode_assembly_template"]["burn_subtitles"] is True
+        assert len(params[4]["delivery_evidence_template"]["shots"]) == 3
     finally:
         client.close()
 

@@ -103,6 +103,7 @@ def _setup() -> tuple[TestClient, MemoryRepository, UUID, UUID, dict[str, UUID]]
             },
         },
     )
+    delivery_evidence = repository._lipsync_assets[ids["master"]]["metadata"]
     repository._lipsync_assets[ids["subtitle"]] = _asset(
         ids["subtitle"],
         project_id,
@@ -119,6 +120,7 @@ def _setup() -> tuple[TestClient, MemoryRepository, UUID, UUID, dict[str, UUID]]
         digest="d" * 64,
         content_type="application/json",
         metadata={
+            **delivery_evidence,
             "qc": [
                 {
                     "metric_name": "master_duration",

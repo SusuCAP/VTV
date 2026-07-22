@@ -17,6 +17,7 @@ from vtv_assembly import (
     render_srt,
     render_vtt,
 )
+from vtv_delivery import DeliveryEvidenceRequest, QcEvidence
 from vtv_media import probe_media
 from vtv_media.process import run_media_process
 from vtv_schemas.jobs import AssetRef, DomainArtifact, StageJob, StageResult, VariantResult
@@ -36,6 +37,8 @@ class AssembleWorker:
             return self._assemble(job)
         if job.stage_type == "PICTURE_CONFORM":
             return self._picture_conform(job)
+        if job.stage_type == "DELIVERY_EVIDENCE":
+            return self._delivery_evidence(job)
         raise ValueError(f"unsupported assemble stage: {job.stage_type}")
 
     def _subtitle(self, job: StageJob) -> StageResult:
@@ -440,6 +443,108 @@ class AssembleWorker:
             request.source_video_sha256,
         )
 
+    def _delivery_evidence(self, job: StageJob) -> StageResult:
+        try:
+            request = DeliveryEvidenceRequest.model_validate(
+                job.params["delivery_evidence_request"]
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                "DELIVERY_EVIDENCE requires a valid delivery_evidence_request"
+            ) from exc
+        if len(job.input_assets) != 1:
+            raise ValueError("DELIVERY_EVIDENCE requires exactly one master asset")
+        master = job.input_assets[0]
+        if master.sha256 != request.master_video_sha256 or not master.media_type.startswith(
+            "video/"
+        ):
+            raise ValueError("DELIVERY_EVIDENCE input must be the declared master video")
+        probe = probe_media(_local_path(master.uri))
+        duration_ms = round(probe.duration_seconds * 1000)
+        if abs(duration_ms - request.duration_ms) > 50:
+            raise ValueError("delivery master duration differs from episode by more than 50 ms")
+        video = probe.video_streams[0]
+        if not probe.audio_streams:
+            raise ValueError("delivery master is missing an audio stream")
+        measured_qc = (
+            QcEvidence(
+                metric_name="master_duration",
+                metric_version="vtv.delivery.v1",
+                evaluator_release="ffprobe",
+                score=1,
+                verdict="PASS",
+            ),
+            QcEvidence(
+                metric_name="master_stream_integrity",
+                metric_version="vtv.delivery.v1",
+                evaluator_release="ffprobe",
+                score=1,
+                verdict="PASS",
+            ),
+        )
+        qc = (*request.qc, *measured_qc)
+        final_encoding = {
+            **request.final_encoding,
+            "duration_ms": duration_ms,
+            "width": video.width,
+            "height": video.height,
+            "fps": video.frame_rate,
+            "video_codec": video.codec_name,
+            "audio_codec": probe.audio_streams[0].codec_name,
+        }
+        quality = {
+            "schema_version": "vtv.quality-report.v1",
+            "source_video_sha256": request.source_video_sha256,
+            "master_video_sha256": request.master_video_sha256,
+            "project_state_version": request.project_state_version,
+            "qc": [item.model_dump(mode="json") for item in qc],
+            "edit_chain": [item.model_dump(mode="json") for item in request.edit_chain],
+            "models": [item.model_dump(mode="json") for item in request.models],
+            "cost": request.cost.model_dump(mode="json"),
+            "final_encoding": final_encoding,
+        }
+        shot_list = {
+            "schema_version": "vtv.shot-list.v1",
+            "source_video_sha256": request.source_video_sha256,
+            "master_video_sha256": request.master_video_sha256,
+            "duration_ms": request.duration_ms,
+            "shots": [item.model_dump(mode="json") for item in request.shots],
+        }
+        output_directory = _local_path(job.output_prefix)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        quality_path = output_directory / "quality-report.json"
+        shots_path = output_directory / "shot-list.json"
+        _atomic_write(quality_path, _canonical_json(quality))
+        _atomic_write(shots_path, _canonical_json(shot_list))
+        quality_asset = _asset(quality_path, "application/json", quality)
+        shots_asset = _asset(shots_path, "application/json", shot_list)
+        return StageResult(
+            stage_run_id=job.stage_run_id,
+            stage_attempt_id=job.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=1,
+                    output_assets=[quality_asset, shots_asset],
+                )
+            ],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="QUALITY_REPORT",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=quality_asset.sha256,
+                    payload=quality,
+                ),
+                DomainArtifact(
+                    document_type="DELIVERY_SHOT_LIST",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=shots_asset.sha256,
+                    payload=shot_list,
+                ),
+            ],
+            attempt_usage={"worker": "assemble", "local": True},
+        )
+
 
 def _result(
     job: StageJob,
@@ -501,6 +606,16 @@ def _atomic_write(path: Path, content: bytes) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _canonical_json(value: dict) -> bytes:
+    content = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"{content}\n".encode()
 
 
 def _render_subtitle_overlays(

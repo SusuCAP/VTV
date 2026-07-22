@@ -559,6 +559,7 @@ async def test_episode_assembly_job_persists_authoritative_four_stage_dag(
         ProjectCreate(name="Assembly SQL", target_market="US", locale="en-US"),
     )
     source_id, episode_id, shot_id = UUID(int=702), UUID(int=703), UUID(int=704)
+    leading_shot_id, trailing_shot_id = UUID(int=714), UUID(int=715)
     picture_asset_id, dialogue_asset_id, stem_asset_id = (
         UUID(int=705),
         UUID(int=706),
@@ -626,13 +627,31 @@ async def test_episode_assembly_job_persists_authoritative_four_stage_dag(
                 source_asset_id=source_id,
             )
         )
-        session.add(
-            Shot(
-                id=shot_id,
-                episode_id=episode_id,
-                shot_no=1,
-                start_ms=1000,
-                end_ms=2000,
+        session.add_all(
+            (
+                Shot(
+                    id=leading_shot_id,
+                    episode_id=episode_id,
+                    shot_no=1,
+                    start_ms=0,
+                    end_ms=1000,
+                    route="L0",
+                ),
+                Shot(
+                    id=shot_id,
+                    episode_id=episode_id,
+                    shot_no=2,
+                    start_ms=1000,
+                    end_ms=2000,
+                ),
+                Shot(
+                    id=trailing_shot_id,
+                    episode_id=episode_id,
+                    shot_no=3,
+                    start_ms=2000,
+                    end_ms=3000,
+                    route="L0",
+                ),
             )
         )
         session.add_all(
@@ -759,10 +778,11 @@ async def test_episode_assembly_job_persists_authoritative_four_stage_dag(
         "SUBTITLE_RENDER",
         "AUDIO_MIX",
         "ASSEMBLE_EPISODE",
+        "DELIVERY_EVIDENCE",
     }
     assert sum(item.status == "READY" for item in runs) == 3
-    assert sum(item.status == "PENDING" for item in runs) == 1
-    assert dependency_count == 3
+    assert sum(item.status == "PENDING" for item in runs) == 2
+    assert dependency_count == 4
 
 
 async def test_delivery_release_persists_manifest_and_outbox_atomically(
@@ -783,6 +803,24 @@ async def test_delivery_release_persists_manifest_and_outbox_atomically(
         UUID(int=807),
     )
     stage_id = UUID(int=808)
+    delivery_evidence = {
+        "edit_chain": [
+            {
+                "stage_run_id": str(stage_id),
+                "stage_type": "ASSEMBLE_EPISODE",
+                "input_sha256s": ["a" * 64],
+                "output_sha256s": ["b" * 64],
+                "parameters_sha256": "f" * 64,
+            }
+        ],
+        "models": [],
+        "cost": {
+            "currency": "USD",
+            "total": "1.000000",
+            "by_stage": {"ASSEMBLE_EPISODE": "1.000000"},
+        },
+        "final_encoding": {"video_codec": "h264", "audio_codec": "aac"},
+    }
 
     def asset(
         asset_id: UUID,
@@ -811,24 +849,7 @@ async def test_delivery_release_persists_manifest_and_outbox_atomically(
                     "s3://deliveries/master.mp4",
                     "b" * 64,
                     "video/mp4",
-                    {
-                        "edit_chain": [
-                            {
-                                "stage_run_id": str(stage_id),
-                                "stage_type": "ASSEMBLE_EPISODE",
-                                "input_sha256s": ["a" * 64],
-                                "output_sha256s": ["b" * 64],
-                                "parameters_sha256": "f" * 64,
-                            }
-                        ],
-                        "models": [],
-                        "cost": {
-                            "currency": "USD",
-                            "total": "1.000000",
-                            "by_stage": {"ASSEMBLE_EPISODE": "1.000000"},
-                        },
-                        "final_encoding": {"video_codec": "h264", "audio_codec": "aac"},
-                    },
+                    delivery_evidence,
                 ),
                 asset(
                     subtitle_id,
@@ -842,6 +863,7 @@ async def test_delivery_release_persists_manifest_and_outbox_atomically(
                     "d" * 64,
                     "application/json",
                     {
+                        **delivery_evidence,
                         "qc": [
                             {
                                 "metric_name": "master_duration",

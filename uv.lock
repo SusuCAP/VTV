@@ -1478,6 +1478,7 @@ source = { editable = "workers/assemble" }
 dependencies = [
     { name = "pillow" },
     { name = "vtv-assembly" },
+    { name = "vtv-delivery" },
     { name = "vtv-media" },
     { name = "vtv-schemas" },
 ]
@@ -1486,6 +1487,7 @@ dependencies = [
 requires-dist = [
     { name = "pillow", specifier = ">=11.1.0" },
     { name = "vtv-assembly", editable = "packages/assembly" },
+    { name = "vtv-delivery", editable = "packages/delivery" },
     { name = "vtv-media", editable = "packages/media" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]

@@ -210,3 +210,30 @@ class DeliveryRead(BaseModel):
     approved_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class DeliveryEvidenceRequest(BaseModel):
+    source_video_sha256: str = Field(pattern=SHA256_PATTERN)
+    master_video_sha256: str = Field(pattern=SHA256_PATTERN)
+    project_state_version: int = Field(ge=1)
+    duration_ms: int = Field(gt=0)
+    edit_chain: tuple[EditStageEvidence, ...] = Field(min_length=1)
+    models: tuple[ModelEvidence, ...] = ()
+    qc: tuple[QcEvidence, ...] = ()
+    shots: tuple[ShotDeliveryEntry, ...] = Field(min_length=1)
+    cost: CostSummary
+    final_encoding: dict
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> DeliveryEvidenceRequest:
+        if [shot.shot_no for shot in self.shots] != list(range(1, len(self.shots) + 1)):
+            raise ValueError("shot numbers must be contiguous from one")
+        if self.shots[0].start_ms != 0 or self.shots[-1].end_ms != self.duration_ms:
+            raise ValueError("shot list must span the full episode")
+        for previous, current in zip(self.shots, self.shots[1:], strict=False):
+            if previous.end_ms != current.start_ms:
+                raise ValueError("shot list must be contiguous and non-overlapping")
+        output_hashes = {value for stage in self.edit_chain for value in stage.output_sha256s}
+        if self.master_video_sha256 not in output_hashes:
+            raise ValueError("master must be traceable to edit chain outputs")
+        return self

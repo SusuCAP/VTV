@@ -212,27 +212,25 @@ def _build_delivery_manifest(
     approved_at: datetime,
     c2pa_requested: bool,
 ) -> dict:
-    master = next(asset for role, asset in selected_assets if role == "MASTER_VIDEO")
     quality_report = next(asset for role, asset in selected_assets if role == "QUALITY_REPORT")
     shot_list = next(asset for role, asset in selected_assets if role == "SHOT_LIST")
-    master_metadata = master.get("metadata", {})
     quality_metadata = quality_report.get("metadata", {})
     shot_metadata = shot_list.get("metadata", {})
     try:
         edit_chain = tuple(
             EditStageEvidence.model_validate(value)
-            for value in master_metadata["edit_chain"]
+            for value in quality_metadata["edit_chain"]
         )
         models = tuple(
             ModelEvidence.model_validate(value)
-            for value in master_metadata.get("models", [])
+            for value in quality_metadata.get("models", [])
         )
         qc = tuple(QcEvidence.model_validate(value) for value in quality_metadata["qc"])
         shots = tuple(
             ShotDeliveryEntry.model_validate(value) for value in shot_metadata["shots"]
         )
-        cost = CostSummary.model_validate(master_metadata["cost"])
-        final_encoding = dict(master_metadata["final_encoding"])
+        cost = CostSummary.model_validate(quality_metadata["cost"])
+        final_encoding = dict(quality_metadata["final_encoding"])
     except (KeyError, TypeError, ValueError) as exc:
         raise DeliveryConflictError("delivery evidence metadata is incomplete") from exc
 
@@ -1821,13 +1819,79 @@ class SqlAlchemyProjectRepository:
                 sidecar_formats.insert(0, "srt")
             if not sidecar_formats:
                 sidecar_formats = ["srt"]
+            episode_shots = list(
+                await session.scalars(
+                    select(Shot)
+                    .where(Shot.episode_id == episode.id)
+                    .order_by(Shot.shot_no)
+                )
+            )
+            if (
+                not episode_shots
+                or episode_shots[0].start_ms != 0
+                or episode_shots[-1].end_ms != round(duration * 1000)
+                or any(
+                    previous.end_ms != current.start_ms
+                    for previous, current in zip(
+                        episode_shots, episode_shots[1:], strict=False
+                    )
+                )
+            ):
+                raise ProductionNotReadyError(
+                    "delivery shot list must continuously span the full episode"
+                )
+            selected_by_shot = {
+                shot.id: (variant, asset)
+                for shot, variant, asset in resolved_pictures
+            }
+            delivery_shots = []
+            for shot in episode_shots:
+                selection = selected_by_shot.get(shot.id)
+                route = shot.route if shot.route in {"L0", "L1", "L2", "L3", "L4", "L5"} else None
+                delivery_shots.append(
+                    {
+                        "shot_id": str(shot.id),
+                        "shot_no": shot.shot_no,
+                        "start_ms": shot.start_ms,
+                        "end_ms": shot.end_ms,
+                        "route": route or ("L2" if selection else "L0"),
+                        "adopted_variant_id": str(selection[0].id) if selection else None,
+                        "output_asset_id": str(selection[1].id) if selection else None,
+                        "qc_verdict": "PASS" if selection else "SOURCE_UNCHANGED",
+                    }
+                )
+            selected_variant_ids = {
+                item.adopted_variant_id for item in payload.picture_selections
+            } | {
+                item.adopted_variant_id for item in payload.dialogue_selections
+            }
+            qc_rows = list(
+                await session.scalars(
+                    select(QcResult).where(
+                        QcResult.render_variant_id.in_(selected_variant_ids),
+                        QcResult.verdict.in_(("PASS", "REVIEW")),
+                        QcResult.hard_failure.is_(False),
+                    )
+                )
+            )
+            delivery_qc = [
+                {
+                    "metric_name": item.metric_name,
+                    "metric_version": item.metric_version,
+                    "evaluator_release": item.evaluator_release,
+                    "score": item.score,
+                    "verdict": item.verdict,
+                    "hard_failure": item.hard_failure,
+                }
+                for item in qc_rows
+            ]
             job = Job(
                 id=self._id_factory(),
                 project_id=project_id,
                 kind="EPISODE_ASSEMBLY",
                 status=JobStatus.QUEUED,
                 idempotency_key=idempotency_key,
-                total_stages=4,
+                total_stages=5,
             )
             picture = StageRun(
                 id=self._id_factory(),
@@ -1914,8 +1978,28 @@ class SqlAlchemyProjectRepository:
                     }
                 },
             )
+            evidence = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=project_id,
+                episode_id=episode.id,
+                stage_type="DELIVERY_EVIDENCE",
+                status="PENDING",
+                idempotency_key=f"{job.id}:delivery-evidence",
+                runtime_profile_id="cpu-assemble",
+                observed_control_version=control.control_version,
+                params={
+                    "delivery_evidence_template": {
+                        "source_video_sha256": source.sha256,
+                        "project_state_version": project.state_version + 1,
+                        "duration_ms": round(duration * 1000),
+                        "shots": delivery_shots,
+                        "qc": delivery_qc,
+                    }
+                },
+            )
             session.add(job)
-            session.add_all((picture, subtitle, mix, master))
+            session.add_all((picture, subtitle, mix, master, evidence))
             session.add_all(
                 (
                     StageDependency(
@@ -1929,6 +2013,10 @@ class SqlAlchemyProjectRepository:
                     StageDependency(
                         stage_run_id=master.id,
                         depends_on_stage_run_id=mix.id,
+                    ),
+                    StageDependency(
+                        stage_run_id=evidence.id,
+                        depends_on_stage_run_id=master.id,
                     ),
                 )
             )

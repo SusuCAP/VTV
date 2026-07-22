@@ -31,3 +31,14 @@ state version 与 C2PA 请求，不接受客户端 Manifest。数据库创建 `D
 
 `GET /v1/deliveries/{delivery_id}` 与项目级列表接口按 Workspace 隔离返回草稿或已批准版本。Episode
 版本号单调递增，旧版本不覆盖；后续 C2PA 或撤销流程沿用同一不可变版本边界。
+
+## Evidence 资产生成
+
+`DELIVERY_EVIDENCE` 是 Episode Assembly 的第五个 Stage，依赖已完成 Master。Scheduler 从实际 Stage
+Run、依赖资产、显式输入、Model Release/批准 Benchmark、Render Variant seed、Stage Attempt cost 与
+provider usage 构建 request；VTT 等未参与 Master mux 的 sidecar 不会被误记为编码输入。
+
+Worker 使用 FFprobe 再次验证 Master 的时长、视频流和音轨，确定性输出 `quality-report.json` 与
+`shot-list.json`。报告包含 evaluator/metric version、编辑链、模型、成本和最终实测编码；镜头清单必须
+从 0 连续覆盖完整 Episode，并记录 route、adopted Variant、输出 Asset 与 QC 结论。这两个 JSON 及其
+metadata 使用同一强类型内容，随后可直接进入 Delivery Draft，不需要客户端补写证据。

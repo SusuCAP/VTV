@@ -883,6 +883,56 @@ class MemoryRepository:
         formats = [item for item in project.output.subtitle_formats if item in {"srt", "vtt"}]
         if payload.burn_subtitles and "srt" not in formats:
             formats.insert(0, "srt")
+        with self._lock:
+            episode_shots = sorted(
+                (
+                    value
+                    for value in self._lipsync_shots.values()
+                    if value.get("episode_id") == episode.id
+                ),
+                key=lambda value: float(value["start_seconds"]),
+            )
+        if (
+            not episode_shots
+            or abs(float(episode_shots[0]["start_seconds"])) > 0.001
+            or abs(float(episode_shots[-1]["end_seconds"]) - duration) > 0.001
+            or any(
+                abs(float(previous["end_seconds"]) - float(current["start_seconds"]))
+                > 0.001
+                for previous, current in zip(
+                    episode_shots, episode_shots[1:], strict=False
+                )
+            )
+        ):
+            raise ProductionNotReadyError(
+                "delivery shot list must continuously span the full episode"
+            )
+        selection_by_shot = {
+            item.shot_id: item.adopted_variant_id for item in payload.picture_selections
+        }
+        picture_asset_by_shot = {item[0]["id"]: item[1] for item in picture_assets}
+        delivery_shots = []
+        for shot_no, shot in enumerate(episode_shots, 1):
+            shot_id = shot["id"]
+            variant_id = selection_by_shot.get(shot_id)
+            selected_asset = picture_asset_by_shot.get(shot_id)
+            route = shot.get("route")
+            if route not in {"L0", "L1", "L2", "L3", "L4", "L5"}:
+                route = "L2" if variant_id else "L0"
+            delivery_shots.append(
+                {
+                    "shot_id": str(shot_id),
+                    "shot_no": shot.get("shot_no", shot_no),
+                    "start_ms": round(float(shot["start_seconds"]) * 1000),
+                    "end_ms": round(float(shot["end_seconds"]) * 1000),
+                    "route": route,
+                    "adopted_variant_id": str(variant_id) if variant_id else None,
+                    "output_asset_id": (
+                        str(selected_asset["id"]) if selected_asset is not None else None
+                    ),
+                    "qc_verdict": "PASS" if variant_id else "SOURCE_UNCHANGED",
+                }
+            )
         output = project.output
         stage_params = [
             {
@@ -929,6 +979,16 @@ class MemoryRepository:
                     "subtitle_document": subtitle_document,
                 },
             },
+            {
+                "stage_type": "DELIVERY_EVIDENCE",
+                "delivery_evidence_template": {
+                    "source_video_sha256": source["sha256"],
+                    "project_state_version": project.state_version + 1,
+                    "duration_ms": round(duration * 1000),
+                    "shots": delivery_shots,
+                    "qc": [],
+                },
+            },
         ]
         job = JobRead(
             id=uuid4(),
@@ -936,7 +996,7 @@ class MemoryRepository:
             kind="EPISODE_ASSEMBLY",
             status=JobStatus.QUEUED,
             progress=0,
-            total_stages=4,
+            total_stages=5,
             completed_stages=0,
         )
         with self._lock:

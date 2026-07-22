@@ -1,5 +1,8 @@
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
+from hashlib import sha256
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
@@ -9,8 +12,10 @@ from vtv_db.models import (
     AnalysisDocument,
     ArtifactRelease,
     ArtifactReleaseDependency,
+    BenchmarkRelease,
     Job,
     MediaAsset,
+    ModelRelease,
     OrphanAsset,
     OutboxEvent,
     Project,
@@ -143,6 +148,17 @@ class Scheduler:
                 params = {
                     **claim.params,
                     "episode_assembly_request": request,
+                }
+            elif claim.stage_type == "DELIVERY_EVIDENCE":
+                template = claim.params.get("delivery_evidence_template")
+                if not isinstance(template, dict):
+                    raise ValueError("DELIVERY_EVIDENCE is missing its immutable template")
+                assets, request = await _resolve_delivery_evidence(
+                    session, claim, assets, template
+                )
+                params = {
+                    **claim.params,
+                    "delivery_evidence_request": request,
                 }
         return StageJob(
             stage_run_id=claim.stage_run_id,
@@ -527,6 +543,179 @@ async def _rights_commit_failure(
     if request.get("commercial_use", True) and release.commercial_scope != "COMMERCIAL":
         return "COMMERCIAL_USE_NOT_ALLOWED"
     return None
+
+
+async def _resolve_delivery_evidence(
+    session: AsyncSession,
+    claim: ClaimedStage,
+    assets: list[MediaAsset],
+    template: dict,
+) -> tuple[list[MediaAsset], dict]:
+    masters = [
+        asset
+        for asset in assets
+        if asset.metadata_json.get("stage_type") == "ASSEMBLE_EPISODE"
+        and asset.content_type.startswith("video/")
+    ]
+    if len(masters) != 1:
+        raise ValueError("DELIVERY_EVIDENCE requires exactly one episode master")
+    if claim.job_id is None:
+        raise ValueError("DELIVERY_EVIDENCE must belong to an assembly job")
+    runs = list(
+        await session.scalars(
+            select(StageRun)
+            .where(
+                StageRun.job_id == claim.job_id,
+                StageRun.id != claim.stage_run_id,
+                StageRun.status == "COMPLETED",
+            )
+            .order_by(StageRun.created_at, StageRun.id)
+        )
+    )
+    if not runs or not any(run.stage_type == "ASSEMBLE_EPISODE" for run in runs):
+        raise ValueError("delivery evidence requires a completed assembly chain")
+    run_ids = [run.id for run in runs]
+    output_assets = list(
+        await session.scalars(
+            select(MediaAsset).where(MediaAsset.source_stage_run_id.in_(run_ids))
+        )
+    )
+    outputs_by_run: dict[UUID, list[MediaAsset]] = {}
+    for asset in output_assets:
+        assert asset.source_stage_run_id is not None
+        outputs_by_run.setdefault(asset.source_stage_run_id, []).append(asset)
+    dependency_rows = (
+        await session.execute(
+            select(
+                StageDependency.stage_run_id,
+                StageDependency.depends_on_stage_run_id,
+            ).where(StageDependency.stage_run_id.in_(run_ids))
+        )
+    ).all()
+    dependencies: dict[UUID, set[UUID]] = {}
+    for stage_run_id, dependency_id in dependency_rows:
+        dependencies.setdefault(stage_run_id, set()).add(dependency_id)
+    edit_chain: list[dict] = []
+    for run in runs:
+        outputs = outputs_by_run.get(run.id, [])
+        if not outputs:
+            raise ValueError(f"completed stage {run.stage_type} has no committed outputs")
+        dependency_assets = [
+            asset
+            for dependency_id in dependencies.get(run.id, set())
+            for asset in outputs_by_run.get(dependency_id, [])
+        ]
+        if run.stage_type == "ASSEMBLE_EPISODE":
+            assembly_template = run.params.get("episode_assembly_template")
+            if not isinstance(assembly_template, dict):
+                raise ValueError("delivery edit chain has invalid assembly template")
+            selected_inputs, _ = _resolve_assembly_inputs(
+                dependency_assets, assembly_template
+            )
+            input_hashes = {asset.sha256 for asset in selected_inputs}
+        else:
+            input_hashes = {asset.sha256 for asset in dependency_assets}
+        explicit_ids = [UUID(value) for value in run.params.get("input_asset_ids", [])]
+        if explicit_ids:
+            explicit_assets = list(
+                await session.scalars(
+                    select(MediaAsset).where(
+                        MediaAsset.id.in_(explicit_ids),
+                        MediaAsset.workspace_id == claim.workspace_id,
+                        MediaAsset.project_id == claim.project_id,
+                    )
+                )
+            )
+            if {asset.id for asset in explicit_assets} != set(explicit_ids):
+                raise ValueError("delivery edit chain has missing explicit inputs")
+            input_hashes.update(asset.sha256 for asset in explicit_assets)
+        canonical_params = json.dumps(
+            run.params,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        edit_chain.append(
+            {
+                "stage_run_id": str(run.id),
+                "stage_type": run.stage_type,
+                "input_sha256s": sorted(input_hashes),
+                "output_sha256s": sorted(asset.sha256 for asset in outputs),
+                "parameters_sha256": sha256(canonical_params.encode()).hexdigest(),
+            }
+        )
+    models: list[dict] = []
+    for model_release_id in sorted(
+        {run.model_release_id for run in runs if run.model_release_id is not None},
+        key=str,
+    ):
+        release = await session.get(ModelRelease, model_release_id)
+        benchmark = (
+            await session.get(BenchmarkRelease, release.approved_benchmark_release_id)
+            if release is not None and release.approved_benchmark_release_id is not None
+            else None
+        )
+        if release is None or benchmark is None or not benchmark.approved:
+            raise ValueError("delivery model provenance requires an approved benchmark")
+        seeds = list(
+            await session.scalars(
+                select(RenderVariant.seed).where(
+                    RenderVariant.stage_run_id.in_(
+                        [run.id for run in runs if run.model_release_id == model_release_id]
+                    ),
+                    RenderVariant.seed.is_not(None),
+                )
+            )
+        )
+        models.append(
+            {
+                "model_release_id": str(release.id),
+                "model_key": release.model_key,
+                "release_name": release.release_name,
+                "weights_sha256": benchmark.weights_sha256,
+                "seed": seeds[0] if len(set(seeds)) == 1 else None,
+            }
+        )
+    attempts = list(
+        await session.scalars(
+            select(StageAttempt).where(StageAttempt.stage_run_id.in_(run_ids))
+        )
+    )
+    run_by_id = {run.id: run for run in runs}
+    by_stage: dict[str, Decimal] = {}
+    provider_usage: list[dict] = []
+    for attempt in attempts:
+        cost = attempt.cost_usd or Decimal()
+        stage_type = run_by_id[attempt.stage_run_id].stage_type
+        by_stage[stage_type] = by_stage.get(stage_type, Decimal()) + cost
+        if attempt.usage:
+            provider_usage.append(
+                {
+                    "stage_run_id": str(attempt.stage_run_id),
+                    "attempt_no": attempt.attempt_no,
+                    "usage": attempt.usage,
+                    "cost_usd": str(cost),
+                }
+            )
+    master = masters[0]
+    request = {
+        "source_video_sha256": template["source_video_sha256"],
+        "master_video_sha256": master.sha256,
+        "project_state_version": template["project_state_version"],
+        "duration_ms": template["duration_ms"],
+        "edit_chain": edit_chain,
+        "models": models,
+        "qc": template.get("qc", []),
+        "shots": template["shots"],
+        "cost": {
+            "currency": "USD",
+            "total": str(sum(by_stage.values(), Decimal())),
+            "by_stage": {key: str(value) for key, value in sorted(by_stage.items())},
+            "provider_usage": provider_usage,
+        },
+        "final_encoding": master.metadata_json,
+    }
+    return [master], request
 
 
 def _resolve_assembly_inputs(
