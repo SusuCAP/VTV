@@ -18,6 +18,7 @@ def test_project_analysis_dag_is_topologically_valid() -> None:
         "synthesis",
     ]
     assert PROJECT_ANALYSIS_DAG[-1].depends_on == ("asr", "vision")
+    assert PROJECT_ANALYSIS_DAG[4].depends_on == ("proxy", "shots")
 
 
 def test_dag_rejects_forward_dependency() -> None:

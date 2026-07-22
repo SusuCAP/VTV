@@ -14,7 +14,7 @@ PROJECT_ANALYSIS_DAG: tuple[StageDefinition, ...] = (
     StageDefinition("proxy", "PROXY_GENERATE", "cpu-media", ("ingest",)),
     StageDefinition("shots", "SHOT_DETECT", "gpu-analysis-light", ("proxy",)),
     StageDefinition("asr", "ASR_ALIGN", "gpu-audio", ("proxy",)),
-    StageDefinition("vision", "VISION_ANALYSIS", "gpu-analysis", ("shots",)),
+    StageDefinition("vision", "VISION_ANALYSIS", "gpu-analysis", ("proxy", "shots")),
     StageDefinition(
         "synthesis",
         "PROJECT_SYNTHESIS",

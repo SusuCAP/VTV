@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 29% | 音频 Worker 与人物/场景/OCR/几何 Adapter 契约 |
+| Phase 2 全剧分析 | 进行中 | 34% | 可执行音频/视觉分析 Worker 与模型 Adapter 边界 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -69,13 +69,16 @@
 - [x] 统一视觉观察时间轴与 `[0,1]` 空间坐标，拒绝媒体越界和画框溢出。
 - [x] 保留 embedding 资产引用、人脸可见性、OCR script、主体/保护区域与相机运动字段。
 - [x] 实现四类确定性视觉 Adapter 和聚合 Pipeline，支持无模型合同验证。
+- [x] 修正分析 DAG，使 `VISION_ANALYSIS` 同时消费代理视频和镜头清单。
+- [x] 实现 `VISION_ANALYSIS` Worker，严格校验媒体类型、镜头连续性和时长覆盖。
+- [x] 输出人物、场景、OCR、几何结果，并记录四类模型 release provenance。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add vision analysis stage worker`
+`feat: add project synthesis domain contracts`
 
-下一步接入镜头清单与 `VISION_ANALYSIS` Stage Worker，输出带四类模型 release 的结构化视觉资产。
+下一步建立 Localization Bible、Anchor Pack 与 Continuity Snapshot 的版本化领域契约和合成规则。
 
 ## 决策日志
 
@@ -123,3 +126,5 @@
 | 2026-07-22 | `pytest` | 32 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 视觉分析 Adapter 合同测试 | 3 passed；覆盖聚合输出、空间框溢出和媒体时间越界拒绝 |
 | 2026-07-22 | `pytest` | 35 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | VISION_ANALYSIS Worker 组件测试 | 1 passed；真实合成视频与连续镜头清单，校验视觉结果及 release |
+| 2026-07-22 | `pytest` | 36 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

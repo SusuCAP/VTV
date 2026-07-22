@@ -8,7 +8,13 @@ from vtv_analysis import (
     AudioAnalysisPipeline,
     DeterministicAsr,
     DeterministicDiarization,
+    DeterministicGeometryAdapter,
+    DeterministicOcrAdapter,
+    DeterministicPersonAdapter,
+    DeterministicSceneAdapter,
     DeterministicVad,
+    ShotSpan,
+    VisionAnalysisPipeline,
 )
 from vtv_media import extract_audio, probe_media
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
@@ -43,8 +49,18 @@ class AnalysisWorker:
             diarization=DeterministicDiarization(),
         )
     )
+    vision_pipeline: VisionAnalysisPipeline = field(
+        default_factory=lambda: VisionAnalysisPipeline(
+            people=DeterministicPersonAdapter(),
+            scenes=DeterministicSceneAdapter(),
+            ocr=DeterministicOcrAdapter(),
+            geometry=DeterministicGeometryAdapter(),
+        )
+    )
 
     def execute(self, job: StageJob) -> StageResult:
+        if job.stage_type == "VISION_ANALYSIS":
+            return self._execute_vision(job)
         if job.stage_type != "ASR_ALIGN":
             raise ValueError(f"unsupported analysis stage: {job.stage_type}")
         if not job.input_assets:
@@ -93,6 +109,79 @@ class AnalysisWorker:
                         "speech_segments": len(analysis.speech),
                         "transcript_segments": len(analysis.transcript),
                         "speaker_turns": len(analysis.speakers),
+                        "model_releases": releases,
+                    },
+                )
+            ],
+            attempt_usage={"worker": "analysis", "local": True},
+        )
+
+    def _execute_vision(self, job: StageJob) -> StageResult:
+        video_assets = [
+            asset for asset in job.input_assets if asset.media_type.startswith("video/")
+        ]
+        json_assets = [
+            asset for asset in job.input_assets if asset.media_type == "application/json"
+        ]
+        if len(video_assets) != 1 or len(json_assets) != 1:
+            raise ValueError("VISION_ANALYSIS requires one video asset and one shots JSON asset")
+        video = _local_path(video_assets[0].uri)
+        shots_path = _local_path(json_assets[0].uri)
+        probe = probe_media(video)
+        raw_shots = json.loads(shots_path.read_text(encoding="utf-8"))["shots"]
+        shots = tuple(
+            ShotSpan(
+                shot_no=int(item["shot_no"]),
+                start_seconds=float(item["start_seconds"]),
+                end_seconds=float(item["end_seconds"]),
+            )
+            for item in raw_shots
+        )
+        if not shots:
+            raise ValueError("VISION_ANALYSIS shots list cannot be empty")
+        if shots[0].start_seconds != 0 or any(
+            current.end_seconds != following.start_seconds
+            for current, following in zip(shots, shots[1:], strict=False)
+        ):
+            raise ValueError("VISION_ANALYSIS shots must form a continuous timeline from zero")
+        if abs(shots[-1].end_seconds - probe.duration_seconds) > 0.05:
+            raise ValueError("VISION_ANALYSIS shots do not cover media duration")
+
+        analysis = self.vision_pipeline.analyze(
+            video.resolve().as_uri(), probe.duration_seconds, shots
+        )
+        releases = {
+            "people": self.vision_pipeline.people.model_release,
+            "scenes": self.vision_pipeline.scenes.model_release,
+            "ocr": self.vision_pipeline.ocr.model_release,
+            "geometry": self.vision_pipeline.geometry.model_release,
+        }
+        output_directory = _local_path(job.output_prefix)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        output = output_directory / "vision-analysis.json"
+        output.write_text(
+            json.dumps(
+                {"analysis": analysis.model_dump(mode="json"), "model_releases": releases},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return StageResult(
+            stage_run_id=job.stage_run_id,
+            stage_attempt_id=job.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=1,
+                    output_assets=[_asset(output, "application/json")],
+                    raw_metrics={
+                        "worker": "analysis",
+                        "stage_type": job.stage_type,
+                        "shots": len(shots),
+                        "people": len(analysis.people),
+                        "scenes": len(analysis.scenes),
+                        "ocr_regions": len(analysis.ocr),
                         "model_releases": releases,
                     },
                 )
