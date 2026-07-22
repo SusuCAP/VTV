@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     pyannote_token_env: str = "HF_TOKEN"
     pyannote_device: str = "cuda"
     pyannote_release: str = "pyannote-community-1@unapproved"
+    qwen_vision_model_name: str = "Qwen/Qwen3-VL-8B-Instruct"
+    qwen_vision_release: str = "qwen3-vl-8b-instruct@unapproved"
+    qwen_vision_max_new_tokens: int = 8192
 
 
 @lru_cache

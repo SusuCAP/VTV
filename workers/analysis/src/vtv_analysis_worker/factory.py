@@ -1,10 +1,17 @@
 from vtv_analysis import (
     AudioAnalysisPipeline,
+    CachedVisionBackend,
     FasterWhisperAsrAdapter,
     FasterWhisperVadAdapter,
     LazyFasterWhisperBackend,
     LazyPyannoteBackend,
+    LazyQwen3VlBackend,
     PyannoteDiarizationAdapter,
+    QwenGeometryAdapter,
+    QwenOcrAdapter,
+    QwenPersonAdapter,
+    QwenSceneAdapter,
+    VisionAnalysisPipeline,
 )
 from vtv_schemas.jobs import StageJob
 
@@ -77,6 +84,8 @@ def create_analysis_worker_for_job(
     config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
     if job.stage_type == "ASR_ALIGN" and config.get("adapter_mode") == "local_models":
         return _local_model_worker(settings, config)
+    if job.stage_type == "VISION_ANALYSIS" and config.get("adapter_mode") == "qwen3_vl":
+        return _local_vision_worker(settings, config, str(runtime.get("release") or ""))
     endpoint = ModelEndpoint(
         endpoint=str(runtime.get("endpoint") or ""),
         release=str(runtime.get("release") or ""),
@@ -142,6 +151,28 @@ def _local_model_worker(settings: Settings, config: dict) -> AnalysisWorker:
     return AnalysisWorker(
         pipeline=audio,
         vision_pipeline=deterministic.vision_pipeline,
+        synthesizer=deterministic.synthesizer,
+    )
+
+
+def _local_vision_worker(settings: Settings, config: dict, release: str) -> AnalysisWorker:
+    deterministic = AnalysisWorker()
+    release = release or settings.qwen_vision_release
+    cached = CachedVisionBackend(
+        LazyQwen3VlBackend(
+            model_name=str(config.get("model_name") or settings.qwen_vision_model_name),
+            max_new_tokens=settings.qwen_vision_max_new_tokens,
+        )
+    )
+    vision = VisionAnalysisPipeline(
+        people=QwenPersonAdapter(cached, f"{release}:people"),
+        scenes=QwenSceneAdapter(cached, f"{release}:scenes"),
+        ocr=QwenOcrAdapter(cached, f"{release}:ocr"),
+        geometry=QwenGeometryAdapter(cached, f"{release}:geometry"),
+    )
+    return AnalysisWorker(
+        pipeline=deterministic.pipeline,
+        vision_pipeline=vision,
         synthesizer=deterministic.synthesizer,
     )
 

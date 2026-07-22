@@ -6,8 +6,9 @@
 - `execute_analysis_stage`：接收 JSON StageJob，执行 S3 输入物化、Analysis Worker、输出完整性
   校验和不可变 S3 回传，再返回强类型 StageResult。
 
-镜像固定 Python 3.12，安装 FFmpeg、Demucs 4.1.0、faster-whisper 1.2.1、pyannote.audio 4.0.7 和其他锁定
-Python 依赖，并仅复制运行所需 workspace 源码。分析函数使用 L4、4 CPU、16 GiB 内存、
+镜像固定 Python 3.12，安装 FFmpeg、Demucs 4.1.0、faster-whisper 1.2.1、pyannote.audio 4.0.7、
+transformers 5.14.1、qwen-vl-utils 0.0.14 和其他锁定 Python 依赖，并仅复制运行所需 workspace
+源码。分析函数使用 L4、4 CPU、16 GiB 内存、
 1 小时超时和两次平台重试。业务幂等仍由
 Stage Attempt/数据库条件提交保证，Modal 调用 ID 不作为业务 ID。
 

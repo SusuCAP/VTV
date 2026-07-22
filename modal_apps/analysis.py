@@ -26,6 +26,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .uv_pip_install(
+        "accelerate==1.14.0",
         "boto3==1.40.61",
         "demucs==4.1.0",
         "faster-whisper==1.2.1",
@@ -33,6 +34,8 @@ image = (
         "pydantic==2.12.3",
         "pydantic-settings==2.11.0",
         "pyannote.audio==4.0.7",
+        "qwen-vl-utils[decord]==0.0.14",
+        "transformers==5.14.1",
     )
     .env({"PYTHONPATH": ":".join(f"{REMOTE_ROOT}/{path}" for path in SOURCE_PATHS)})
 )

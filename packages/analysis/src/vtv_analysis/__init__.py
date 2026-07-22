@@ -24,6 +24,16 @@ from .production_audio import (
     RawTranscript,
     RawWord,
 )
+from .production_vision import (
+    CachedVisionBackend,
+    LazyQwen3VlBackend,
+    QwenGeometryAdapter,
+    QwenOcrAdapter,
+    QwenPersonAdapter,
+    QwenSceneAdapter,
+    VisionBackendOutput,
+    VisionModelBackend,
+)
 from .synthesis import (
     Anchor,
     AnchorPack,
@@ -63,6 +73,7 @@ __all__ = [
     "AudioAnalysisPipeline",
     "CharacterContinuity",
     "CharacterProfile",
+    "CachedVisionBackend",
     "ContinuitySnapshot",
     "DeterministicAsr",
     "DeterministicDiarization",
@@ -84,6 +95,7 @@ __all__ = [
     "LocationProfile",
     "LazyFasterWhisperBackend",
     "LazyPyannoteBackend",
+    "LazyQwen3VlBackend",
     "NormalizedBox",
     "OcrAdapter",
     "OcrObservation",
@@ -95,6 +107,10 @@ __all__ = [
     "RawSpeech",
     "RawTranscript",
     "RawWord",
+    "QwenGeometryAdapter",
+    "QwenOcrAdapter",
+    "QwenPersonAdapter",
+    "QwenSceneAdapter",
     "SceneAdapter",
     "SceneObservation",
     "ShotSpan",
@@ -106,4 +122,6 @@ __all__ = [
     "VadAdapter",
     "VisionAnalysis",
     "VisionAnalysisPipeline",
+    "VisionBackendOutput",
+    "VisionModelBackend",
 ]

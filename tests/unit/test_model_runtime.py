@@ -176,3 +176,30 @@ def test_registry_can_select_lazy_local_model_bundle() -> None:
     assert worker.pipeline.vad.model_release == "silero@7"
     assert worker.pipeline.asr.model_release == "whisper@7"
     assert worker.pipeline.diarization.model_release == "pyannote@7"
+
+
+def test_registry_can_select_lazy_qwen_vision_bundle() -> None:
+    job = StageJob(
+        stage_run_id=uuid4(),
+        stage_attempt_id=uuid4(),
+        project_id=uuid4(),
+        idempotency_key="runtime-qwen-vision",
+        stage_type="VISION_ANALYSIS",
+        output_prefix="file:///tmp/output",
+        runtime_profile_id="modal-l4",
+        observed_control_version=1,
+        params={
+            "model_runtime": {
+                "release": "qwen3-vl@approved-7",
+                "config": {"adapter_mode": "qwen3_vl"},
+            }
+        },
+        trace_id="runtime-qwen-vision-test",
+    )
+
+    worker = create_analysis_worker_for_job(job, Settings())
+
+    assert worker.vision_pipeline.people.model_release == "qwen3-vl@approved-7:people"
+    assert worker.vision_pipeline.scenes.model_release == "qwen3-vl@approved-7:scenes"
+    assert worker.vision_pipeline.ocr.model_release == "qwen3-vl@approved-7:ocr"
+    assert worker.vision_pipeline.geometry.model_release == "qwen3-vl@approved-7:geometry"
