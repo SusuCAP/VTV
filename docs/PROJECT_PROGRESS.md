@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 12% | 媒体探测、代理/音轨、镜头切分与 Media Worker |
+| Phase 2 全剧分析 | 进行中 | 18% | 媒体处理与 VAD/ASR/对齐/说话人 Adapter 契约 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -59,13 +59,16 @@
 - [x] 实现场景分数镜头切分与最短镜头约束，输出连续镜头区间。
 - [x] 实现 Media Worker 的 ingest 校验、代理生成和镜头检测 Stage 契约。
 - [x] 使用即时合成的双场景音视频完成真实 FFmpeg 组件测试。
+- [x] 固化 VAD、ASR/词级对齐、说话人分离 Protocol 与版本标识边界。
+- [x] 固化音频分析时间区间、语言、置信度和音频时长范围不变量。
+- [x] 实现确定性参考 Adapter 与统一 Audio Analysis Pipeline，支持无 GPU 合同测试。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add analysis model adapter contracts`
+`feat: add audio analysis stage worker`
 
-下一步建立 VAD、ASR、词级对齐和说话人分离的稳定 Adapter 契约与 Mock，随后接入首组可部署实现。
+下一步把音频抽取和 Audio Analysis Pipeline 接入标准 Stage Job/Result，持久化结构化转录资产与模型 release provenance。
 
 ## 决策日志
 
@@ -107,3 +110,5 @@
 | 2026-07-22 | `ruff check .` | 通过；媒体包、Worker 与组件测试均满足静态检查 |
 | 2026-07-22 | FFmpeg 合成媒体组件测试 | 4 passed；覆盖探测、代理、音轨、镜头切分和 3 类 Stage 执行 |
 | 2026-07-22 | `pytest` | 28 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 音频分析 Adapter 合同测试 | 3 passed；覆盖确定性流水线、反向区间和越界区间拒绝 |
+| 2026-07-22 | `pytest` | 31 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
