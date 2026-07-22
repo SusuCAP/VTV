@@ -195,6 +195,7 @@ class LipSyncRequest(FrozenModel):
     features: ShotDialogueFeatures
     decision: LipSyncDecision
     source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_video_duration_seconds: float = Field(gt=0)
     adopted_tts_variant_id: UUID
     audio_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     target_language: str = Field(min_length=2, max_length=35)

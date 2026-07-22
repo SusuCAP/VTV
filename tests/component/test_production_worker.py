@@ -195,6 +195,7 @@ def _lipsync_request(source_hash: str, audio_hash: str) -> LipSyncRequest:
             maximum_duration_deviation=0.04,
         ),
         source_video_sha256=source_hash,
+        source_video_duration_seconds=2,
         adopted_tts_variant_id=uuid4(),
         audio_sha256=audio_hash,
         target_language="en-US",

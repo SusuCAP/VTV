@@ -119,6 +119,21 @@ class Scheduler:
                 source = await session.get(MediaAsset, UUID(source_asset_id))
                 if source is not None:
                     assets.append(source)
+            explicit_asset_ids = claim.params.get("input_asset_ids", [])
+            if explicit_asset_ids:
+                identifiers = [UUID(value) for value in explicit_asset_ids]
+                explicit_assets = list(
+                    await session.scalars(
+                        select(MediaAsset).where(
+                            MediaAsset.id.in_(identifiers),
+                            MediaAsset.workspace_id == claim.workspace_id,
+                            MediaAsset.project_id == claim.project_id,
+                        )
+                    )
+                )
+                if {item.id for item in explicit_assets} != set(identifiers):
+                    raise ValueError("one or more explicit stage input assets are missing")
+                assets.extend(explicit_assets)
         return StageJob(
             stage_run_id=claim.stage_run_id,
             stage_attempt_id=claim.stage_attempt_id,
@@ -453,12 +468,21 @@ class Scheduler:
 async def _rights_commit_failure(
     session: AsyncSession, claim: ClaimedStage
 ) -> str | None:
-    if claim.stage_type != "TTS_GENERATE":
+    if claim.stage_type not in {"TTS_GENERATE", "LIPSYNC_GENERATE"}:
         return None
     try:
-        request = claim.params["tts_request"]
-        snapshot = request["voice_release"]["rights"]
-        localized = request["localized"]
+        if claim.stage_type == "TTS_GENERATE":
+            request = claim.params["tts_request"]
+            snapshot = request["voice_release"]["rights"]
+            market = request["localized"]["target_market"]
+            language = request["localized"]["target_language"]
+            operation = "voice_clone"
+        else:
+            request = claim.params["lipsync_request"]
+            snapshot = request["rights"]
+            market = request["target_market"]
+            language = request["target_language"]
+            operation = "lipsync"
         rights_id = UUID(snapshot["rights_release_id"])
         expected_version = int(claim.params["rights_state_version"])
         if int(snapshot["state_version"]) != expected_version:
@@ -484,11 +508,11 @@ async def _rights_commit_failure(
         return "RIGHTS_NOT_YET_VALID"
     if release.expires_at is not None and now >= release.expires_at:
         return "RIGHTS_EXPIRED"
-    if "voice_clone" not in release.allowed_operations:
+    if operation not in release.allowed_operations:
         return "OPERATION_NOT_ALLOWED"
-    if localized.get("target_market") not in release.allowed_markets:
+    if market not in release.allowed_markets:
         return "MARKET_NOT_ALLOWED"
-    if localized.get("target_language") not in release.allowed_languages:
+    if language not in release.allowed_languages:
         return "LANGUAGE_NOT_ALLOWED"
     if request.get("commercial_use", True) and release.commercial_scope != "COMMERCIAL":
         return "COMMERCIAL_USE_NOT_ALLOWED"

@@ -114,8 +114,8 @@ class ProductionWorker:
         variants: list[VariantResult] = []
         for candidate in candidates:
             deviation = abs(
-                candidate.duration_seconds - request.features.dialogue_duration_seconds
-            ) / request.features.dialogue_duration_seconds
+                candidate.duration_seconds - request.source_video_duration_seconds
+            ) / request.source_video_duration_seconds
             if deviation > request.decision.maximum_duration_deviation:
                 raise ValueError("lipsync candidate duration exceeds route tolerance")
             path = _local_path(candidate.video_uri)

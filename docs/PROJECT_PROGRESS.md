@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 50% | 多候选 TTS、唯一采纳及 L0–L5 强类型口型生产运行时 |
+| Phase 3 自动生产 | 进行中 | 60% | TTS 唯一采纳、L0–L5 口型 Job/DAG、运行时与六项 QC 门禁 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -189,14 +189,21 @@
 - [x] 实现 Registry 控制的 `remote_lipsync` Adapter，严格验证输入 hash、视频解码、候选数量和编号。
 - [x] Production Worker 新增 `LIPSYNC_GENERATE`，本地与 Modal Stage Router 均可派发。
 - [x] `VTV_LIPSYNC_TOKEN` 与 TTS 凭据隔离，远程 endpoint 继续强制 HTTPS 或 localhost。
+- [x] 新增逐集 LipSync Job Schema/API，以规范 JSON SHA-256 保证相同请求幂等。
+- [x] 口型创建事务验证权威 Shot、同集采用 TTS，以及与 Shot 时间码匹配的源镜头资产。
+- [x] 对白时长仅参与 L0–L5 路由；输出视频按源镜头时长执行 4%/8% 偏差门禁。
+- [x] L1–L5 分别绑定 `LIPSYNC_L1`…`LIPSYNC_L5` Registry release；L0 不需要 Model Release。
+- [x] Scheduler 支持 workspace/project 隔离的显式输入资产，装载源镜头与唯一采用 TTS 音频。
+- [x] 口型在 Job 创建、Worker 条件提交和最终候选采纳三处重新验证权威授权。
+- [x] LIPSYNC 候选强制技术完整性、身份、时序、结构、嘴部同步和连续性六项 QC 证据齐备。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add production lipsync runtime`
+`feat: add episode lipsync workflow`
 
-本提交完成后，下一步实现口型 Job/API、TTS 采纳依赖和对应候选生产 DAG；
+本提交完成后，下一步实现对白/音乐/音效重混、字幕与逐集合成 DAG；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -307,3 +314,7 @@
 | 2026-07-22 | L0–L5 口型合同/Worker/路由 | 21 passed；覆盖六级决策、本地 L0、授权、远程协议、FFmpeg 视频验证和 Runtime Factory |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 132 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | LipSync Job/API 与候选门禁 | 8 passed，1 个扩展 PostgreSQL 工作流用例待外部数据库执行；覆盖 L0/L2、幂等、采用 TTS、授权与六项 QC |
+| 2026-07-22 | SQLAlchemy metadata/schema import | 24 tables loaded；LipSync Job Schema 与 Render Variant 外键可解析 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 137 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |

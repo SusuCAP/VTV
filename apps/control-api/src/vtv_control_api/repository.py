@@ -18,7 +18,8 @@ from vtv_db.releases import (
     publish_release,
 )
 from vtv_db.repository import (
-    TTS_REQUIRED_QC_METRICS,
+    LIPSYNC_MODEL_KEYS,
+    REQUIRED_QC_METRICS_BY_PURPOSE,
     AnalysisNotReadyError,
     ArtifactConflictError,
     CandidateConflictError,
@@ -32,6 +33,7 @@ from vtv_db.repository import (
 )
 from vtv_db.rights import evaluate_rights_release
 from vtv_evaluation import evaluate_release
+from vtv_production import LipSyncRequest, ShotDialogueFeatures, TieredLipSyncRouter
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
@@ -45,7 +47,7 @@ from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
-from vtv_schemas.production import DubbingJobCreate
+from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -75,6 +77,8 @@ class MemoryRepository:
         self._production_stage_params: dict[UUID, list[dict]] = {}
         self._candidate_groups: dict[UUID, CandidateGroupRead] = {}
         self._variant_stage_params: dict[UUID, dict] = {}
+        self._lipsync_shots: dict[UUID, dict] = {}
+        self._lipsync_assets: dict[UUID, dict] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -509,6 +513,201 @@ class MemoryRepository:
             )
         return job
 
+    async def create_lipsync_job(
+        self, workspace_id: UUID, project_id: UUID, payload: LipSyncJobCreate
+    ) -> JobRead:
+        project = await self.get_project(workspace_id, project_id)
+        idempotency_key = f"episode-lipsync:{payload.fingerprint}"
+        with self._lock:
+            existing_id = self._job_idempotency.get((project_id, idempotency_key))
+            if existing_id is not None:
+                return self._jobs[existing_id]
+            episode = next(
+                (
+                    item
+                    for item in self._episodes.get(project_id, [])
+                    if item.id == payload.episode_id
+                ),
+                None,
+            )
+        if episode is None:
+            raise ProjectNotFoundError(payload.episode_id)
+        router = TieredLipSyncRouter()
+        stage_params: list[dict] = []
+        now = datetime.now(UTC)
+        for item in payload.shots:
+            with self._lock:
+                shot = self._lipsync_shots.get(item.shot_id)
+                source = self._lipsync_assets.get(item.source_video_asset_id)
+                group = next(
+                    (
+                        value
+                        for value in self._candidate_groups.values()
+                        if value.project_id == project_id
+                        and value.purpose == "TTS"
+                        and value.adopted_variant_id == item.adopted_tts_variant_id
+                    ),
+                    None,
+                )
+            if shot is None or shot.get("episode_id") != payload.episode_id:
+                raise ProjectNotFoundError(item.shot_id)
+            shot_duration = float(shot["duration_seconds"])
+            if item.dialogue_duration_seconds > shot_duration + 0.05:
+                raise ProductionNotReadyError(
+                    "dialogue duration cannot exceed authoritative shot duration"
+                )
+            if (
+                source is None
+                or source.get("project_id") != project_id
+                or source.get("shot_id") != item.shot_id
+                or not str(source.get("content_type", "")).startswith("video/")
+                or abs(float(source.get("duration_seconds", 0)) - shot_duration)
+                > max(0.05, shot_duration * 0.02)
+            ):
+                raise ProductionNotReadyError(
+                    "lipsync source must be a duration-matched project video asset"
+                )
+            if group is None:
+                raise ProductionNotReadyError(
+                    "lipsync requires the uniquely adopted TTS variant"
+                )
+            variant = next(
+                value for value in group.variants if value.id == item.adopted_tts_variant_id
+            )
+            if variant.status != "ADOPTED":
+                raise ProductionNotReadyError(
+                    "lipsync requires the uniquely adopted TTS variant"
+                )
+            with self._lock:
+                audio = self._lipsync_assets.get(variant.output_asset_id)
+                tts_params = self._variant_stage_params.get(variant.id)
+            if (
+                audio is None
+                or not str(audio.get("content_type", "")).startswith("audio/")
+                or not isinstance(tts_params, dict)
+            ):
+                raise ProductionNotReadyError("adopted TTS provenance is incomplete")
+            try:
+                tts_request = tts_params["tts_request"]
+                localized = tts_request["localized"]
+                rights_id = UUID(
+                    tts_request["voice_release"]["rights"]["rights_release_id"]
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProductionNotReadyError(
+                    "adopted TTS variant has invalid rights provenance"
+                ) from exc
+            with self._lock:
+                rights = self._rights_releases.get(rights_id)
+            if rights is None or rights.project_id != project_id:
+                raise ProductionNotReadyError("RIGHTS_BLOCKED: RIGHTS_RELEASE_MISSING")
+            rights_decision = evaluate_rights_release(
+                rights,
+                RightsExecutionCheck(
+                    operation="lipsync",
+                    market=project.target_market,
+                    language=project.locale,
+                    commercial_use=payload.commercial_use,
+                    at=now,
+                ),
+            )
+            if not rights_decision.allowed:
+                raise ProductionNotReadyError(
+                    f"RIGHTS_BLOCKED: {','.join(rights_decision.reason_codes)}"
+                )
+            features = ShotDialogueFeatures(
+                shot_id=item.shot_id,
+                mouth_visible=item.mouth_visible,
+                face_scale=item.face_scale,
+                occlusion=item.occlusion,
+                body_visible=item.body_visible,
+                dialogue_duration_seconds=item.dialogue_duration_seconds,
+                original_performance_reusable=item.original_performance_reusable,
+                full_regeneration_required=item.full_regeneration_required,
+            )
+            route = router.route(features)
+            candidate_count = 1 if route.level == "L0_NONE" else item.candidate_count
+            selected = None
+            if route.level != "L0_NONE":
+                model_key = LIPSYNC_MODEL_KEYS[route.level]
+                with self._lock:
+                    selected = next(
+                        (
+                            model
+                            for model in self._model_releases.values()
+                            if model.workspace_id == workspace_id
+                            and model.model_key == model_key
+                            and model.license_status == "APPROVED"
+                            and model.automation_status == "ACTIVE"
+                            and model.config.get("adapter_mode") == "remote_lipsync"
+                        ),
+                        None,
+                    )
+                if selected is None:
+                    raise ProductionNotReadyError(
+                        f"no ACTIVE/CANARY model release is available for {model_key}"
+                    )
+            request = LipSyncRequest(
+                features=features,
+                decision=route,
+                source_video_sha256=source["sha256"],
+                source_video_duration_seconds=source["duration_seconds"],
+                adopted_tts_variant_id=variant.id,
+                audio_sha256=audio["sha256"],
+                target_language=localized["target_language"],
+                target_market=localized["target_market"],
+                rights={
+                    "rights_release_id": str(rights.id),
+                    "state_version": rights.state_version,
+                    "subject_id": rights.subject_id,
+                    "allowed_operations": rights.allowed_operations,
+                    "allowed_languages": rights.allowed_languages,
+                    "allowed_markets": rights.allowed_markets,
+                    "commercial_allowed": rights.commercial_scope == "COMMERCIAL",
+                    "valid_at_execution": True,
+                },
+                seed=item.seed,
+                candidate_count=candidate_count,
+                commercial_use=payload.commercial_use,
+            )
+            params = {
+                "lipsync_request": request.model_dump(mode="json"),
+                "router_release": router.router_release,
+                "rights_state_version": rights.state_version,
+                "input_asset_ids": [str(item.source_video_asset_id), str(variant.output_asset_id)],
+            }
+            if selected is not None:
+                params["model_runtime"] = {
+                    "model_key": selected.model_key,
+                    "endpoint": selected.endpoint,
+                    "release": selected.release_name,
+                    "license_id": selected.license_id,
+                    "approved_for_automation": True,
+                    "config": selected.config,
+                }
+            stage_params.append(params)
+        job = JobRead(
+            id=uuid4(),
+            project_id=project_id,
+            kind="EPISODE_LIPSYNC_CANDIDATES",
+            status=JobStatus.QUEUED,
+            progress=0,
+            total_stages=len(stage_params),
+            completed_stages=0,
+        )
+        with self._lock:
+            self._jobs[job.id] = job
+            self._job_idempotency[(project_id, idempotency_key)] = job.id
+            self._production_stage_params[job.id] = stage_params
+            self._projects[project.id] = project.model_copy(
+                update={
+                    "status": ProjectStatus.PRODUCING,
+                    "state_version": project.state_version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        return job
+
     async def list_candidate_groups(
         self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None
     ) -> list[CandidateGroupRead]:
@@ -540,9 +739,12 @@ class MemoryRepository:
         if variant.status != "GENERATED":
             raise CandidateConflictError("QC can only be submitted once for a generated variant")
         metric_names = {item.metric_name for item in payload.metrics}
-        if group.purpose == "TTS" and not TTS_REQUIRED_QC_METRICS.issubset(metric_names):
-            missing = sorted(TTS_REQUIRED_QC_METRICS - metric_names)
-            raise CandidateConflictError(f"TTS QC evidence is incomplete: {missing}")
+        required_metrics = REQUIRED_QC_METRICS_BY_PURPOSE.get(group.purpose)
+        if required_metrics and not required_metrics.issubset(metric_names):
+            missing = sorted(required_metrics - metric_names)
+            raise CandidateConflictError(
+                f"{group.purpose} QC evidence is incomplete: {missing}"
+            )
         now = datetime.now(UTC)
         metrics = tuple(
             QcMetricRead(id=uuid4(), created_at=now, **item.model_dump())
@@ -579,7 +781,18 @@ class MemoryRepository:
             raise CandidateConflictError("only a QC_PASSED variant can be adopted")
         params = self._variant_stage_params.get(selected.id)
         if params:
-            snapshot = params["tts_request"]["voice_release"]["rights"]
+            if "lipsync_request" in params:
+                request = params["lipsync_request"]
+                snapshot = request["rights"]
+                operation = "lipsync"
+                market = request["target_market"]
+                language = request["target_language"]
+            else:
+                request = params["tts_request"]
+                snapshot = request["voice_release"]["rights"]
+                operation = "voice_clone"
+                market = request["localized"]["target_market"]
+                language = request["localized"]["target_language"]
             rights = await self._get_rights_release(
                 workspace_id, UUID(snapshot["rights_release_id"])
             )
@@ -588,10 +801,10 @@ class MemoryRepository:
             decision = evaluate_rights_release(
                 rights,
                 RightsExecutionCheck(
-                    operation="voice_clone",
-                    market=params["tts_request"]["localized"]["target_market"],
-                    language=params["tts_request"]["localized"]["target_language"],
-                    commercial_use=params["tts_request"].get("commercial_use", True),
+                    operation=operation,
+                    market=market,
+                    language=language,
+                    commercial_use=request.get("commercial_use", True),
                 ),
             )
             if not decision.allowed:

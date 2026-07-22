@@ -11,8 +11,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_evaluation import evaluate_release
 from vtv_production import (
+    LipSyncRequest,
     LocalizedUtterance,
     ReviewState,
+    ShotDialogueFeatures,
+    TieredLipSyncRouter,
     TtsRequest,
     Utterance,
     VoiceRelease,
@@ -31,7 +34,11 @@ from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
-from vtv_schemas.production import DubbingJobCreate, DubbingUtteranceCreate
+from vtv_schemas.production import (
+    DubbingJobCreate,
+    DubbingUtteranceCreate,
+    LipSyncJobCreate,
+)
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -70,6 +77,7 @@ from .models import (
     QcResult,
     RenderVariant,
     RightsRelease,
+    Shot,
     StageDependency,
     StageRun,
     UploadSession,
@@ -126,6 +134,28 @@ TTS_REQUIRED_QC_METRICS = frozenset(
         "audio_artifact_control",
     }
 )
+LIPSYNC_REQUIRED_QC_METRICS = frozenset(
+    {
+        "technical_integrity",
+        "identity_consistency",
+        "temporal_stability",
+        "structure_integrity",
+        "lipsync_alignment",
+        "continuity",
+    }
+)
+REQUIRED_QC_METRICS_BY_PURPOSE = {
+    "TTS": TTS_REQUIRED_QC_METRICS,
+    "LIPSYNC": LIPSYNC_REQUIRED_QC_METRICS,
+}
+
+LIPSYNC_MODEL_KEYS = {
+    "L1_FAST": "LIPSYNC_L1",
+    "L2_PRESERVE_SOURCE": "LIPSYNC_L2",
+    "L3_GENERATIVE_FACE": "LIPSYNC_L3",
+    "L4_FULL_BODY": "LIPSYNC_L4",
+    "L5_FULL_REGEN": "LIPSYNC_L5",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +184,10 @@ class ProjectRepository(Protocol):
 
     async def create_dubbing_job(
         self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
+    ) -> JobRead: ...
+
+    async def create_lipsync_job(
+        self, workspace_id: UUID, project_id: UUID, payload: LipSyncJobCreate
     ) -> JobRead: ...
 
     async def create_rights_release(
@@ -878,9 +912,12 @@ class SqlAlchemyProjectRepository:
             if group is None or group.status != "OPEN":
                 raise CandidateConflictError("candidate group is no longer open")
             metric_names = {item.metric_name for item in payload.metrics}
-            if group.purpose == "TTS" and not TTS_REQUIRED_QC_METRICS.issubset(metric_names):
-                missing = sorted(TTS_REQUIRED_QC_METRICS - metric_names)
-                raise CandidateConflictError(f"TTS QC evidence is incomplete: {missing}")
+            required_metrics = REQUIRED_QC_METRICS_BY_PURPOSE.get(group.purpose)
+            if required_metrics and not required_metrics.issubset(metric_names):
+                missing = sorted(required_metrics - metric_names)
+                raise CandidateConflictError(
+                    f"{group.purpose} QC evidence is incomplete: {missing}"
+                )
             for metric in payload.metrics:
                 session.add(
                     QcResult(
@@ -1183,6 +1220,260 @@ class SqlAlchemyProjectRepository:
                         "episode_id": str(episode.id),
                         "utterance_count": len(requests),
                         "localization_release_id": str(localization.id),
+                    },
+                )
+            )
+            await session.flush()
+            return _job_read(job)
+
+    async def create_lipsync_job(
+        self, workspace_id: UUID, project_id: UUID, payload: LipSyncJobCreate
+    ) -> JobRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project)
+                .where(Project.id == project_id, Project.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            idempotency_key = f"episode-lipsync:{payload.fingerprint}"
+            existing = await session.scalar(
+                select(Job).where(
+                    Job.project_id == project_id,
+                    Job.idempotency_key == idempotency_key,
+                )
+            )
+            if existing is not None:
+                return _job_read(existing)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise RuntimeError("project execution control is missing")
+            if control.cancel_requested or control.hard_budget_blocked:
+                raise ProductionNotReadyError("project execution control blocks production")
+            episode = await session.scalar(
+                select(Episode).where(
+                    Episode.id == payload.episode_id,
+                    Episode.project_id == project_id,
+                )
+            )
+            if episode is None:
+                raise ProjectNotFoundError(payload.episode_id)
+            job_id = self._id_factory()
+            router = TieredLipSyncRouter()
+            selected_releases: dict[str, ModelRelease] = {}
+            planned: list[tuple] = []
+            for item in payload.shots:
+                shot = await session.scalar(
+                    select(Shot).where(
+                        Shot.id == item.shot_id,
+                        Shot.episode_id == episode.id,
+                    )
+                )
+                if shot is None:
+                    raise ProjectNotFoundError(item.shot_id)
+                shot_duration = (shot.end_ms - shot.start_ms) / 1000
+                if item.dialogue_duration_seconds > shot_duration + 0.05:
+                    raise ProductionNotReadyError(
+                        "dialogue duration cannot exceed authoritative shot duration"
+                    )
+                source_asset = await session.scalar(
+                    select(MediaAsset).where(
+                        MediaAsset.id == item.source_video_asset_id,
+                        MediaAsset.workspace_id == workspace_id,
+                        MediaAsset.project_id == project_id,
+                    )
+                )
+                if source_asset is None or not source_asset.content_type.startswith("video/"):
+                    raise ProductionNotReadyError("lipsync source must be a project video asset")
+                source_duration = source_asset.metadata_json.get("duration_seconds")
+                if source_asset.metadata_json.get("shot_id") != str(item.shot_id):
+                    raise ProductionNotReadyError(
+                        "lipsync source asset must be bound to the requested shot"
+                    )
+                if not isinstance(source_duration, (int, float)) or source_duration <= 0:
+                    raise ProductionNotReadyError(
+                        "lipsync source asset requires duration_seconds metadata"
+                    )
+                if abs(float(source_duration) - shot_duration) > max(0.05, shot_duration * 0.02):
+                    raise ProductionNotReadyError(
+                        "lipsync source asset duration must match authoritative shot"
+                    )
+                variant = await session.scalar(
+                    select(RenderVariant)
+                    .join(CandidateGroup, CandidateGroup.id == RenderVariant.candidate_group_id)
+                    .where(
+                        RenderVariant.id == item.adopted_tts_variant_id,
+                        RenderVariant.status == "ADOPTED",
+                        CandidateGroup.project_id == project_id,
+                        CandidateGroup.purpose == "TTS",
+                        CandidateGroup.adopted_variant_id == RenderVariant.id,
+                    )
+                )
+                if variant is None:
+                    raise ProductionNotReadyError(
+                        "lipsync requires the uniquely adopted TTS variant"
+                    )
+                tts_run = await session.get(StageRun, variant.stage_run_id)
+                audio_asset = await session.get(MediaAsset, variant.output_asset_id)
+                if (
+                    tts_run is None
+                    or tts_run.episode_id != episode.id
+                    or audio_asset is None
+                    or not audio_asset.content_type.startswith("audio/")
+                ):
+                    raise ProductionNotReadyError(
+                        "adopted TTS variant does not belong to the requested episode"
+                    )
+                try:
+                    tts_request = tts_run.params["tts_request"]
+                    localized = tts_request["localized"]
+                    snapshot = tts_request["voice_release"]["rights"]
+                    rights_id = UUID(snapshot["rights_release_id"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProductionNotReadyError(
+                        "adopted TTS variant has invalid rights provenance"
+                    ) from exc
+                rights_row = await session.scalar(
+                    select(RightsRelease)
+                    .where(
+                        RightsRelease.id == rights_id,
+                        RightsRelease.project_id == project_id,
+                    )
+                    .with_for_update()
+                )
+                if rights_row is None:
+                    raise ProductionNotReadyError("RIGHTS_BLOCKED: RIGHTS_RELEASE_MISSING")
+                rights = _rights_release_read(rights_row)
+                decision = evaluate_rights_release(
+                    rights,
+                    RightsExecutionCheck(
+                        operation="lipsync",
+                        market=project.target_market,
+                        language=project.locale,
+                        commercial_use=payload.commercial_use,
+                    ),
+                )
+                if not decision.allowed:
+                    raise ProductionNotReadyError(
+                        f"RIGHTS_BLOCKED: {','.join(decision.reason_codes)}"
+                    )
+                features = ShotDialogueFeatures(
+                    shot_id=item.shot_id,
+                    mouth_visible=item.mouth_visible,
+                    face_scale=item.face_scale,
+                    occlusion=item.occlusion,
+                    body_visible=item.body_visible,
+                    dialogue_duration_seconds=item.dialogue_duration_seconds,
+                    original_performance_reusable=item.original_performance_reusable,
+                    full_regeneration_required=item.full_regeneration_required,
+                )
+                route = router.route(features)
+                candidate_count = 1 if route.level == "L0_NONE" else item.candidate_count
+                model_release = None
+                if route.level != "L0_NONE":
+                    model_key = LIPSYNC_MODEL_KEYS[route.level]
+                    model_release = selected_releases.get(model_key)
+                    if model_release is None:
+                        model_release = await _select_model_release(
+                            session, workspace_id, model_key, job_id
+                        )
+                        if model_release is None:
+                            raise ProductionNotReadyError(
+                                f"no ACTIVE/CANARY model release is available for {model_key}"
+                            )
+                        if model_release.config_json.get("adapter_mode") != "remote_lipsync":
+                            raise ProductionNotReadyError(
+                                f"{model_key} release must use remote_lipsync runtime"
+                            )
+                        selected_releases[model_key] = model_release
+                request = LipSyncRequest(
+                    features=features,
+                    decision=route,
+                    source_video_sha256=source_asset.sha256,
+                    source_video_duration_seconds=float(source_duration),
+                    adopted_tts_variant_id=variant.id,
+                    audio_sha256=audio_asset.sha256,
+                    target_language=localized["target_language"],
+                    target_market=localized["target_market"],
+                    rights=VoiceRightsSnapshot(
+                        rights_release_id=rights.id,
+                        state_version=rights.state_version,
+                        subject_id=rights.subject_id,
+                        allowed_operations=frozenset(rights.allowed_operations),
+                        allowed_languages=frozenset(rights.allowed_languages),
+                        allowed_markets=frozenset(rights.allowed_markets),
+                        commercial_allowed=rights.commercial_scope == "COMMERCIAL",
+                        valid_at_execution=True,
+                    ),
+                    seed=item.seed,
+                    candidate_count=candidate_count,
+                    commercial_use=payload.commercial_use,
+                )
+                planned.append((item, request, source_asset, audio_asset, model_release))
+            job = Job(
+                id=job_id,
+                project_id=project_id,
+                kind="EPISODE_LIPSYNC_CANDIDATES",
+                status=JobStatus.QUEUED,
+                idempotency_key=idempotency_key,
+                total_stages=len(planned),
+            )
+            session.add(job)
+            for item, request, source_asset, audio_asset, model_release in planned:
+                group = CandidateGroup(
+                    id=self._id_factory(),
+                    project_id=project_id,
+                    shot_id=item.shot_id,
+                    purpose="LIPSYNC",
+                )
+                params = {
+                    "lipsync_request": request.model_dump(mode="json"),
+                    "router_release": router.router_release,
+                    "rights_state_version": request.rights.state_version,
+                    "input_asset_ids": [str(source_asset.id), str(audio_asset.id)],
+                }
+                if model_release is not None:
+                    params["model_runtime"] = {
+                        "model_key": model_release.model_key,
+                        "endpoint": model_release.endpoint,
+                        "release": model_release.release_name,
+                        "license_id": model_release.license_id,
+                        "approved_for_automation": True,
+                        "config": model_release.config_json,
+                    }
+                session.add(group)
+                session.add(
+                    StageRun(
+                        id=self._id_factory(),
+                        job_id=job.id,
+                        project_id=project_id,
+                        episode_id=episode.id,
+                        shot_id=item.shot_id,
+                        candidate_group_id=group.id,
+                        stage_type="LIPSYNC_GENERATE",
+                        status="READY",
+                        idempotency_key=f"{job.id}:lipsync:{item.shot_id}",
+                        model_release_id=(model_release.id if model_release else None),
+                        runtime_profile_id=("cpu-media" if model_release is None else "gpu-render"),
+                        observed_control_version=control.control_version,
+                        params=params,
+                    )
+                )
+            project.status = ProjectStatus.PRODUCING
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="job",
+                    aggregate_id=job.id,
+                    event_type="lipsync.requested",
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(project_id),
+                        "episode_id": str(episode.id),
+                        "shot_count": len(planned),
+                        "router_release": router.router_release,
                     },
                 )
             )
@@ -2094,12 +2385,21 @@ async def _candidate_group_read(
 async def _stage_rights_failure(
     session: AsyncSession, run: StageRun
 ) -> str | None:
-    if run.stage_type != "TTS_GENERATE":
+    if run.stage_type not in {"TTS_GENERATE", "LIPSYNC_GENERATE"}:
         return None
     try:
-        request = run.params["tts_request"]
-        snapshot = request["voice_release"]["rights"]
-        localized = request["localized"]
+        if run.stage_type == "TTS_GENERATE":
+            request = run.params["tts_request"]
+            snapshot = request["voice_release"]["rights"]
+            market = request["localized"]["target_market"]
+            language = request["localized"]["target_language"]
+            operation = "voice_clone"
+        else:
+            request = run.params["lipsync_request"]
+            snapshot = request["rights"]
+            market = request["target_market"]
+            language = request["target_language"]
+            operation = "lipsync"
         rights_id = UUID(snapshot["rights_release_id"])
         expected_version = int(run.params["rights_state_version"])
         if int(snapshot["state_version"]) != expected_version:
@@ -2121,9 +2421,9 @@ async def _stage_rights_failure(
     decision = evaluate_rights_release(
         _rights_release_read(release),
         RightsExecutionCheck(
-            operation="voice_clone",
-            market=str(localized.get("target_market") or ""),
-            language=str(localized.get("target_language") or ""),
+            operation=operation,
+            market=str(market),
+            language=str(language),
             commercial_use=bool(request.get("commercial_use", True)),
         ),
     )

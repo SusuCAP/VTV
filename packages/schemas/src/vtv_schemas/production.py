@@ -55,3 +55,41 @@ class DubbingJobCreate(BaseModel):
             separators=(",", ":"),
         )
         return sha256(payload.encode()).hexdigest()
+
+
+class LipSyncShotCreate(BaseModel):
+    shot_id: UUID
+    source_video_asset_id: UUID
+    adopted_tts_variant_id: UUID
+    mouth_visible: bool
+    face_scale: float = Field(ge=0, le=1)
+    occlusion: float = Field(ge=0, le=1)
+    body_visible: bool
+    dialogue_duration_seconds: float = Field(gt=0)
+    original_performance_reusable: bool = True
+    full_regeneration_required: bool = False
+    seed: int = Field(ge=0, le=2**63 - 1)
+    candidate_count: int = Field(default=2, ge=1, le=6)
+
+
+class LipSyncJobCreate(BaseModel):
+    episode_id: UUID
+    shots: tuple[LipSyncShotCreate, ...] = Field(min_length=1)
+    commercial_use: bool = True
+
+    @model_validator(mode="after")
+    def unique_shots(self) -> LipSyncJobCreate:
+        identifiers = [item.shot_id for item in self.shots]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("lipsync shot IDs must be unique")
+        return self
+
+    @property
+    def fingerprint(self) -> str:
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return sha256(payload.encode()).hexdigest()

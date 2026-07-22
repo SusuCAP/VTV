@@ -9,7 +9,7 @@
 `LipSyncRequest` 固定以下 provenance：
 
 - Shot 特征、L0–L5 决策、原因码和路由时长阈值；
-- 源视频 SHA-256、唯一采用的 TTS Variant ID 与音频 SHA-256；
+- 源视频 SHA-256/时长、唯一采用的 TTS Variant ID 与音频 SHA-256；
 - rights release ID/state version、目标语言、市场和商业范围；
 - seed 与 1–6 个候选上限。
 
@@ -25,3 +25,6 @@
 远程响应采用严格 JSON，必须返回与请求一致的 1–6 个连续编号候选。Worker 对每个视频执行解码探测、
 SHA-256 和时长门禁，并输出模型 release、seed、层级、TTS Variant 与授权版本 provenance。候选仍需
 进入 Render Variant/QC/唯一采纳流程，不能因 Worker 成功而自动成为业务结果。
+
+数据库 Job、资产门禁和三次授权复核见
+[`EPISODE_LIPSYNC_WORKFLOW.md`](./EPISODE_LIPSYNC_WORKFLOW.md)。

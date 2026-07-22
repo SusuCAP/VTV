@@ -329,6 +329,7 @@ def _lipsync_payload(
         "level": request.decision.level,
         "reason_codes": request.decision.reason_codes,
         "maximum_duration_deviation": request.decision.maximum_duration_deviation,
+        "source_video_duration_seconds": request.source_video_duration_seconds,
         "source_video_base64": base64.b64encode(source_video.read_bytes()).decode(),
         "audio_base64": base64.b64encode(audio.read_bytes()).decode(),
         "candidate_count": request.candidate_count,

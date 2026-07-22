@@ -16,6 +16,10 @@ TTS 候选必须一次提交完整的 intelligibility、speaker similarity、emo
 audio artifact control 五项证据。任一硬失败或 FAIL 进入 `QC_FAILED`，任一 REVIEW 进入 `REVIEW`，
 只有全部通过才进入 `QC_PASSED`。指标证据不可覆盖，重评应生成新的候选或后续显式评测版本。
 
+LIPSYNC 候选必须提交 technical integrity、identity consistency、temporal stability、structure
+integrity、lipsync alignment 和 continuity 六项证据，避免只凭局部嘴部同步分数放行破坏身份、
+结构或跨镜头连续性的结果。
+
 ## 唯一采纳事务
 
 `POST /v1/candidate-groups/{group_id}/adopt` 使用 Candidate Group `state_version` 做 CAS，并要求目标候选
@@ -27,4 +31,3 @@ audio artifact control 五项证据。任一硬失败或 FAIL 进入 `QC_FAILED`
 4. 将对应 Stage Run 推进为 `ADOPTED`，写入 Outbox 审计事件。
 
 数据库约束、行锁和 CAS 共同保证每组最多一个最终采用结果。授权在质检后撤销时，采纳仍会被阻止。
-

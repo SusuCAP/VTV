@@ -17,6 +17,7 @@ from vtv_db.models import (
     OutboxEvent,
     RenderVariant,
     RightsRelease,
+    Shot,
     StageDependency,
     StageRun,
 )
@@ -26,7 +27,12 @@ from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
 from vtv_schemas.candidates import CandidateAdopt, CandidateQcCreate, QcMetricCreate
 from vtv_schemas.jobs import AssetRef, StageResult, VariantResult
-from vtv_schemas.production import DubbingJobCreate, DubbingUtteranceCreate
+from vtv_schemas.production import (
+    DubbingJobCreate,
+    DubbingUtteranceCreate,
+    LipSyncJobCreate,
+    LipSyncShotCreate,
+)
 from vtv_schemas.projects import ProjectCreate
 from vtv_schemas.rights import RightsExecutionCheck, RightsReleaseCreate
 from vtv_schemas.uploads import MultipartInit, UploadPart
@@ -156,7 +162,7 @@ async def test_rights_release_is_versioned_revocable_and_workspace_scoped(
         RightsReleaseCreate(
             subject_type="VOICE",
             subject_id="character-1",
-            allowed_operations=frozenset({"voice_clone"}),
+            allowed_operations=frozenset({"voice_clone", "lipsync"}),
             allowed_markets=frozenset({"US"}),
             allowed_languages=frozenset({"en-US"}),
             commercial_scope="COMMERCIAL",
@@ -260,7 +266,7 @@ async def test_dubbing_job_persists_registry_and_rights_bound_stages(
         RightsReleaseCreate(
             subject_type="VOICE",
             subject_id="character-1",
-            allowed_operations=frozenset({"voice_clone"}),
+            allowed_operations=frozenset({"voice_clone", "lipsync"}),
             allowed_markets=frozenset({"US"}),
             allowed_languages=frozenset({"en-US"}),
             commercial_scope="COMMERCIAL",
@@ -388,6 +394,113 @@ async def test_dubbing_job_persists_registry_and_rights_bound_stages(
         ),
     )
     assert adopted.adopted_variant_id == passed.id
+
+    shot_id = UUID(int=610)
+    shot_asset_id = UUID(int=611)
+    lipsync_model_id = UUID(int=612)
+    async with database.begin() as session:
+        session.add(
+            Shot(
+                id=shot_id,
+                episode_id=episode_id,
+                shot_no=1,
+                start_ms=0,
+                end_ms=1500,
+            )
+        )
+        session.add(
+            MediaAsset(
+                id=shot_asset_id,
+                workspace_id=workspace_id,
+                project_id=project.id,
+                object_uri="s3://bucket/shot-1.mp4",
+                sha256="9" * 64,
+                size_bytes=20,
+                content_type="video/mp4",
+                metadata_json={"duration_seconds": 1.5, "shot_id": str(shot_id)},
+            )
+        )
+        session.add(
+            ModelRelease(
+                id=lipsync_model_id,
+                workspace_id=workspace_id,
+                model_key="LIPSYNC_L2",
+                release_name="latentsync@1.6-approved-sql",
+                provider="self-hosted",
+                endpoint="https://lipsync.example.invalid/v1/render",
+                license_id="lipsync-license-sql",
+                license_status="APPROVED",
+                automation_status="ACTIVE",
+                traffic_percent=100,
+                model_card_uri="https://models.example.invalid/latentsync",
+                config_json={"adapter_mode": "remote_lipsync"},
+            )
+        )
+    lipsync_job = await repository.create_lipsync_job(
+        workspace_id,
+        project.id,
+        LipSyncJobCreate(
+            episode_id=episode_id,
+            shots=(
+                LipSyncShotCreate(
+                    shot_id=shot_id,
+                    source_video_asset_id=shot_asset_id,
+                    adopted_tts_variant_id=passed.id,
+                    mouth_visible=True,
+                    face_scale=0.3,
+                    occlusion=0.1,
+                    body_visible=False,
+                    dialogue_duration_seconds=1.5,
+                    seed=100,
+                    candidate_count=2,
+                ),
+            ),
+        ),
+    )
+    async with database.begin() as session:
+        lipsync_run = await session.scalar(
+            select(StageRun).where(StageRun.job_id == lipsync_job.id)
+        )
+        assert lipsync_run
+        assert lipsync_run.params["lipsync_request"]["decision"]["level"] == "L2_PRESERVE_SOURCE"
+        assert lipsync_run.params["input_asset_ids"] == [
+            str(shot_asset_id),
+            str(passed.output_asset_id),
+        ]
+        assert lipsync_run.model_release_id == lipsync_model_id
+        lipsync_run.priority = 10
+
+    lipsync_claim = await scheduler.claim_one("lipsync-test-worker")
+    assert lipsync_claim and lipsync_claim.stage_type == "LIPSYNC_GENERATE"
+    lipsync_stage_job = await scheduler.build_job(lipsync_claim)
+    assert {item.sha256 for item in lipsync_stage_job.input_assets} == {
+        "9" * 64,
+        "1" * 64,
+    }
+    assert len(lipsync_stage_job.input_assets) == 2
+    assert await scheduler.commit_result(
+        lipsync_claim,
+        StageResult(
+            stage_run_id=lipsync_claim.stage_run_id,
+            stage_attempt_id=lipsync_claim.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=1,
+                    seed=100,
+                    output_assets=[
+                        AssetRef(
+                            uri="s3://bucket/lipsync-1.mp4",
+                            sha256="8" * 64,
+                            media_type="video/mp4",
+                            size_bytes=20,
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+    await scheduler.finalize_stage(lipsync_claim)
 
     claim = await scheduler.claim_one("tts-test-worker")
     assert claim and claim.stage_run_id != first_claim.stage_run_id

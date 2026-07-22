@@ -31,7 +31,7 @@ from vtv_schemas.model_releases import (
     ModelReleaseCreate,
     ModelReleaseRead,
 )
-from vtv_schemas.production import DubbingJobCreate
+from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import (
     ArtifactConfirm,
@@ -243,6 +243,29 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(
                 status_code=404, detail="project, episode, or rights release not found"
+            ) from exc
+        except ProductionNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        status_url = f"/v1/jobs/{job.id}"
+        response.headers["Location"] = status_url
+        return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
+
+    @app.post(
+        "/v1/projects/{project_id}/lipsync-jobs",
+        response_model=JobAccepted,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_lipsync_job(
+        project_id: UUID,
+        payload: LipSyncJobCreate,
+        response: Response,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> JobAccepted:
+        try:
+            job = await repo.create_lipsync_job(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project, episode, or shot not found"
             ) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

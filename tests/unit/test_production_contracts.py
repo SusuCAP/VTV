@@ -148,6 +148,7 @@ def test_lipsync_request_requires_lipsync_rights_and_deterministic_l0() -> None:
         features=features,
         decision=decision,
         source_video_sha256="b" * 64,
+        source_video_duration_seconds=2,
         adopted_tts_variant_id=uuid4(),
         audio_sha256="c" * 64,
         target_language="en-US",

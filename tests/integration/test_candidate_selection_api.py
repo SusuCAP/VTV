@@ -7,7 +7,9 @@ from vtv_control_api.repository import MemoryRepository
 from vtv_schemas.candidates import CandidateGroupRead, CandidateVariantRead
 
 
-def _setup() -> tuple[MemoryRepository, TestClient, dict, dict, CandidateGroupRead]:
+def _setup(
+    purpose: str = "TTS",
+) -> tuple[MemoryRepository, TestClient, dict, dict, CandidateGroupRead]:
     repository = MemoryRepository()
     client = TestClient(create_app(repository=repository))
     project = client.post(
@@ -20,7 +22,9 @@ def _setup() -> tuple[MemoryRepository, TestClient, dict, dict, CandidateGroupRe
         json={
             "subject_type": "VOICE",
             "subject_id": "character-1",
-            "allowed_operations": ["voice_clone"],
+            "allowed_operations": (
+                ["voice_clone", "lipsync"] if purpose == "LIPSYNC" else ["voice_clone"]
+            ),
             "allowed_markets": ["US"],
             "allowed_languages": ["en-US"],
             "commercial_scope": "COMMERCIAL",
@@ -51,7 +55,7 @@ def _setup() -> tuple[MemoryRepository, TestClient, dict, dict, CandidateGroupRe
     group = CandidateGroupRead(
         id=group_id,
         project_id=UUID(project["id"]),
-        purpose="TTS",
+        purpose=purpose,
         status="OPEN",
         state_version=1,
         variants=variants,
@@ -172,6 +176,113 @@ def test_tts_qc_rejects_incomplete_evidence() -> None:
         )
         assert response.status_code == 409
         assert "incomplete" in response.json()["detail"]
+    finally:
+        client.close()
+
+
+def test_lipsync_qc_requires_full_video_evidence() -> None:
+    _, client, _, _, group = _setup("LIPSYNC")
+    try:
+        incomplete = client.post(
+            f"/v1/candidate-variants/{group.variants[0].id}/qc",
+            json={
+                "metrics": [
+                    {
+                        "metric_name": "lipsync_alignment",
+                        "metric_version": "metric@1",
+                        "evaluator_release": "evaluator@1",
+                        "score": 0.95,
+                        "verdict": "PASS",
+                    }
+                ]
+            },
+        )
+        assert incomplete.status_code == 409
+
+        complete = client.post(
+            f"/v1/candidate-variants/{group.variants[0].id}/qc",
+            json={
+                "metrics": [
+                    {
+                        "metric_name": name,
+                        "metric_version": "metric@1",
+                        "evaluator_release": "evaluator@1",
+                        "score": 0.95,
+                        "verdict": "PASS",
+                    }
+                    for name in (
+                        "technical_integrity",
+                        "identity_consistency",
+                        "temporal_stability",
+                        "structure_integrity",
+                        "lipsync_alignment",
+                        "continuity",
+                    )
+                ]
+            },
+        )
+        assert complete.status_code == 200
+        assert complete.json()["status"] == "QC_PASSED"
+    finally:
+        client.close()
+
+
+def test_lipsync_adoption_rechecks_lipsync_rights() -> None:
+    repository, client, _, rights, group = _setup("LIPSYNC")
+    try:
+        repository._variant_stage_params[group.variants[0].id] = {
+            "lipsync_request": {
+                "target_market": "US",
+                "target_language": "en-US",
+                "commercial_use": True,
+                "rights": {
+                    "rights_release_id": rights["id"],
+                    "state_version": 1,
+                },
+            }
+        }
+        complete = client.post(
+            f"/v1/candidate-variants/{group.variants[0].id}/qc",
+            json={
+                "metrics": [
+                    {
+                        "metric_name": name,
+                        "metric_version": "metric@1",
+                        "evaluator_release": "evaluator@1",
+                        "score": 0.95,
+                        "verdict": "PASS",
+                    }
+                    for name in (
+                        "technical_integrity",
+                        "identity_consistency",
+                        "temporal_stability",
+                        "structure_integrity",
+                        "lipsync_alignment",
+                        "continuity",
+                    )
+                ]
+            },
+        )
+        assert complete.status_code == 200
+        revoked = client.post(
+            f"/v1/rights-releases/{rights['id']}/revoke",
+            json={
+                "expected_state_version": 1,
+                "actor_id": str(uuid4()),
+                "reason": "withdrawn before lipsync adoption",
+            },
+        )
+        assert revoked.status_code == 200
+        adopted = client.post(
+            f"/v1/candidate-groups/{group.id}/adopt",
+            json={
+                "variant_id": str(group.variants[0].id),
+                "expected_state_version": 1,
+                "actor_id": str(uuid4()),
+            },
+        )
+        assert adopted.status_code == 409
+        assert "RIGHTS_BLOCKED" in adopted.json()["detail"]
     finally:
         client.close()
 
