@@ -1,0 +1,21 @@
+[project]
+name = "vtv-control-api"
+version = "0.1.0"
+description = "VTV control-plane HTTP API"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.11",
+  "pydantic-settings>=2.8.1",
+  "uvicorn[standard]>=0.34.0",
+  "vtv-schemas",
+]
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+
+[project.scripts]
+vtv-api = "vtv_control_api.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
