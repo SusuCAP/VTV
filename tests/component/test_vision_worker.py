@@ -60,3 +60,4 @@ def test_vision_worker_consumes_video_and_continuous_shots(
     assert len(payload["analysis"]["people"]) == 2
     assert payload["analysis"]["geometry"][1]["end_seconds"] == duration
     assert payload["model_releases"]["people"] == "mock-person@1"
+    assert result.domain_artifacts[0].document_type == "VISION_ANALYSIS"

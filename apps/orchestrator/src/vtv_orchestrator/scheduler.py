@@ -1,13 +1,18 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_db.models import (
+    AnalysisDocument,
+    ArtifactRelease,
+    ArtifactReleaseDependency,
     Job,
     MediaAsset,
     OrphanAsset,
+    OutboxEvent,
     Project,
     StageAttempt,
     StageDependency,
@@ -196,12 +201,150 @@ class Scheduler:
                             ]
                         )
                     )
+            if result.domain_artifacts:
+                await self._persist_domain_artifacts(session, claim, result)
             await session.execute(
                 update(StageAttempt)
                 .where(StageAttempt.id == claim.stage_attempt_id)
                 .values(status="OUTPUT_READY", usage=result.attempt_usage, finished_at=func.now())
             )
             return True
+
+    async def _persist_domain_artifacts(
+        self,
+        session: AsyncSession,
+        claim: ClaimedStage,
+        result: StageResult,
+    ) -> None:
+        assets = list(
+            await session.scalars(
+                select(MediaAsset).where(MediaAsset.source_stage_run_id == claim.stage_run_id)
+            )
+        )
+        assets_by_sha = {asset.sha256: asset for asset in assets}
+        release_specs: list[tuple[str, int, MediaAsset, tuple[str, ...]]] = []
+        for artifact in result.domain_artifacts:
+            asset = assets_by_sha.get(artifact.source_asset_sha256)
+            if asset is None:
+                raise ValueError(
+                    f"domain artifact {artifact.document_type} has no committed output asset"
+                )
+            await session.execute(
+                insert(AnalysisDocument)
+                .values(
+                    id=uuid4(),
+                    project_id=claim.project_id,
+                    episode_id=artifact.episode_id or claim.episode_id,
+                    source_stage_run_id=claim.stage_run_id,
+                    media_asset_id=asset.id,
+                    document_type=artifact.document_type,
+                    schema_version=artifact.schema_version,
+                    payload=artifact.payload,
+                )
+                .on_conflict_do_nothing(
+                    index_elements=[
+                        AnalysisDocument.source_stage_run_id,
+                        AnalysisDocument.media_asset_id,
+                        AnalysisDocument.document_type,
+                    ]
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    workspace_id=claim.workspace_id,
+                    aggregate_type="analysis_document",
+                    aggregate_id=claim.stage_run_id,
+                    event_type="analysis_document.created",
+                    payload={
+                        "stage_run_id": str(claim.stage_run_id),
+                        "document_type": artifact.document_type,
+                        "episode_id": str(artifact.episode_id or claim.episode_id)
+                        if artifact.episode_id or claim.episode_id
+                        else None,
+                    },
+                )
+            )
+            if artifact.release_artifact_type:
+                release_specs.append(
+                    (
+                        artifact.release_artifact_type,
+                        artifact.release_version or 1,
+                        asset,
+                        artifact.depends_on_artifact_types,
+                    )
+                )
+        if release_specs:
+            await session.scalar(
+                select(Project.id)
+                .where(Project.id == claim.project_id)
+                .with_for_update()
+            )
+            await self._create_draft_releases(session, claim, release_specs)
+
+    async def _create_draft_releases(
+        self,
+        session: AsyncSession,
+        claim: ClaimedStage,
+        specs: list[tuple[str, int, MediaAsset, tuple[str, ...]]],
+    ) -> None:
+        created: dict[str, ArtifactRelease] = {}
+        for artifact_type, expected_version, asset, dependency_types in specs:
+            latest = await session.scalar(
+                select(ArtifactRelease)
+                .where(
+                    ArtifactRelease.project_id == claim.project_id,
+                    ArtifactRelease.artifact_type == artifact_type,
+                )
+                .order_by(ArtifactRelease.version.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if latest is not None:
+                await _invalidate_release_graph(session, latest.id, claim.project_id)
+            actual_version = latest.version + 1 if latest else 1
+            if actual_version != expected_version:
+                raise ValueError(
+                    f"release version changed for {artifact_type}: "
+                    f"expected {expected_version}, actual {actual_version}"
+                )
+            release = ArtifactRelease(
+                id=uuid4(),
+                project_id=claim.project_id,
+                artifact_type=artifact_type,
+                version=actual_version,
+                status="DRAFT",
+                content_asset_id=asset.id,
+                supersedes_release_id=latest.id if latest else None,
+            )
+            session.add(release)
+            created[artifact_type] = release
+            await session.flush()
+            for dependency_type in dependency_types:
+                dependency = created.get(dependency_type)
+                if dependency is None:
+                    raise ValueError(
+                        f"release dependency {dependency_type} must precede {artifact_type}"
+                    )
+                session.add(
+                    ArtifactReleaseDependency(
+                        upstream_release_id=dependency.id,
+                        downstream_release_id=release.id,
+                    )
+                )
+            session.add(
+                OutboxEvent(
+                    workspace_id=claim.workspace_id,
+                    aggregate_type="artifact_release",
+                    aggregate_id=release.id,
+                    event_type="artifact_release.created",
+                    payload={
+                        "release_id": str(release.id),
+                        "project_id": str(claim.project_id),
+                        "artifact_type": artifact_type,
+                        "source_stage_run_id": str(claim.stage_run_id),
+                    },
+                )
+            )
 
     async def finalize_stage(self, claim: ClaimedStage) -> None:
         async with self._sessions.begin() as session:
@@ -237,3 +380,29 @@ class Scheduler:
                     finished_at=func.now(),
                 )
             )
+
+
+async def _invalidate_release_graph(
+    session: AsyncSession, root_release_id: UUID, project_id: UUID
+) -> None:
+    pending = [root_release_id]
+    visited: set[UUID] = set()
+    now = datetime.now(UTC)
+    while pending:
+        current_id = pending.pop()
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        current = await session.get(ArtifactRelease, current_id, with_for_update=True)
+        if current is None or current.project_id != project_id:
+            raise ValueError("artifact release dependency crosses project boundary")
+        if current.status != "STALE":
+            current.status = "STALE"
+            current.state_version += 1
+            current.stale_at = now
+        downstream = await session.scalars(
+            select(ArtifactReleaseDependency.downstream_release_id).where(
+                ArtifactReleaseDependency.upstream_release_id == current_id
+            )
+        )
+        pending.extend(downstream)

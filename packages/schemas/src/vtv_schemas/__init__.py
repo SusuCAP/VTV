@@ -1,6 +1,6 @@
 from .enums import JobStatus, ProjectStatus, StageStatus
 from .episodes import EpisodeRead
-from .jobs import AssetRef, JobAccepted, StageJob, StageResult, VariantResult
+from .jobs import AssetRef, DomainArtifact, JobAccepted, StageJob, StageResult, VariantResult
 from .projects import Budget, OutputSpec, ProjectCreate, ProjectRead
 from .releases import (
     ArtifactConfirm,
@@ -12,11 +12,13 @@ from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPa
 
 __all__ = [
     "AssetRef",
+    "AnalysisDocumentRead",
     "ArtifactConfirm",
     "ArtifactReleaseCreate",
     "ArtifactReleaseRead",
     "ArtifactTransition",
     "Budget",
+    "DomainArtifact",
     "EpisodeRead",
     "JobAccepted",
     "JobStatus",
@@ -33,3 +35,4 @@ __all__ = [
     "UploadPart",
     "VariantResult",
 ]
+from .analysis import AnalysisDocumentRead

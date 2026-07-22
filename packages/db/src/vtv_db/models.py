@@ -312,6 +312,33 @@ class ArtifactReleaseDependency(Base):
     )
 
 
+class AnalysisDocument(TimestampMixin, Base):
+    __tablename__ = "analysis_documents"
+    __table_args__ = (
+        UniqueConstraint("source_stage_run_id", "media_asset_id", "document_type"),
+        CheckConstraint("schema_version >= 1", name="ck_analysis_documents_schema_version"),
+        Index("ix_analysis_documents_project_type", "project_id", "document_type"),
+        Index("ix_analysis_documents_payload_gin", "payload", postgresql_using="gin"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    episode_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE")
+    )
+    source_stage_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("stage_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    media_asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT"), nullable=False
+    )
+    document_type: Mapped[str] = mapped_column(String(64))
+    schema_version: Mapped[int] = mapped_column(Integer, default=1)
+    payload: Mapped[dict] = mapped_column(JSONB)
+
+
 class OrphanAsset(TimestampMixin, Base):
     __tablename__ = "orphan_assets"
 

@@ -73,3 +73,5 @@ def test_asr_align_worker_writes_analysis_and_model_provenance(tmp_path: Path) -
     assert payload["analysis"]["transcript"][0]["words"]
     assert payload["model_releases"] == result.variants[0].raw_metrics["model_releases"]
     assert payload["model_releases"]["asr_align"] == "mock-asr-align@1"
+    assert result.domain_artifacts[0].document_type == "AUDIO_ANALYSIS"
+    assert result.domain_artifacts[0].episode_id == job.episode_id

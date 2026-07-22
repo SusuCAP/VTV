@@ -16,6 +16,7 @@ from vtv_db.repository import (
     UploadConflictError,
     UploadRecord,
 )
+from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -33,6 +34,7 @@ class MemoryRepository:
         self._uploads: dict[UUID, UploadRecord] = {}
         self._episodes: dict[UUID, list[EpisodeRead]] = {}
         self._releases: dict[UUID, ArtifactReleaseRead] = {}
+        self._analysis_documents: list[AnalysisDocumentRead] = []
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -166,6 +168,23 @@ class MemoryRepository:
         await self.get_project(workspace_id, project_id)
         with self._lock:
             return [item for item in self._releases.values() if item.project_id == project_id]
+
+    async def list_analysis_documents(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        document_type: str | None = None,
+    ) -> list[AnalysisDocumentRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            return [
+                item
+                for item in self._analysis_documents
+                if item.project_id == project_id
+                and (episode_id is None or item.episode_id == episode_id)
+                and (document_type is None or item.document_type == document_type)
+            ]
 
     async def confirm_artifact_release(
         self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int

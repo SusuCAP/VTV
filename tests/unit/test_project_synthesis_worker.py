@@ -79,7 +79,14 @@ def test_project_synthesis_worker_combines_analysis_and_provenance(tmp_path: Pat
         output_prefix=output.resolve().as_uri(),
         runtime_profile_id="gpu-analysis",
         observed_control_version=1,
-        params={"target_locale": "en-US"},
+        params={
+            "target_locale": "en-US",
+            "release_versions": {
+                "LOCALIZATION_BIBLE": 2,
+                "ANCHOR_PACK": 3,
+                "CONTINUITY_SNAPSHOT_SET": 4,
+            },
+        },
         trace_id="project-synthesis-test",
     )
 
@@ -88,6 +95,9 @@ def test_project_synthesis_worker_combines_analysis_and_provenance(tmp_path: Pat
     payload = json.loads((output / "project-synthesis.json").read_text(encoding="utf-8"))
     assert result.status == "OUTPUT_READY"
     assert payload["synthesis"]["bible"]["target_locale"] == "en-US"
+    assert payload["synthesis"]["bible"]["version"] == 2
+    assert payload["synthesis"]["anchor_pack"]["version"] == 3
+    assert payload["synthesis"]["anchor_pack"]["bible_version"] == 2
     assert payload["synthesis"]["bible"]["characters"][0]["character_id"] == "character-001"
     assert len(payload["synthesis"]["continuity"]) == 2
     assert {item["episode_id"] for item in payload["synthesis"]["continuity"]} == {
@@ -96,3 +106,22 @@ def test_project_synthesis_worker_combines_analysis_and_provenance(tmp_path: Pat
     }
     assert payload["model_releases"]["asr_align"] == "asr@1"
     assert payload["model_releases"]["project_synthesis"].endswith("@1")
+    releases = {
+        item.release_artifact_type: item.depends_on_artifact_types
+        for item in result.domain_artifacts
+        if item.release_artifact_type
+    }
+    assert releases == {
+        "LOCALIZATION_BIBLE": (),
+        "ANCHOR_PACK": ("LOCALIZATION_BIBLE",),
+        "CONTINUITY_SNAPSHOT_SET": ("LOCALIZATION_BIBLE", "ANCHOR_PACK"),
+    }
+    assert {
+        item.release_artifact_type: item.release_version
+        for item in result.domain_artifacts
+        if item.release_artifact_type
+    } == {
+        "LOCALIZATION_BIBLE": 2,
+        "ANCHOR_PACK": 3,
+        "CONTINUITY_SNAPSHOT_SET": 4,
+    }

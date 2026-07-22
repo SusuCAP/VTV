@@ -48,6 +48,10 @@ def test_project_and_async_analysis_job_flow() -> None:
         assert jobs.status_code == 200
         assert jobs.json()[0]["id"] == accepted.json()["job_id"]
 
+        documents = client.get(f"/v1/projects/{project['id']}/analysis-documents")
+        assert documents.status_code == 200
+        assert documents.json() == []
+
 
 def test_analysis_rejects_project_without_uploaded_episodes() -> None:
     with TestClient(create_app()) as client:

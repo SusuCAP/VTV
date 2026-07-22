@@ -117,3 +117,9 @@ def test_media_worker_stages(
     asset = result.variants[0].output_assets[0]
     assert asset.uri.endswith(expected_name)
     assert asset.size_bytes > 0
+    if stage_type == "INGEST_VALIDATE":
+        assert result.domain_artifacts[0].document_type == "MEDIA_PROBE"
+    elif stage_type == "SHOT_DETECT":
+        assert result.domain_artifacts[0].document_type == "SHOT_LIST"
+    else:
+        assert result.domain_artifacts == []

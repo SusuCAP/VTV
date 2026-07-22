@@ -2,7 +2,7 @@ from math import ceil
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
     AnalysisNotReadyError,
@@ -11,6 +11,7 @@ from vtv_db.repository import (
     ProjectRepository,
     UploadConflictError,
 )
+from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
@@ -159,6 +160,23 @@ def create_app(
     ) -> list[ArtifactReleaseRead]:
         try:
             return await repo.list_artifact_releases(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/analysis-documents",
+        response_model=list[AnalysisDocumentRead],
+    )
+    async def list_analysis_documents(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        episode_id: Annotated[UUID | None, Query()] = None,
+        document_type: Annotated[str | None, Query(max_length=64)] = None,
+    ) -> list[AnalysisDocumentRead]:
+        try:
+            return await repo.list_analysis_documents(
+                workspace, project_id, episode_id, document_type
+            )
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 

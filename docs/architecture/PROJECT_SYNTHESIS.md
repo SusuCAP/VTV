@@ -21,3 +21,7 @@ Bible ID 与版本，防止使用已经失效的语义约束。
 项目合成现支持任意数量 Episode：依靠输入资产的 `episode_id` 元数据配对每集音频和视觉
 结果，跨集去重 track/scene，并为每集分别创建 Continuity Snapshot。任一 Episode 缺少
 音频或视觉结果时整个 Stage 拒绝提交，避免产生部分项目 Bible。
+
+Release 版本由创建分析任务的数据库事务预分配，并通过 Stage 参数传入。Bible.version、
+AnchorPack.version 和 AnchorPack.bible_version 因此与最终 Artifact Release 一致；Scheduler
+提交时会再次比较数据库实际下一版本，检测到并发漂移则回滚。

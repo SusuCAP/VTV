@@ -22,6 +22,19 @@ class VariantResult(BaseModel):
     allocated_cost: dict[str, Any] = Field(default_factory=dict)
 
 
+class DomainArtifact(BaseModel):
+    document_type: str = Field(min_length=1, max_length=64, pattern=r"^[A-Z][A-Z0-9_]*$")
+    schema_version: int = Field(default=1, ge=1)
+    episode_id: UUID | None = None
+    source_asset_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    payload: dict[str, Any]
+    release_artifact_type: str | None = Field(
+        default=None, max_length=64, pattern=r"^[A-Z][A-Z0-9_]*$"
+    )
+    release_version: int | None = Field(default=None, ge=1)
+    depends_on_artifact_types: tuple[str, ...] = ()
+
+
 class StageJob(BaseModel):
     stage_run_id: UUID
     stage_attempt_id: UUID
@@ -45,6 +58,7 @@ class StageResult(BaseModel):
     stage_attempt_id: UUID
     status: Literal["OUTPUT_READY", "EXECUTION_FAILED"]
     variants: list[VariantResult] = Field(default_factory=list)
+    domain_artifacts: list[DomainArtifact] = Field(default_factory=list)
     attempt_usage: dict[str, Any] = Field(default_factory=dict)
     error_class: str | None = None
     error_detail: dict[str, Any] | None = None

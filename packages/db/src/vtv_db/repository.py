@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -17,6 +18,7 @@ from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_BASELINE_DAG, build_project_analysis_dag
 from .models import (
+    AnalysisDocument,
     ArtifactRelease,
     ArtifactReleaseDependency,
     Episode,
@@ -89,6 +91,14 @@ class ProjectRepository(Protocol):
     async def list_artifact_releases(
         self, workspace_id: UUID, project_id: UUID
     ) -> list[ArtifactReleaseRead]: ...
+
+    async def list_analysis_documents(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        document_type: str | None = None,
+    ) -> list[AnalysisDocumentRead]: ...
 
     async def confirm_artifact_release(
         self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int
@@ -297,6 +307,22 @@ class SqlAlchemyProjectRepository:
                 raise AnalysisNotReadyError("project analysis requires an uploaded episode")
             definitions = build_project_analysis_dag(tuple(episode.id for episode in episodes))
             episode_by_id = {episode.id: episode for episode in episodes}
+            release_types = (
+                "LOCALIZATION_BIBLE",
+                "ANCHOR_PACK",
+                "CONTINUITY_SNAPSHOT_SET",
+            )
+            next_release_versions = {
+                artifact_type: int(
+                    await session.scalar(
+                        select(func.coalesce(func.max(ArtifactRelease.version), 0) + 1).where(
+                            ArtifactRelease.project_id == project_id,
+                            ArtifactRelease.artifact_type == artifact_type,
+                        )
+                    )
+                )
+                for artifact_type in release_types
+            }
             job = Job(
                 id=self._id_factory(),
                 project_id=project_id,
@@ -320,6 +346,8 @@ class SqlAlchemyProjectRepository:
                             "source_asset_id": str(episode.source_asset_id),
                         }
                     )
+                if definition.stage_type == "PROJECT_SYNTHESIS":
+                    params["release_versions"] = next_release_versions
                 run = StageRun(
                     id=self._id_factory(),
                     job_id=job.id,
@@ -493,6 +521,31 @@ class SqlAlchemyProjectRepository:
                 )
             )
             return [await _artifact_read(session, release) for release in releases]
+
+    async def list_analysis_documents(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        document_type: str | None = None,
+    ) -> list[AnalysisDocumentRead]:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            query = select(AnalysisDocument).where(AnalysisDocument.project_id == project_id)
+            if episode_id is not None:
+                query = query.where(AnalysisDocument.episode_id == episode_id)
+            if document_type is not None:
+                query = query.where(AnalysisDocument.document_type == document_type)
+            documents = list(
+                await session.scalars(query.order_by(AnalysisDocument.created_at.desc()))
+            )
+            return [_analysis_document_read(document) for document in documents]
 
     async def confirm_artifact_release(
         self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int
@@ -902,6 +955,21 @@ def _add_release_event(
             event_type=event_type,
             payload={"release_id": str(release.id), **(extra or {})},
         )
+    )
+
+
+def _analysis_document_read(document: AnalysisDocument) -> AnalysisDocumentRead:
+    return AnalysisDocumentRead(
+        id=document.id,
+        project_id=document.project_id,
+        episode_id=document.episode_id,
+        source_stage_run_id=document.source_stage_run_id,
+        media_asset_id=document.media_asset_id,
+        document_type=document.document_type,
+        schema_version=document.schema_version,
+        payload=document.payload,
+        created_at=document.created_at,
+        updated_at=document.updated_at,
     )
 
 

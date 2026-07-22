@@ -136,6 +136,8 @@ class DeterministicProjectSynthesizer:
         source_locale: str,
         target_locale: str,
         episodes: tuple[tuple[str, AudioAnalysis, VisionAnalysis], ...],
+        bible_version: int = 1,
+        anchor_pack_version: int = 1,
     ) -> ProjectSynthesis:
         if not episodes:
             raise ValueError("project synthesis requires at least one episode analysis")
@@ -148,7 +150,7 @@ class DeterministicProjectSynthesizer:
         bible_id = f"bible-{project_id}"
         bible = LocalizationBible(
             bible_id=bible_id,
-            version=1,
+            version=bible_version,
             status="DRAFT",
             source_locale=source_locale,
             target_locale=target_locale,
@@ -181,10 +183,10 @@ class DeterministicProjectSynthesizer:
         )
         anchor_pack = AnchorPack(
             pack_id=f"anchors-{project_id}",
-            version=1,
+            version=anchor_pack_version,
             status="DRAFT",
             bible_id=bible_id,
-            bible_version=1,
+            bible_version=bible_version,
             anchors=anchors,
         )
         continuity = tuple(
@@ -196,7 +198,7 @@ class DeterministicProjectSynthesizer:
                     episode_id=episode_id,
                     shot_no=index,
                     bible_id=bible_id,
-                    bible_version=1,
+                    bible_version=bible_version,
                     location_id=(bible.locations[0].location_id if bible.locations else None),
                     characters=tuple(
                         CharacterContinuity(character_id=character.character_id)

@@ -20,7 +20,7 @@ from vtv_analysis import (
     VisionAnalysisPipeline,
 )
 from vtv_media import extract_audio, probe_media
-from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
+from vtv_schemas.jobs import AssetRef, DomainArtifact, StageJob, StageResult, VariantResult
 
 
 def _local_path(uri: str) -> Path:
@@ -103,6 +103,7 @@ class AnalysisWorker:
             ),
             encoding="utf-8",
         )
+        asset = _asset(output, "application/json")
         return StageResult(
             stage_run_id=job.stage_run_id,
             stage_attempt_id=job.stage_attempt_id,
@@ -110,13 +111,24 @@ class AnalysisWorker:
             variants=[
                 VariantResult(
                     variant_no=1,
-                    output_assets=[_asset(output, "application/json")],
+                    output_assets=[asset],
                     raw_metrics={
                         "worker": "analysis",
                         "stage_type": job.stage_type,
                         "speech_segments": len(analysis.speech),
                         "transcript_segments": len(analysis.transcript),
                         "speaker_turns": len(analysis.speakers),
+                        "model_releases": releases,
+                    },
+                )
+            ],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="AUDIO_ANALYSIS",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=asset.sha256,
+                    payload={
+                        "analysis": analysis.model_dump(mode="json"),
                         "model_releases": releases,
                     },
                 )
@@ -179,11 +191,19 @@ class AnalysisWorker:
             raise TypeError("PROJECT_SYNTHESIS internal audio grouping failed")
         source_locale = str(job.params.get("source_locale") or first_audio.language)
         target_locale = str(job.params.get("target_locale") or "en-US")
+        release_versions = job.params.get("release_versions", {})
+        if not isinstance(release_versions, dict):
+            raise ValueError("PROJECT_SYNTHESIS release_versions must be an object")
+        bible_version = int(release_versions.get("LOCALIZATION_BIBLE", 1))
+        anchor_pack_version = int(release_versions.get("ANCHOR_PACK", 1))
+        continuity_version = int(release_versions.get("CONTINUITY_SNAPSHOT_SET", 1))
         synthesis = self.synthesizer.synthesize_series(
             project_id=str(job.project_id),
             source_locale=source_locale,
             target_locale=target_locale,
             episodes=episodes,
+            bible_version=bible_version,
+            anchor_pack_version=anchor_pack_version,
         )
         releases: dict[str, str | list[str]] = {
             key: next(iter(values)) if len(values) == 1 else sorted(values)
@@ -201,6 +221,7 @@ class AnalysisWorker:
             ),
             encoding="utf-8",
         )
+        asset = _asset(output, "application/json")
         return StageResult(
             stage_run_id=job.stage_run_id,
             stage_attempt_id=job.stage_attempt_id,
@@ -208,7 +229,7 @@ class AnalysisWorker:
             variants=[
                 VariantResult(
                     variant_no=1,
-                    output_assets=[_asset(output, "application/json")],
+                    output_assets=[asset],
                     raw_metrics={
                         "worker": "analysis",
                         "stage_type": job.stage_type,
@@ -218,6 +239,43 @@ class AnalysisWorker:
                         "model_releases": releases,
                     },
                 )
+            ],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="PROJECT_SYNTHESIS",
+                    source_asset_sha256=asset.sha256,
+                    payload={
+                        "synthesis": synthesis.model_dump(mode="json"),
+                        "model_releases": releases,
+                    },
+                ),
+                DomainArtifact(
+                    document_type="LOCALIZATION_BIBLE",
+                    source_asset_sha256=asset.sha256,
+                    payload=synthesis.bible.model_dump(mode="json"),
+                    release_artifact_type="LOCALIZATION_BIBLE",
+                    release_version=bible_version,
+                ),
+                DomainArtifact(
+                    document_type="ANCHOR_PACK",
+                    source_asset_sha256=asset.sha256,
+                    payload=synthesis.anchor_pack.model_dump(mode="json"),
+                    release_artifact_type="ANCHOR_PACK",
+                    release_version=anchor_pack_version,
+                    depends_on_artifact_types=("LOCALIZATION_BIBLE",),
+                ),
+                DomainArtifact(
+                    document_type="CONTINUITY_SNAPSHOT_SET",
+                    source_asset_sha256=asset.sha256,
+                    payload={
+                        "snapshots": [
+                            item.model_dump(mode="json") for item in synthesis.continuity
+                        ]
+                    },
+                    release_artifact_type="CONTINUITY_SNAPSHOT_SET",
+                    release_version=continuity_version,
+                    depends_on_artifact_types=("LOCALIZATION_BIBLE", "ANCHOR_PACK"),
+                ),
             ],
             attempt_usage={"worker": "analysis", "local": True},
         )
@@ -273,6 +331,7 @@ class AnalysisWorker:
             ),
             encoding="utf-8",
         )
+        asset = _asset(output, "application/json")
         return StageResult(
             stage_run_id=job.stage_run_id,
             stage_attempt_id=job.stage_attempt_id,
@@ -280,7 +339,7 @@ class AnalysisWorker:
             variants=[
                 VariantResult(
                     variant_no=1,
-                    output_assets=[_asset(output, "application/json")],
+                    output_assets=[asset],
                     raw_metrics={
                         "worker": "analysis",
                         "stage_type": job.stage_type,
@@ -288,6 +347,17 @@ class AnalysisWorker:
                         "people": len(analysis.people),
                         "scenes": len(analysis.scenes),
                         "ocr_regions": len(analysis.ocr),
+                        "model_releases": releases,
+                    },
+                )
+            ],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="VISION_ANALYSIS",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=asset.sha256,
+                    payload={
+                        "analysis": analysis.model_dump(mode="json"),
                         "model_releases": releases,
                     },
                 )

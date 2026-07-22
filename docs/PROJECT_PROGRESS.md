@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 80% | 多集分析、具体 Worker 与 S3/MinIO 完整性 I/O |
+| Phase 2 全剧分析 | 进行中 | 88% | 可查询分析投影、版本一致的 DRAFT Release 与 Outbox |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -102,13 +102,20 @@
 - [x] Worker 输出上传前复核 Stage Result 大小/哈希，拒绝虚假或损坏输出。
 - [x] 输出采用 stage/variant/content hash 不可变 key、checksum metadata 与条件写。
 - [x] 编排器读取统一 `VTV_S3_*` 配置，未配置时对 S3 URI 明确失败。
+- [x] 新增 `analysis_documents` JSONB 权威投影表、GIN 索引及 `0005` 迁移。
+- [x] Worker 返回强类型 Domain Artifact，覆盖 probe、shots、audio、vision 与项目合成资产。
+- [x] Scheduler 仅在条件提交成功时写分析文档、Media Asset 和 Outbox，同事务原子完成。
+- [x] 项目合成自动创建 Bible→Anchor→Continuity 三类 DRAFT Release 及依赖。
+- [x] 重分析预分配下一 Release 版本，并在 Worker JSON 与提交事务两侧校验一致性。
+- [x] 新版本自动 supersede 同类型旧版本并传递 stale 旧下游。
+- [x] 新增 analysis documents 查询 API，支持 project/episode/type 过滤。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: persist analysis domain artifacts`
+`feat: add production model adapter runtime`
 
-下一步把 shots、transcript、人物/场景观察及 Bible/Anchor/Continuity 从 JSON 资产同步到数据库可查询实体，并自动创建 DRAFT Artifact Release。
+下一步为 VAD/ASR/diarization 与视觉模型增加可配置生产 Adapter 运行时、release/许可门禁和稳定回退，替换当前确定性合同实现。
 
 ## 决策日志
 
@@ -172,3 +179,6 @@
 | 2026-07-22 | `pytest` | 49 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | S3 Worker I/O 与 Router 合同测试 | 8 passed；覆盖传输、清理、幂等条件写、S3 物化/回传及虚假输出拒绝 |
 | 2026-07-22 | `pytest` | 54 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Domain Artifact/Release 投影测试 | 通过；覆盖 8 类文档、三类 release 依赖及跨版本 Bible/Anchor 锁定 |
+| 2026-07-22 | SQLAlchemy metadata | 18 tables loaded，包含 `analysis_documents` |
+| 2026-07-22 | `pytest` | 55 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
