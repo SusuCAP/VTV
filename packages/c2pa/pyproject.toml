@@ -1,0 +1,16 @@
+[project]
+name = "vtv-c2pa"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "vtv-schemas",
+    "vtv-delivery",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+vtv-delivery = { workspace = true }

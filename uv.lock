@@ -14,6 +14,7 @@ members = [
     "vtv-assembly",
     "vtv-audio",
     "vtv-audio-worker",
+    "vtv-c2pa",
     "vtv-control-api",
     "vtv-db",
     "vtv-delivery",
@@ -1536,6 +1537,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "vtv-c2pa"
+version = "0.1.0"
+source = { editable = "packages/c2pa" }
+dependencies = [
+    { name = "vtv-delivery" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "vtv-delivery", editable = "packages/delivery" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
+
+[[package]]
 name = "vtv-control-api"
 version = "0.1.0"
 source = { editable = "apps/control-api" }
@@ -1640,6 +1656,7 @@ dependencies = [
     { name = "vtv-analysis-worker" },
     { name = "vtv-assemble-worker" },
     { name = "vtv-audio-worker" },
+    { name = "vtv-c2pa" },
     { name = "vtv-db" },
     { name = "vtv-media-worker" },
     { name = "vtv-production-worker" },
@@ -1655,6 +1672,7 @@ requires-dist = [
     { name = "vtv-analysis-worker", editable = "workers/analysis" },
     { name = "vtv-assemble-worker", editable = "workers/assemble" },
     { name = "vtv-audio-worker", editable = "workers/audio" },
+    { name = "vtv-c2pa", editable = "packages/c2pa" },
     { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-media-worker", editable = "workers/media" },
     { name = "vtv-production-worker", editable = "workers/production" },

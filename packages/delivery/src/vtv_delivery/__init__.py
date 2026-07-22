@@ -1,5 +1,8 @@
 from .contracts import (
     ApprovalEvidence,
+    C2paContentCredentials,
+    C2paSignRequest,
+    C2paSignResult,
     CostSummary,
     DeliveredAsset,
     DeliveryApprove,
@@ -16,6 +19,9 @@ from .contracts import (
 
 __all__ = [
     "ApprovalEvidence",
+    "C2paContentCredentials",
+    "C2paSignRequest",
+    "C2paSignResult",
     "CostSummary",
     "DeliveredAsset",
     "DeliveryApprove",

@@ -363,6 +363,21 @@ def create_app(
         except DeliveryConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post(
+        "/v1/deliveries/{delivery_id}:request-sign",
+        response_model=DeliveryRead,
+    )
+    async def request_c2pa_sign(
+        delivery_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryRead:
+        try:
+            return await repo.request_c2pa_signing(workspace, delivery_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="delivery not found") from exc
+        except DeliveryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/v1/projects/{project_id}/episodes", response_model=list[EpisodeRead])
     async def list_episodes(
         project_id: UUID,

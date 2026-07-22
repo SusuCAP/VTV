@@ -18,6 +18,7 @@ dev = [
 members = [
   "apps/control-api",
   "apps/orchestrator",
+  "packages/c2pa",
   "packages/db",
   "packages/evaluation",
   "packages/analysis",

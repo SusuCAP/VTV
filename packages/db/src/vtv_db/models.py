@@ -318,6 +318,7 @@ class Delivery(TimestampMixin, Base):
     state_version: Mapped[int] = mapped_column(BigInteger, default=1)
     project_state_version: Mapped[int] = mapped_column(BigInteger)
     c2pa_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    c2pa_status: Mapped[str] = mapped_column(String(16), default="NOT_REQUESTED")
     manifest: Mapped[dict | None] = mapped_column(JSONB)
     manifest_fingerprint: Mapped[str | None] = mapped_column(String(64))
     approved_by: Mapped[str | None] = mapped_column(String(200))

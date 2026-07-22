@@ -329,6 +329,18 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryApprove
     ) -> DeliveryRead: ...
 
+    async def request_c2pa_signing(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead: ...
+
+    async def complete_c2pa_signing(
+        self,
+        workspace_id: UUID,
+        delivery_id: UUID,
+        success: bool,
+        credential_uri: str | None = None,
+    ) -> DeliveryRead: ...
+
     async def create_rights_release(
         self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
     ) -> RightsReleaseRead: ...
@@ -2253,6 +2265,92 @@ class SqlAlchemyProjectRepository:
             await session.flush()
             return _delivery_read(delivery)
 
+    async def request_c2pa_signing(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead:
+        async with self._sessions.begin() as session:
+            delivery = await session.scalar(
+                select(Delivery)
+                .where(Delivery.id == delivery_id, Delivery.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            if not delivery.c2pa_requested:
+                raise DeliveryConflictError("delivery was not created with c2pa_requested=True")
+            if delivery.status != "APPROVED":
+                raise DeliveryConflictError("only approved deliveries can be submitted for signing")
+            if delivery.c2pa_status not in ("NOT_REQUESTED", "SIGN_FAILED"):
+                raise DeliveryConflictError(
+                    f"c2pa_status must be NOT_REQUESTED or SIGN_FAILED, got {delivery.c2pa_status}"
+                )
+            delivery.c2pa_status = "PENDING"
+            delivery.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="delivery",
+                    aggregate_id=delivery.id,
+                    event_type="c2pa.signing_requested",
+                    payload={
+                        "delivery_id": str(delivery.id),
+                        "manifest_fingerprint": delivery.manifest_fingerprint,
+                    },
+                )
+            )
+            await session.flush()
+            return _delivery_read(delivery)
+
+    async def complete_c2pa_signing(
+        self,
+        workspace_id: UUID,
+        delivery_id: UUID,
+        success: bool,
+        credential_uri: str | None = None,
+    ) -> DeliveryRead:
+        async with self._sessions.begin() as session:
+            delivery = await session.scalar(
+                select(Delivery)
+                .where(Delivery.id == delivery_id, Delivery.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            if delivery.c2pa_status != "SIGNING":
+                raise DeliveryConflictError(
+                    f"c2pa_status must be SIGNING, got {delivery.c2pa_status}"
+                )
+            if success:
+                delivery.c2pa_status = "SIGNED"
+                new_c2pa_manifest_status = "EMBEDDED"
+            else:
+                delivery.c2pa_status = "SIGN_FAILED"
+                new_c2pa_manifest_status = "FAILED"
+            # Update manifest c2pa_status and recompute fingerprint
+            if delivery.manifest is not None:
+                manifest_dict = dict(delivery.manifest)
+                manifest_dict["c2pa_status"] = new_c2pa_manifest_status
+                updated_manifest = DeliveryManifestBuilder.build(**manifest_dict)
+                delivery.manifest = updated_manifest.model_dump(mode="json")
+                delivery.manifest_fingerprint = updated_manifest.fingerprint
+            delivery.state_version += 1
+            event_type = "c2pa.signing_completed" if success else "c2pa.signing_failed"
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="delivery",
+                    aggregate_id=delivery.id,
+                    event_type=event_type,
+                    payload={
+                        "delivery_id": str(delivery.id),
+                        "manifest_fingerprint": delivery.manifest_fingerprint,
+                        "credential_uri": credential_uri,
+                    },
+                )
+            )
+            await session.flush()
+            return _delivery_read(delivery)
+
     async def create_artifact_release(
         self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate
     ) -> ArtifactReleaseRead:
@@ -3402,6 +3500,7 @@ def _delivery_read(delivery: Delivery) -> DeliveryRead:
         version=delivery.version,
         status=delivery.status,
         state_version=delivery.state_version,
+        c2pa_status=delivery.c2pa_status,
         manifest_fingerprint=delivery.manifest_fingerprint,
         manifest=(
             DeliveryManifestBuilder.build(**delivery.manifest)

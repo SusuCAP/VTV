@@ -7,6 +7,7 @@ from urllib.parse import unquote, urlparse
 from vtv_analysis_worker import execute as execute_analysis
 from vtv_assemble_worker import execute as execute_assemble
 from vtv_audio_worker import execute as execute_audio
+from vtv_c2pa import C2paWorker
 from vtv_media_worker import execute as execute_media
 from vtv_production_worker import execute as execute_production
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
@@ -27,6 +28,7 @@ ASSEMBLY_STAGES = frozenset(
         "DELIVERY_EVIDENCE",
     }
 )
+C2PA_STAGES = frozenset({"C2PA_SIGN"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +57,10 @@ class StageRouter:
             if job.stage_type in ASSEMBLY_STAGES:
                 return self._upload_outputs(
                     job, self.assembly_executor(self._prepare_job(job))
+                )
+            if job.stage_type in C2PA_STAGES:
+                return self._upload_outputs(
+                    job, C2paWorker().execute(self._prepare_job(job))
                 )
             return self.fallback_executor(job)
         except Exception as exc:

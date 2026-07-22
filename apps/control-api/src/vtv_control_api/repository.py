@@ -1195,6 +1195,66 @@ class MemoryRepository:
             self._deliveries[delivery.id] = approved
         return approved
 
+    async def request_c2pa_signing(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+            inputs = self._delivery_inputs.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id or inputs is None:
+            raise ProjectNotFoundError(delivery_id)
+        if not inputs.get("c2pa_requested", False):
+            raise DeliveryConflictError("delivery was not created with c2pa_requested=True")
+        if delivery.status != "APPROVED":
+            raise DeliveryConflictError("only approved deliveries can be submitted for signing")
+        if delivery.c2pa_status not in ("NOT_REQUESTED", "SIGN_FAILED"):
+            raise DeliveryConflictError(
+                f"c2pa_status must be NOT_REQUESTED or SIGN_FAILED, got {delivery.c2pa_status}"
+            )
+        updated = delivery.model_copy(
+            update={
+                "c2pa_status": "PENDING",
+                "state_version": delivery.state_version + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            current = self._deliveries.get(delivery_id)
+            if current is None or current.state_version != delivery.state_version:
+                raise DeliveryConflictError("delivery changed during request")
+            self._deliveries[delivery_id] = updated
+        return updated
+
+    async def complete_c2pa_signing(
+        self,
+        workspace_id: UUID,
+        delivery_id: UUID,
+        success: bool,
+        credential_uri: str | None = None,
+    ) -> DeliveryRead:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id:
+            raise ProjectNotFoundError(delivery_id)
+        if delivery.c2pa_status != "SIGNING":
+            raise DeliveryConflictError(
+                f"c2pa_status must be SIGNING, got {delivery.c2pa_status}"
+            )
+        new_c2pa_status = "SIGNED" if success else "SIGN_FAILED"
+        updated = delivery.model_copy(
+            update={
+                "c2pa_status": new_c2pa_status,
+                "state_version": delivery.state_version + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            current = self._deliveries.get(delivery_id)
+            if current is None or current.state_version != delivery.state_version:
+                raise DeliveryConflictError("delivery changed during completion")
+            self._deliveries[delivery_id] = updated
+        return updated
+
     async def list_candidate_groups(
         self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None
     ) -> list[CandidateGroupRead]:

@@ -13,6 +13,8 @@ from vtv_db.models import (
     ArtifactRelease,
     ArtifactReleaseDependency,
     BenchmarkRelease,
+    Delivery,
+    DeliveryAsset,
     Job,
     MediaAsset,
     ModelRelease,
@@ -160,6 +162,8 @@ class Scheduler:
                     **claim.params,
                     "delivery_evidence_request": request,
                 }
+            elif claim.stage_type == "C2PA_SIGN":
+                params = await _resolve_c2pa_sign_params(session, claim)
         return StageJob(
             stage_run_id=claim.stage_run_id,
             stage_attempt_id=claim.stage_attempt_id,
@@ -389,6 +393,61 @@ class Scheduler:
                 .with_for_update()
             )
             await self._create_draft_releases(session, claim, release_specs)
+        # After DELIVERY_EVIDENCE, schedule C2PA_SIGN if requested
+        if (
+            claim.stage_type == "DELIVERY_EVIDENCE"
+            and any(a.document_type == "QUALITY_REPORT" for a in result.domain_artifacts)
+            and claim.params.get("c2pa_requested", False)
+        ):
+            await self._create_c2pa_sign_stage(session, claim)
+
+    async def _create_c2pa_sign_stage(
+        self,
+        session: AsyncSession,
+        claim: ClaimedStage,
+    ) -> None:
+        """Create a C2PA_SIGN StageRun as a dependent of the completed DELIVERY_EVIDENCE run."""
+        idempotency_key = f"c2pa-sign:{claim.stage_run_id}"
+        existing = await session.scalar(
+            select(StageRun.id).where(
+                StageRun.project_id == claim.project_id,
+                StageRun.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            return
+        c2pa_run = StageRun(
+            id=uuid4(),
+            project_id=claim.project_id,
+            job_id=claim.job_id,
+            episode_id=claim.episode_id,
+            stage_type="C2PA_SIGN",
+            status="PENDING",
+            idempotency_key=idempotency_key,
+            runtime_profile_id="local",
+            state_version=1,
+            observed_control_version=claim.observed_control_version,
+            priority=0,
+            params={
+                "assembly_job_id": str(claim.job_id) if claim.job_id else None,
+                "episode_id": str(claim.episode_id) if claim.episode_id else None,
+                "delivery_evidence_stage_run_id": str(claim.stage_run_id),
+            },
+        )
+        session.add(c2pa_run)
+        await session.flush()
+        session.add(
+            StageDependency(
+                stage_run_id=c2pa_run.id,
+                depends_on_stage_run_id=claim.stage_run_id,
+            )
+        )
+        if claim.job_id:
+            await session.execute(
+                update(Job)
+                .where(Job.id == claim.job_id)
+                .values(total_stages=Job.total_stages + 1)
+            )
 
     async def _create_draft_releases(
         self,
@@ -799,3 +858,51 @@ async def _invalidate_release_graph(
             )
         )
         pending.extend(downstream)
+
+
+async def _resolve_c2pa_sign_params(
+    session: AsyncSession,
+    claim: ClaimedStage,
+) -> dict:
+    """Resolve delivery information for a C2PA_SIGN stage at claim time."""
+    if claim.episode_id is None:
+        raise ValueError("C2PA_SIGN requires an episode_id on the stage run")
+    delivery = await session.scalar(
+        select(Delivery)
+        .where(
+            Delivery.project_id == claim.project_id,
+            Delivery.episode_id == claim.episode_id,
+            Delivery.status == "APPROVED",
+        )
+        .order_by(Delivery.version.desc())
+        .limit(1)
+    )
+    if delivery is None:
+        raise ValueError("C2PA_SIGN: no approved delivery found for episode")
+    if delivery.manifest_fingerprint is None:
+        raise ValueError("C2PA_SIGN: approved delivery has no manifest fingerprint")
+    master_link = await session.scalar(
+        select(DeliveryAsset)
+        .where(
+            DeliveryAsset.delivery_id == delivery.id,
+            DeliveryAsset.role == "MASTER_VIDEO",
+        )
+    )
+    if master_link is None:
+        raise ValueError("C2PA_SIGN: approved delivery has no MASTER_VIDEO asset")
+    master_asset = await session.get(MediaAsset, master_link.asset_id)
+    if master_asset is None:
+        raise ValueError("C2PA_SIGN: MASTER_VIDEO asset record not found")
+    return {
+        **claim.params,
+        "c2pa_sign_request": {
+            "delivery_id": str(delivery.id),
+            "manifest_fingerprint": delivery.manifest_fingerprint,
+            "master_object_uri": master_asset.object_uri,
+            "output_prefix": (
+                f"memory://workspaces/{claim.workspace_id}/projects/{claim.project_id}"
+                f"/jobs/{claim.job_id}/stages/{claim.stage_run_id}"
+            ),
+            "signer_id": "vtv.passthrough-signer.v1",
+        },
+    }
