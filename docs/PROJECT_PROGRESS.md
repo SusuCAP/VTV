@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 42% | 控制 API、数据库编排核心、分片上传与存储适配边界 |
+| Phase 1 基础平台 | 进行中 | 58% | 控制 API、数据库/存储核心、React/Tauri Mac 控制端 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -33,12 +33,15 @@
 - [x] 固化 Stage Run 合法状态迁移并覆盖成功、失败、取消、失效路径测试。
 - [x] 实现对象存储 Adapter 协议与无媒体代理的 multipart API。
 - [x] 实现 32–128 MiB 分片、恢复查询、顺序/大小/SHA-256 完成校验。
+- [x] 建立 npm workspace、React/Vite 控制端和 Tauri 2 macOS 壳。
+- [x] 实现项目头、生产阶段轨、指标、剧集列表、异常队列及审核详情。
+- [x] 验证开始分析、异常切换和标记处理交互；完成概念稿对照检查。
 - [ ] 用 PostgreSQL Repository 替换开发期内存 Repository。
 - [ ] 建立 Node workspace 与 React/Tauri 控制端骨架。
 
 ## 下一提交目标
 
-`feat: add multipart upload and object storage contract`
+`feat: build React and Tauri macOS control workspace`
 
 完成后继续 Phase 1 的“PostgreSQL 核心模型 + 数据库驱动状态机”。
 
@@ -61,3 +64,7 @@
 | 2026-07-22 | `pytest` | 15 passed；同一上游弃用提示 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 17 passed；同一上游弃用提示 |
+| 2026-07-22 | `npm run lint:mac` | 通过 |
+| 2026-07-22 | `npm run build:mac` | 通过，Vite production bundle 已生成 |
+| 2026-07-22 | `cargo check --offline` | 通过，Tauri 壳可编译 |
+| 2026-07-22 | Playwright Chrome 1600×1000 | 主屏渲染及 3 条核心交互通过 |

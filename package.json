@@ -1,0 +1,10 @@
+{
+  "name": "vtv",
+  "private": true,
+  "workspaces": ["apps/mac-client"],
+  "scripts": {
+    "dev:mac": "npm --workspace @vtv/mac-client run dev",
+    "build:mac": "npm --workspace @vtv/mac-client run build",
+    "lint:mac": "npm --workspace @vtv/mac-client run lint"
+  }
+}
