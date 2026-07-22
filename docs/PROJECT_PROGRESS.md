@@ -160,15 +160,17 @@
 - [x] Registry `qwen3_vl` bundle 注入具体模型 release；未批准权重继续由许可与 Golden 报告门禁阻止流量。
 - [x] Modal L4 镜像锁定 transformers 5.14.1、qwen-vl-utils 0.0.14 与 accelerate 1.14.0。
 - [x] 新增框 IoU、时间段 IoU、场景标签 F1 与多语言 OCR 字符准确率四项 Golden Shots 指标。
+- [x] 实现视觉 Golden Shots runner，校验源视频、规范标注 hash 与时长后生成 benchmark API payload。
+- [x] Runner 聚合人物/几何框、场景时间与标签、OCR 五项分数，并隔离单样本推理失败。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add vision golden benchmark runner`
+`feat: add production localization model adapters`
 
-下一步把人工标注的 Golden Shots、源/标注 hash、视觉 Pipeline 输出和四项指标汇总为 benchmark
-API payload；同时在 Modal API 网络恢复后补跑云端验收。
+下一步进入 Phase 3，固化剧本翻译、配音、口型与视觉修复的生产 Adapter 边界和首批可执行模型
+bundle；同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -261,3 +263,5 @@ API payload；同时在 Modal API 网络恢复后补跑云端验收。
 | 2026-07-22 | `pytest` | 96 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 生产视觉 Adapter/Golden 指标 | 15 passed；覆盖共享单次推理、镜头边界、Registry bundle 与四项指标 |
 | 2026-07-22 | `pytest` | 104 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 视觉 Golden Shots runner | 2 passed；覆盖完整 payload、五项满分和标注 hash 漂移拒绝 |
+| 2026-07-22 | `pytest` | 106 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

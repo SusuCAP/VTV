@@ -7,6 +7,7 @@ dependencies = [
   "httpx>=0.28.1",
   "pydantic-settings>=2.8.1",
   "vtv-analysis",
+  "vtv-evaluation",
   "vtv-media",
   "vtv-schemas",
 ]
@@ -17,5 +18,6 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 vtv-analysis = { workspace = true }
+vtv-evaluation = { workspace = true }
 vtv-media = { workspace = true }
 vtv-schemas = { workspace = true }

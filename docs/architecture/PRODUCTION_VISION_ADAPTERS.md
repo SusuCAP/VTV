@@ -25,5 +25,8 @@ Golden Shots 达标后才可替换或组合。
 - `label_f1`：大小写无关的场景标签集合 F1；
 - `ocr_text_accuracy`：兼容中英文、全角字符和标点归一化的 OCR 字符准确率。
 
-这些指标均输出 `[0,1]`，可直接写入现有 Benchmark Policy。下一层 Golden Shots runner 负责将
-人工标注的不可变 hash、样本失败隔离、延迟和成本汇总为 benchmark API payload。
+这些指标均输出 `[0,1]`，可直接写入现有 Benchmark Policy。
+
+`run_vision_golden_dataset` 将人工标注的不可变 hash、样本失败隔离、延迟和成本汇总为 benchmark
+API payload。每个样本在推理前校验源视频 SHA-256、规范 JSON 标注 SHA-256 和 50 ms 时长漂移；
+推理异常只标记当前样本为关键失败，不中止整批证据采集。
