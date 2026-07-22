@@ -26,6 +26,11 @@ from vtv_delivery import (
     ShotDeliveryEntry,
 )
 from vtv_evaluation import evaluate_release
+from vtv_evaluation.contracts import (
+    EvaluatorReleaseCreate,
+    EvaluatorReleaseRead,
+    QcEvidenceCreate,
+)
 from vtv_production import (
     LipSyncRequest,
     LocalizedUtterance,
@@ -87,6 +92,7 @@ from .models import (
     Delivery,
     DeliveryAsset,
     Episode,
+    EvaluatorRelease,
     ExecutionControl,
     Job,
     MediaAsset,
@@ -151,6 +157,10 @@ class DeliveryConflictError(ValueError):
 
 
 class StageNotReadyError(ValueError):
+    pass
+
+
+class EvaluatorConflictError(ValueError):
     pass
 
 
@@ -547,6 +557,30 @@ class ProjectRepository(Protocol):
         episode_id: UUID | None = None,
         status: str = "EXECUTION_FAILED",
     ) -> list[FailedStageRead]: ...
+
+    async def create_evaluator_release(
+        self, workspace_id: UUID, payload: EvaluatorReleaseCreate
+    ) -> EvaluatorReleaseRead: ...
+
+    async def list_evaluator_releases(
+        self, workspace_id: UUID, evaluator_key: str | None = None
+    ) -> list[EvaluatorReleaseRead]: ...
+
+    async def get_active_evaluator(
+        self, workspace_id: UUID, evaluator_key: str
+    ) -> EvaluatorReleaseRead: ...
+
+    async def deprecate_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead: ...
+
+    async def get_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead: ...
+
+    async def submit_qc_evidence(
+        self, workspace_id: UUID, project_id: UUID, payload: QcEvidenceCreate
+    ) -> None: ...
 
 
 class SqlAlchemyProjectRepository:
@@ -3454,6 +3488,237 @@ class SqlAlchemyProjectRepository:
             ]
 
 
+    async def create_evaluator_release(
+        self, workspace_id: UUID, payload: EvaluatorReleaseCreate
+    ) -> EvaluatorReleaseRead:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                insert(Workspace)
+                .values(id=workspace_id, name=f"Workspace {workspace_id}")
+                .on_conflict_do_nothing(index_elements=[Workspace.id])
+            )
+            next_version = int(
+                await session.scalar(
+                    select(func.coalesce(func.max(EvaluatorRelease.version), 0) + 1).where(
+                        EvaluatorRelease.workspace_id == workspace_id,
+                        EvaluatorRelease.evaluator_key == payload.evaluator_key,
+                    )
+                )
+            )
+            release = EvaluatorRelease(
+                id=self._id_factory(),
+                workspace_id=workspace_id,
+                evaluator_key=payload.evaluator_key,
+                release_name=payload.release_name,
+                version=next_version,
+                status="ACTIVE",
+                metric_definitions=[m.model_dump(mode="json") for m in payload.metric_definitions],
+                thresholds=dict(payload.thresholds),
+                state_version=1,
+            )
+            session.add(release)
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="evaluator_release",
+                    aggregate_id=release.id,
+                    event_type="evaluator_release.created",
+                    payload={
+                        "evaluator_release_id": str(release.id),
+                        "evaluator_key": release.evaluator_key,
+                        "version": release.version,
+                    },
+                )
+            )
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                raise EvaluatorConflictError("evaluator release already exists") from exc
+            return _evaluator_release_read(release)
+
+    async def list_evaluator_releases(
+        self, workspace_id: UUID, evaluator_key: str | None = None
+    ) -> list[EvaluatorReleaseRead]:
+        async with self._sessions() as session:
+            query = select(EvaluatorRelease).where(
+                EvaluatorRelease.workspace_id == workspace_id
+            )
+            if evaluator_key is not None:
+                query = query.where(EvaluatorRelease.evaluator_key == evaluator_key)
+            rows = list(
+                await session.scalars(
+                    query.order_by(EvaluatorRelease.evaluator_key, EvaluatorRelease.version.desc())
+                )
+            )
+            return [_evaluator_release_read(row) for row in rows]
+
+    async def get_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead:
+        async with self._sessions() as session:
+            release = await session.scalar(
+                select(EvaluatorRelease).where(
+                    EvaluatorRelease.id == evaluator_release_id,
+                    EvaluatorRelease.workspace_id == workspace_id,
+                )
+            )
+            if release is None:
+                raise ProjectNotFoundError(evaluator_release_id)
+            return _evaluator_release_read(release)
+
+    async def get_active_evaluator(
+        self, workspace_id: UUID, evaluator_key: str
+    ) -> EvaluatorReleaseRead:
+        async with self._sessions() as session:
+            release = await session.scalar(
+                select(EvaluatorRelease)
+                .where(
+                    EvaluatorRelease.workspace_id == workspace_id,
+                    EvaluatorRelease.evaluator_key == evaluator_key,
+                    EvaluatorRelease.status == "ACTIVE",
+                )
+                .order_by(EvaluatorRelease.version.desc())
+                .limit(1)
+            )
+            if release is None:
+                raise ProjectNotFoundError(evaluator_key)
+            return _evaluator_release_read(release)
+
+    async def deprecate_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await session.scalar(
+                select(EvaluatorRelease)
+                .where(
+                    EvaluatorRelease.id == evaluator_release_id,
+                    EvaluatorRelease.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if release is None:
+                raise ProjectNotFoundError(evaluator_release_id)
+            if release.status == "DEPRECATED":
+                raise EvaluatorConflictError("evaluator release is already deprecated")
+            release.status = "DEPRECATED"
+            release.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="evaluator_release",
+                    aggregate_id=release.id,
+                    event_type="evaluator_release.deprecated",
+                    payload={
+                        "evaluator_release_id": str(release.id),
+                        "evaluator_key": release.evaluator_key,
+                    },
+                )
+            )
+            await session.flush()
+            return _evaluator_release_read(release)
+
+    async def submit_qc_evidence(
+        self, workspace_id: UUID, project_id: UUID, payload: QcEvidenceCreate
+    ) -> None:
+        async with self._sessions.begin() as session:
+            variant = await session.scalar(
+                select(RenderVariant)
+                .join(CandidateGroup, CandidateGroup.id == RenderVariant.candidate_group_id)
+                .join(Project, Project.id == CandidateGroup.project_id)
+                .where(
+                    RenderVariant.id == payload.render_variant_id,
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if variant is None:
+                raise ProjectNotFoundError(payload.render_variant_id)
+            evaluator = await session.scalar(
+                select(EvaluatorRelease).where(
+                    EvaluatorRelease.id == payload.evaluator_release_id,
+                    EvaluatorRelease.workspace_id == workspace_id,
+                )
+            )
+            if evaluator is None:
+                raise ProjectNotFoundError(payload.evaluator_release_id)
+            for result in payload.results:
+                stmt = (
+                    insert(QcResult)
+                    .values(
+                        id=self._id_factory(),
+                        render_variant_id=payload.render_variant_id,
+                        metric_name=result["metric_name"],
+                        metric_version=result["metric_version"],
+                        evaluator_release=result["evaluator_release"],
+                        score=float(result["score"]),
+                        verdict=result["verdict"],
+                        hard_failure=bool(result.get("hard_failure", False)),
+                        details=result.get("details", {}),
+                    )
+                    .on_conflict_do_update(
+                        index_elements=[
+                            "render_variant_id",
+                            "metric_name",
+                            "metric_version",
+                            "evaluator_release",
+                        ],
+                        set_={
+                            "score": result["score"],
+                            "verdict": result["verdict"],
+                            "hard_failure": result.get("hard_failure", False),
+                            "details": result.get("details", {}),
+                        },
+                    )
+                )
+                await session.execute(stmt)
+            metric_defs = {
+                m["metric_name"]: m for m in evaluator.metric_definitions
+            }
+            thresholds: dict[str, float] = dict(evaluator.thresholds)
+            hard_fail = False
+            for result in payload.results:
+                mname = result["metric_name"]
+                score = float(result["score"])
+                mdef = metric_defs.get(mname, {})
+                hfb = mdef.get("hard_failure_below")
+                if hfb is not None and score < hfb:
+                    hard_fail = True
+                    break
+            if hard_fail:
+                new_status = "QC_FAILED"
+                event_type = "qc.hard_failure"
+            else:
+                all_pass = all(
+                    any(
+                        r["metric_name"] == mname and float(r["score"]) >= threshold
+                        for r in payload.results
+                    )
+                    for mname, threshold in thresholds.items()
+                )
+                if thresholds and all_pass:
+                    new_status = "QC_PASSED"
+                    event_type = "qc.passed"
+                else:
+                    new_status = "REVIEW"
+                    event_type = "qc.review"
+            variant.status = new_status
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="render_variant",
+                    aggregate_id=variant.id,
+                    event_type=event_type,
+                    payload={
+                        "render_variant_id": str(variant.id),
+                        "evaluator_release_id": str(payload.evaluator_release_id),
+                        "status": new_status,
+                    },
+                )
+            )
+            await session.flush()
+
+
 def _stage_run_read(run: StageRun) -> StageRunRead:
     return StageRunRead(
         id=run.id,
@@ -4037,4 +4302,20 @@ def _upload_record(upload: UploadSession) -> UploadRecord:
         part_size_bytes=upload.part_size_bytes,
         filename=upload.filename,
         episode_no=upload.episode_no,
+    )
+
+
+def _evaluator_release_read(release: EvaluatorRelease) -> EvaluatorReleaseRead:
+    return EvaluatorReleaseRead(
+        id=release.id,
+        workspace_id=release.workspace_id,
+        evaluator_key=release.evaluator_key,
+        release_name=release.release_name,
+        version=release.version,
+        status=release.status,
+        metric_definitions=list(release.metric_definitions),
+        thresholds=dict(release.thresholds),
+        state_version=release.state_version,
+        created_at=release.created_at,
+        updated_at=release.updated_at,
     )

@@ -12,6 +12,7 @@ from vtv_db.repository import (
     ArtifactConflictError,
     CandidateConflictError,
     DeliveryConflictError,
+    EvaluatorConflictError,
     FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
@@ -23,6 +24,7 @@ from vtv_db.repository import (
     UploadConflictError,
 )
 from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryRead
+from vtv_evaluation.contracts import EvaluatorReleaseCreate, EvaluatorReleaseRead, QcEvidenceCreate
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -867,6 +869,76 @@ def create_app(
             )
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/evaluator-releases",
+        response_model=EvaluatorReleaseRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_evaluator_release(
+        payload: EvaluatorReleaseCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EvaluatorReleaseRead:
+        try:
+            return await repo.create_evaluator_release(workspace, payload)
+        except EvaluatorConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/v1/evaluator-releases", response_model=list[EvaluatorReleaseRead])
+    async def list_evaluator_releases(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        evaluator_key: Annotated[str | None, Query(max_length=64)] = None,
+    ) -> list[EvaluatorReleaseRead]:
+        return await repo.list_evaluator_releases(workspace, evaluator_key)
+
+    @app.get(
+        "/v1/evaluator-releases/{release_id}",
+        response_model=EvaluatorReleaseRead,
+    )
+    async def get_evaluator_release(
+        release_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EvaluatorReleaseRead:
+        try:
+            return await repo.get_evaluator_release(workspace, release_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="evaluator release not found") from exc
+
+    @app.post(
+        "/v1/evaluator-releases/{release_id}:deprecate",
+        response_model=EvaluatorReleaseRead,
+    )
+    async def deprecate_evaluator_release(
+        release_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EvaluatorReleaseRead:
+        try:
+            return await repo.deprecate_evaluator_release(workspace, release_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="evaluator release not found") from exc
+        except EvaluatorConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/candidates/{variant_id}:submit-qc",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    async def submit_qc_evidence(
+        project_id: UUID,
+        variant_id: UUID,
+        payload: QcEvidenceCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> None:
+        if payload.render_variant_id != variant_id:
+            raise HTTPException(
+                status_code=422, detail="render_variant_id path/body mismatch"
+            )
+        try:
+            await repo.submit_qc_evidence(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project, variant, or evaluator not found"
+            ) from exc
 
     return app
 

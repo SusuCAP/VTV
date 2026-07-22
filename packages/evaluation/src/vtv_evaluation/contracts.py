@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from hashlib import sha256
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -128,3 +130,48 @@ class BenchmarkReport(FrozenModel):
     metrics: dict[str, MetricAggregate]
     approved: bool
     failed_gates: tuple[str, ...]
+
+
+class MetricDefinition(FrozenModel):
+    metric_name: str = Field(min_length=1, max_length=100)
+    metric_version: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=500)
+    hard_failure_below: float | None = Field(default=None, ge=0, le=1)
+    # score < hard_failure_below → candidate directly QC_FAILED, not overrideable
+
+
+class EvaluatorReleaseCreate(BaseModel):
+    evaluator_key: str = Field(min_length=1, max_length=64)
+    release_name: str = Field(min_length=1, max_length=200)
+    metric_definitions: tuple[MetricDefinition, ...] = Field(min_length=1)
+    thresholds: dict[str, float] = Field(default_factory=dict)
+    # thresholds: {metric_name → minimum_pass_score}
+
+    @model_validator(mode="after")
+    def validate_threshold_keys(self) -> EvaluatorReleaseCreate:
+        metric_names = {m.metric_name for m in self.metric_definitions}
+        for key in self.thresholds:
+            if key not in metric_names:
+                raise ValueError(f"threshold key {key!r} not in metric definitions")
+        return self
+
+
+class EvaluatorReleaseRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    evaluator_key: str
+    release_name: str
+    version: int
+    status: str
+    metric_definitions: list[dict]
+    thresholds: dict[str, float]
+    state_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class QcEvidenceCreate(BaseModel):
+    render_variant_id: UUID
+    evaluator_release_id: UUID
+    results: tuple[dict, ...]
+    # each dict: {metric_name, metric_version, evaluator_release, score, verdict, hard_failure}

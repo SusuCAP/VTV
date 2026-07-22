@@ -25,6 +25,7 @@ from vtv_db.repository import (
     ArtifactConflictError,
     CandidateConflictError,
     DeliveryConflictError,
+    EvaluatorConflictError,
     FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
@@ -39,6 +40,11 @@ from vtv_db.repository import (
 from vtv_db.rights import evaluate_rights_release
 from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryManifestBuilder, DeliveryRead
 from vtv_evaluation import evaluate_release
+from vtv_evaluation.contracts import (
+    EvaluatorReleaseCreate,
+    EvaluatorReleaseRead,
+    QcEvidenceCreate,
+)
 from vtv_production import LipSyncRequest, ShotDialogueFeatures, TieredLipSyncRouter
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
@@ -88,6 +94,7 @@ class MemoryRepository:
         self._lipsync_assets: dict[UUID, dict] = {}
         self._deliveries: dict[UUID, DeliveryRead] = {}
         self._delivery_inputs: dict[UUID, dict] = {}
+        self._evaluator_releases: dict[UUID, EvaluatorReleaseRead] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -1968,6 +1975,105 @@ class MemoryRepository:
         # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
         await self.get_project(workspace_id, project_id)
         return []
+
+    async def create_evaluator_release(
+        self, workspace_id: UUID, payload: EvaluatorReleaseCreate
+    ) -> EvaluatorReleaseRead:
+        with self._lock:
+            if any(
+                item.workspace_id == workspace_id
+                and item.evaluator_key == payload.evaluator_key
+                and item.release_name == payload.release_name
+                for item in self._evaluator_releases.values()
+            ):
+                raise EvaluatorConflictError("evaluator release already exists")
+            version = 1 + max(
+                (
+                    item.version
+                    for item in self._evaluator_releases.values()
+                    if item.workspace_id == workspace_id
+                    and item.evaluator_key == payload.evaluator_key
+                ),
+                default=0,
+            )
+            now = datetime.now(UTC)
+            release = EvaluatorReleaseRead(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                evaluator_key=payload.evaluator_key,
+                release_name=payload.release_name,
+                version=version,
+                status="ACTIVE",
+                metric_definitions=[m.model_dump(mode="json") for m in payload.metric_definitions],
+                thresholds=dict(payload.thresholds),
+                state_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._evaluator_releases[release.id] = release
+            return release
+
+    async def list_evaluator_releases(
+        self, workspace_id: UUID, evaluator_key: str | None = None
+    ) -> list[EvaluatorReleaseRead]:
+        with self._lock:
+            return [
+                item
+                for item in self._evaluator_releases.values()
+                if item.workspace_id == workspace_id
+                and (evaluator_key is None or item.evaluator_key == evaluator_key)
+            ]
+
+    async def get_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead:
+        with self._lock:
+            release = self._evaluator_releases.get(evaluator_release_id)
+        if release is None or release.workspace_id != workspace_id:
+            raise ProjectNotFoundError(evaluator_release_id)
+        return release
+
+    async def get_active_evaluator(
+        self, workspace_id: UUID, evaluator_key: str
+    ) -> EvaluatorReleaseRead:
+        with self._lock:
+            candidates = [
+                item
+                for item in self._evaluator_releases.values()
+                if item.workspace_id == workspace_id
+                and item.evaluator_key == evaluator_key
+                and item.status == "ACTIVE"
+            ]
+        if not candidates:
+            raise ProjectNotFoundError(evaluator_key)
+        return max(candidates, key=lambda item: item.version)
+
+    async def deprecate_evaluator_release(
+        self, workspace_id: UUID, evaluator_release_id: UUID
+    ) -> EvaluatorReleaseRead:
+        with self._lock:
+            release = self._evaluator_releases.get(evaluator_release_id)
+        if release is None or release.workspace_id != workspace_id:
+            raise ProjectNotFoundError(evaluator_release_id)
+        if release.status == "DEPRECATED":
+            raise EvaluatorConflictError("evaluator release is already deprecated")
+        now = datetime.now(UTC)
+        updated = release.model_copy(
+            update={
+                "status": "DEPRECATED",
+                "state_version": release.state_version + 1,
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._evaluator_releases[release.id] = updated
+        return updated
+
+    async def submit_qc_evidence(
+        self, workspace_id: UUID, project_id: UUID, payload: QcEvidenceCreate
+    ) -> None:
+        # MemoryRepository stub — full QC logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
 
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:

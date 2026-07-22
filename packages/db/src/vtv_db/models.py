@@ -668,3 +668,29 @@ class DeletionTombstone(TimestampMixin, Base):
     resource_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
     requested_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     reason: Mapped[str | None] = mapped_column(Text)
+
+
+class EvaluatorRelease(TimestampMixin, Base):
+    __tablename__ = "evaluator_releases"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "evaluator_key", "version"),
+        CheckConstraint("version >= 1", name="ck_evaluator_releases_version"),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'DEPRECATED')",
+            name="ck_evaluator_releases_status",
+        ),
+        CheckConstraint("state_version >= 1", name="ck_evaluator_releases_state_version"),
+        Index("ix_evaluator_releases_key_status", "workspace_id", "evaluator_key", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    evaluator_key: Mapped[str] = mapped_column(String(64))
+    release_name: Mapped[str] = mapped_column(String(200))
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE")
+    metric_definitions: Mapped[list] = mapped_column(JSONB, default=list)
+    thresholds: Mapped[dict] = mapped_column(JSONB, default=dict)
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
