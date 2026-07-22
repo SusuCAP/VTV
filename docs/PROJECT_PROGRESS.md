@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 94% | 可门禁远程模型运行时、显式回退与真实 release provenance |
+| Phase 2 全剧分析 | 进行中 | 96% | 模型 Registry、许可审批、灰度流量与数据库外键 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -114,13 +114,18 @@
 - [x] endpoint 强制 HTTPS 或 localhost，远程错误不泄漏 token/响应正文。
 - [x] 模型回退默认关闭；仅显式开启且发生远程服务错误时使用确定性 Adapter。
 - [x] 回退后 provenance 记录实际 fallback release，许可/批准失败不可绕过。
+- [x] 新增 workspace 隔离 Model Release Registry 与 `0006` 迁移。
+- [x] 固化 license REVIEW/APPROVED/REJECTED 与 automation OBSERVE/CANARY/ACTIVE/DISABLED。
+- [x] CANARY 强制 1–99%、ACTIVE 强制 100%、无流量状态强制 0%。
+- [x] 自动流量要求已批准许可、model card 与安全 endpoint，并受 state version CAS 保护。
+- [x] `stage_runs.model_release_id` 升级为 Model Release 外键。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add model release registry`
+`feat: add model release admission api`
 
-下一步建立 PostgreSQL Model Release Registry 与准入 API，让运行时门禁从环境配置升级为数据库权威 release、许可、灰度与禁用状态。
+下一步实现 Model Release 创建/查询/许可审批/灰度切换 API，并把 ACTIVE/CANARY 选择结果注入对应分析 StageJob。
 
 ## 决策日志
 
@@ -189,3 +194,6 @@
 | 2026-07-22 | `pytest` | 55 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 生产模型运行时测试 | 4 passed；覆盖批准门禁、强类型响应、实际回退 release 与缺失配置拒绝 |
 | 2026-07-22 | `pytest` | 59 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Model Release 准入状态机 | 4 passed；覆盖许可门禁、canary→active 与非法流量范围 |
+| 2026-07-22 | SQLAlchemy metadata | 19 tables loaded，`stage_runs.model_release_id` 具备外键 |
+| 2026-07-22 | `pytest` | 63 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

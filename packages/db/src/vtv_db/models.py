@@ -196,7 +196,9 @@ class StageRun(TimestampMixin, Base):
     stage_type: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="PENDING")
     idempotency_key: Mapped[str] = mapped_column(String(255))
-    model_release_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    model_release_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_releases.id", ondelete="SET NULL")
+    )
     runtime_profile_id: Mapped[str] = mapped_column(String(100))
     state_version: Mapped[int] = mapped_column(BigInteger, default=1)
     observed_control_version: Mapped[int] = mapped_column(BigInteger)
@@ -337,6 +339,53 @@ class AnalysisDocument(TimestampMixin, Base):
     document_type: Mapped[str] = mapped_column(String(64))
     schema_version: Mapped[int] = mapped_column(Integer, default=1)
     payload: Mapped[dict] = mapped_column(JSONB)
+
+
+class ModelRelease(TimestampMixin, Base):
+    __tablename__ = "model_releases"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "model_key", "release_name"),
+        CheckConstraint("state_version >= 1", name="ck_model_releases_state_version"),
+        CheckConstraint(
+            "license_status IN ('REVIEW', 'APPROVED', 'REJECTED')",
+            name="ck_model_releases_license_status",
+        ),
+        CheckConstraint(
+            "automation_status IN ('OBSERVE', 'CANARY', 'ACTIVE', 'DISABLED')",
+            name="ck_model_releases_automation_status",
+        ),
+        CheckConstraint(
+            "traffic_percent BETWEEN 0 AND 100",
+            name="ck_model_releases_traffic_percent",
+        ),
+        Index(
+            "ix_model_releases_workspace_key_status",
+            "workspace_id",
+            "model_key",
+            "automation_status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    model_key: Mapped[str] = mapped_column(String(64))
+    release_name: Mapped[str] = mapped_column(String(200))
+    provider: Mapped[str] = mapped_column(String(100))
+    endpoint: Mapped[str] = mapped_column(Text)
+    license_id: Mapped[str] = mapped_column(String(200))
+    license_status: Mapped[str] = mapped_column(String(32), default="REVIEW")
+    automation_status: Mapped[str] = mapped_column(String(32), default="OBSERVE")
+    traffic_percent: Mapped[int] = mapped_column(Integer, default=0)
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+    model_card_uri: Mapped[str] = mapped_column(Text)
+    config_json: Mapped[dict] = mapped_column("config", JSONB, default=dict)
+    fallback_release_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("model_releases.id", ondelete="SET NULL")
+    )
+    reviewed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class OrphanAsset(TimestampMixin, Base):
