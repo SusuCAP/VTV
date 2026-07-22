@@ -6,6 +6,8 @@ requires-python = ">=3.12"
 members = [
     "vtv-control-api",
     "vtv-db",
+    "vtv-media",
+    "vtv-media-worker",
     "vtv-orchestrator",
     "vtv-schemas",
     "vtv-storage",
@@ -849,6 +851,32 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
+
+[[package]]
+name = "vtv-media"
+version = "0.1.0"
+source = { editable = "packages/media" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+
+[[package]]
+name = "vtv-media-worker"
+version = "0.1.0"
+source = { editable = "workers/media" }
+dependencies = [
+    { name = "vtv-media" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "vtv-media", editable = "packages/media" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
 

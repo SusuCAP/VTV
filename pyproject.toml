@@ -18,8 +18,10 @@ members = [
   "apps/control-api",
   "apps/orchestrator",
   "packages/db",
+  "packages/media",
   "packages/schemas",
   "packages/storage",
+  "workers/media",
 ]
 
 [tool.pytest.ini_options]
