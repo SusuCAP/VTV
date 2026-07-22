@@ -5,6 +5,10 @@
 阈值。两者使用键排序、标签排序的规范 JSON 生成 SHA-256 指纹，避免环境或字典顺序改变
 实验身份。
 
+需要独立标注媒体的任务还会把有序 `reference_sha256s` 写入每个 Golden Sample。Stem
+benchmark 固定 dialogue/background reference 的 hash，任一参考音轨变化都会改变 Dataset
+指纹，不能沿用旧批准报告。
+
 每个 dataset sample 必须且只能提交一份结果，额外、遗漏或重复结果全部拒绝。报告同时聚合：
 
 - technical access、rollback、reproducibility 与 calibration 四个前置硬门禁；
@@ -26,6 +30,11 @@
 Dataset 漂移都会终止整批，不能被误算成模型失败。推理异常则只把对应样本标记为 critical
 failure 并记录异常类型，整批继续；成功样本采集 transcript/speaker 指标、端到端延迟和按
 计算秒计价的成本。这样基础设施错误、数据污染与模型质量失败在审计上保持不同语义。
+
+Stem runner 只读取未压缩 PCM WAV，并先统一声道为 mono；采样率或样本数不同会显式拒绝。
+它生成 `dialogue_fidelity`、`background_fidelity`、`dialogue_leakage_control` 和
+`reconstruction_accuracy` 四项 `[0,1]` 指标。Reference hash/PCM 不兼容属于 Dataset 错误并
+终止整批；缺少 dialogue/background、输出不可读或模型异常属于候选失败，只标记当前样本。
 
 迁移 `0007_benchmark_releases.sql` 新增不可变 `benchmark_releases` 与逐样本
 `benchmark_sample_results`。报告唯一身份由 model release、dataset 指纹、policy 指纹与权重

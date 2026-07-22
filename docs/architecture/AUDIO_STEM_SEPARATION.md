@@ -27,3 +27,15 @@ attempt/stage/episode 字段；ASR 只接受恰好一个 `DIALOGUE` 资产，输
 Registry 使用 `AUDIO_STEM_SEPARATION` model key 和 `adapter_mode=demucs` 配置候选。分析 DAG
 创建时固化选中 release 外键；Modal 模式把 Stem、ASR、视觉和项目合成统一派发到计算平面。
 本地开发模式保持 passthrough，避免下载权重。
+
+## Golden 指标
+
+每个 case 固定 source、dialogue reference、background reference 三个 SHA-256。评测读取
+8/16/24/32-bit PCM WAV，统一多声道为 mono，并要求采样率和样本长度一致。准入同时检查：
+
+- dialogue/background 与人工 reference 的波形方向保真；
+- dialogue reference 在预测 background 中的归一化相关泄漏；
+- 预测 dialogue + background 对 source 的归一化重建误差；
+- critical failure、人工退回、P95 和单位合格输出秒成本等通用门禁。
+
+这些轻量指标是自动硬门禁，不替代对白可懂度、音乐泵动、瞬态损伤和目标市场人工听审。

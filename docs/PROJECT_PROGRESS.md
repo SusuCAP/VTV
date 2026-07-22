@@ -151,15 +151,19 @@
 - [x] 实现 passthrough 合同 Adapter 与惰性 Demucs 4.1.0 候选 Adapter，不伪造 MUSIC/EFFECTS。
 - [x] Scheduler 保留 Worker 输出 metadata，使 stem kind/model release 可跨数据库边界传递。
 - [x] Registry 新增 Stem 模型选择注入；Modal 模式把 Stem Stage 一并派发到 L4 计算平面。
+- [x] Golden Sample 新增有序 reference SHA-256，标注音轨变更会生成新的 Dataset 指纹。
+- [x] 实现无额外依赖的 PCM WAV 解码，覆盖 8/16/24/32-bit 与多声道 mono 聚合。
+- [x] 实现对白/背景保真、对白泄漏控制和源音频重建准确率四项 Stem Golden 指标。
+- [x] Stem runner 生成 benchmark API payload，并区分 reference 污染与单样本模型失败。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add stem separation golden metrics`
+`feat: add production vision model adapters`
 
-下一步实现对白泄漏、背景保真和 stem 重建误差 Golden 指标，并把 Stem 候选接入 benchmark
-runner；同时在 Modal API 网络恢复后补跑权重下载和云端验收。
+下一步接入人物/场景/OCR/几何的生产视觉 Adapter 与惰性模型加载，并用 Golden Shots 固化
+检测、OCR 和连续性指标；同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -248,3 +252,5 @@ runner；同时在 Modal API 网络恢复后补跑权重下载和云端验收。
 | 2026-07-22 | `pytest` | 86 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Stem/DAG/Audio Worker 聚焦测试 | 13 passed；覆盖 stem 不变量、Demucs 映射、真实 FFmpeg Worker 与路由 |
 | 2026-07-22 | `pytest` | 90 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Stem Golden 指标/runner | 6 passed；覆盖 PCM、四项指标、批准 payload、失败隔离与 reference 漂移 |
+| 2026-07-22 | `pytest` | 96 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

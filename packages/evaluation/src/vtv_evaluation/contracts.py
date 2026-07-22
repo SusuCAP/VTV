@@ -14,9 +14,21 @@ class FrozenModel(BaseModel):
 class GoldenSample(FrozenModel):
     sample_id: str = Field(min_length=1, max_length=128, pattern=r"^[a-zA-Z0-9._-]+$")
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    reference_sha256s: tuple[str, ...] = ()
     duration_seconds: float = Field(gt=0)
     tags: frozenset[str] = Field(default_factory=frozenset)
     critical: bool = False
+
+    @model_validator(mode="after")
+    def validate_reference_hashes(self) -> GoldenSample:
+        if any(
+            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
+            for value in self.reference_sha256s
+        ):
+            raise ValueError("reference SHA-256 values must be lowercase hexadecimal")
+        if len(self.reference_sha256s) != len(set(self.reference_sha256s)):
+            raise ValueError("reference SHA-256 values must be unique")
+        return self
 
 
 class GoldenDataset(FrozenModel):
