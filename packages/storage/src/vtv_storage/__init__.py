@@ -1,4 +1,10 @@
-from .adapter import ObjectStoreAdapter, StoredObject, UploadIntegrityError, UploadNotFoundError
+from .adapter import (
+    ObjectStoreAdapter,
+    StoredObject,
+    UploadIntegrityError,
+    UploadNotFoundError,
+    WorkerObjectStoreAdapter,
+)
 from .memory import MemoryObjectStore
 from .s3 import S3ObjectStore
 
@@ -9,4 +15,5 @@ __all__ = [
     "StoredObject",
     "UploadIntegrityError",
     "UploadNotFoundError",
+    "WorkerObjectStoreAdapter",
 ]

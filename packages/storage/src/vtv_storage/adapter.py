@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
+from vtv_schemas.jobs import AssetRef
 from vtv_schemas.uploads import PresignedPart, UploadPart
 
 
@@ -53,3 +55,18 @@ class ObjectStoreAdapter(Protocol):
     ) -> StoredObject: ...
 
     def abort_multipart(self, *, object_key: str, provider_upload_id: str) -> None: ...
+
+
+class WorkerObjectStoreAdapter(Protocol):
+    def download_file(
+        self,
+        *,
+        object_uri: str,
+        destination: Path,
+        expected_sha256: str,
+        expected_size_bytes: int,
+    ) -> Path: ...
+
+    def upload_file(
+        self, *, source: Path, object_key: str, content_type: str
+    ) -> AssetRef: ...

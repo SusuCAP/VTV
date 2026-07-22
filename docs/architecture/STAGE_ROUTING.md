@@ -10,7 +10,6 @@
 `file://` URI 进入 Stage Result。任何 Worker 异常都会被转换为 `EXECUTION_FAILED`，保留
 错误类、消息和 retryable 标志，让 Scheduler 按标准失败路径处理，而不是中止编排进程。
 
-CLI 默认 `--worker-mode local`，可显式使用 `--worker-mode mock` 做纯编排合同测试。本地
-Worker 当前只解析文件 URI；S3/MinIO 输入下载、输出上传和 checkpoint 是下一增量，完成前
-对象存储项目不能宣称已跑通真实分析链。
-
+CLI 默认 `--worker-mode local`，可显式使用 `--worker-mode mock` 做纯编排合同测试。
+StageRouter 已支持 S3/MinIO 输入物化和输出回传；具体 Worker 仍只处理 file URI，因此模型
+代码不持有对象存储凭据。真实 PostgreSQL + MinIO 全链仍需本机镜像可用后进行最终验收。

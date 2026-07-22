@@ -5,10 +5,12 @@ description = "Database-backed VTV stage scheduler"
 requires-python = ">=3.12"
 dependencies = [
   "sqlalchemy[asyncio]>=2.0.39",
+  "pydantic-settings>=2.8.1",
   "vtv-db",
   "vtv-media-worker",
   "vtv-analysis-worker",
   "vtv-schemas",
+  "vtv-storage",
 ]
 
 [project.scripts]
@@ -19,6 +21,7 @@ vtv-db = { workspace = true }
 vtv-media-worker = { workspace = true }
 vtv-analysis-worker = { workspace = true }
 vtv-schemas = { workspace = true }
+vtv-storage = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

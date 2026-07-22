@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 72% | 多集分析与具体 Media/Analysis Worker 编排路由 |
+| Phase 2 全剧分析 | 进行中 | 80% | 多集分析、具体 Worker 与 S3/MinIO 完整性 I/O |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -97,13 +97,18 @@
 - [x] 本地具体 Worker 使用隔离 `--work-root`，输出不可混淆的 file URI。
 - [x] Worker 异常转换为标准 `EXECUTION_FAILED`，防止异常穿透导致编排进程退出。
 - [x] CLI 默认真实本地路由，同时保留显式 `--worker-mode mock` 合同测试模式。
+- [x] 实现 Worker S3/MinIO 输入流式物化、临时文件和原子完成。
+- [x] 下载同时校验数据库声明的大小与 SHA-256，失败不保留部分文件。
+- [x] Worker 输出上传前复核 Stage Result 大小/哈希，拒绝虚假或损坏输出。
+- [x] 输出采用 stage/variant/content hash 不可变 key、checksum metadata 与条件写。
+- [x] 编排器读取统一 `VTV_S3_*` 配置，未配置时对 S3 URI 明确失败。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add worker object-store materialization`
+`feat: persist analysis domain artifacts`
 
-下一步增加 Worker S3/MinIO 输入物化与输出上传，让具体 Worker 能消费对象存储 URI，而不只接受 file URI。
+下一步把 shots、transcript、人物/场景观察及 Bible/Anchor/Continuity 从 JSON 资产同步到数据库可查询实体，并自动创建 DRAFT Artifact Release。
 
 ## 决策日志
 
@@ -165,3 +170,5 @@
 | 2026-07-22 | `pytest` | 47 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Stage Router 测试 | 2 passed；覆盖三路分发、本地输出隔离和异常标准化 |
 | 2026-07-22 | `pytest` | 49 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | S3 Worker I/O 与 Router 合同测试 | 8 passed；覆盖传输、清理、幂等条件写、S3 物化/回传及虚假输出拒绝 |
+| 2026-07-22 | `pytest` | 54 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

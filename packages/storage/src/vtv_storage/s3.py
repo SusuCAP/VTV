@@ -1,5 +1,12 @@
+import base64
+from hashlib import sha256
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
+from botocore.exceptions import ClientError
+from vtv_schemas.jobs import AssetRef
 from vtv_schemas.uploads import PresignedPart, UploadPart
 
 from .adapter import BackendMultipart, StoredObject, UploadIntegrityError
@@ -106,3 +113,95 @@ class S3ObjectStore:
             Key=object_key,
             UploadId=provider_upload_id,
         )
+
+    def download_file(
+        self,
+        *,
+        object_uri: str,
+        destination: Path,
+        expected_sha256: str,
+        expected_size_bytes: int,
+    ) -> Path:
+        key = self._key_from_uri(object_uri)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
+        digest = sha256()
+        size = 0
+        try:
+            response = self._client.get_object(Bucket=self._bucket, Key=key)
+            body = response["Body"]
+            try:
+                with temporary.open("wb") as handle:
+                    while chunk := body.read(4 * 1024 * 1024):
+                        handle.write(chunk)
+                        digest.update(chunk)
+                        size += len(chunk)
+            finally:
+                body.close()
+            if size != expected_size_bytes:
+                raise UploadIntegrityError(
+                    "downloaded object size mismatch: "
+                    f"expected {expected_size_bytes}, actual {size}"
+                )
+            if digest.hexdigest() != expected_sha256:
+                raise UploadIntegrityError("downloaded object SHA-256 mismatch")
+            temporary.replace(destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return destination
+
+    def upload_file(
+        self, *, source: Path, object_key: str, content_type: str
+    ) -> AssetRef:
+        if not source.is_file():
+            raise UploadIntegrityError(f"worker output does not exist: {source}")
+        digest = sha256()
+        size = 0
+        with source.open("rb") as handle:
+            while chunk := handle.read(4 * 1024 * 1024):
+                digest.update(chunk)
+                size += len(chunk)
+        if size <= 0:
+            raise UploadIntegrityError("worker output is empty")
+        checksum_hex = digest.hexdigest()
+        checksum_base64 = base64.b64encode(digest.digest()).decode("ascii")
+        try:
+            with source.open("rb") as handle:
+                self._client.put_object(
+                    Bucket=self._bucket,
+                    Key=object_key,
+                    Body=handle,
+                    ContentLength=size,
+                    ContentType=content_type,
+                    ChecksumSHA256=checksum_base64,
+                    Metadata={"immutable": "true", "sha256": checksum_hex},
+                    IfNoneMatch="*",
+                )
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code not in {"PreconditionFailed", "412"}:
+                raise
+            existing = self._client.head_object(Bucket=self._bucket, Key=object_key)
+            metadata = existing.get("Metadata", {})
+            if (
+                int(existing.get("ContentLength", -1)) != size
+                or metadata.get("sha256") != checksum_hex
+            ):
+                raise UploadIntegrityError(
+                    "immutable object key already contains different content"
+                ) from exc
+        return AssetRef(
+            uri=self.uri_for(object_key),
+            sha256=checksum_hex,
+            media_type=content_type,
+            size_bytes=size,
+        )
+
+    def _key_from_uri(self, object_uri: str) -> str:
+        parsed = urlparse(object_uri)
+        if parsed.scheme != "s3" or parsed.netloc != self._bucket:
+            raise UploadIntegrityError("object URI does not belong to configured S3 bucket")
+        key = unquote(parsed.path.lstrip("/"))
+        if not key:
+            raise UploadIntegrityError("object URI has an empty key")
+        return key
