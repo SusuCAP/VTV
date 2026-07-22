@@ -1,0 +1,41 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / Tauri
+node_modules/
+dist/
+.vite/
+target/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Media, model weights, and generated artifacts
+artifacts/
+data/
+uploads/
+models/
+*.mp4
+*.mov
+*.mkv
+*.safetensors
+*.ckpt
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Internal document QA
+.docx-qa/
