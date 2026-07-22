@@ -31,6 +31,7 @@ async def run(database_url: str, max_stages: int, worker_mode: str, work_root: P
                     "VISION_ANALYSIS",
                     "PROJECT_SYNTHESIS",
                     "TTS_GENERATE",
+                    "LIPSYNC_GENERATE",
                 }:
                     return modal_executor(job)
                 return local_router.execute(job)

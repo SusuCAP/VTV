@@ -16,7 +16,7 @@ from .mock_worker import execute as execute_mock
 MEDIA_STAGES = frozenset({"INGEST_VALIDATE", "PROXY_GENERATE", "SHOT_DETECT"})
 ANALYSIS_STAGES = frozenset({"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"})
 AUDIO_STAGES = frozenset({"AUDIO_STEM_SEPARATION"})
-PRODUCTION_STAGES = frozenset({"TTS_GENERATE"})
+PRODUCTION_STAGES = frozenset({"TTS_GENERATE", "LIPSYNC_GENERATE"})
 
 
 @dataclass(frozen=True, slots=True)

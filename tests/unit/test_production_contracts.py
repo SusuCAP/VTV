@@ -2,7 +2,9 @@ from uuid import uuid4
 
 import pytest
 from vtv_production import (
+    LipSyncDecision,
     LipSyncLevel,
+    LipSyncRequest,
     ReviewedLocalizationAdapter,
     ShotDialogueFeatures,
     TieredLipSyncRouter,
@@ -122,3 +124,50 @@ def test_tiered_lipsync_router_covers_all_levels(features: dict, expected: LipSy
     assert decision.level == expected
     assert decision.reason_codes
     assert decision.maximum_duration_deviation in {0.04, 0.08}
+
+
+def test_lipsync_request_requires_lipsync_rights_and_deterministic_l0() -> None:
+    features = ShotDialogueFeatures(
+        shot_id=uuid4(),
+        mouth_visible=False,
+        face_scale=0.03,
+        occlusion=0.5,
+        body_visible=False,
+        dialogue_duration_seconds=2,
+    )
+    decision = LipSyncDecision(
+        shot_id=features.shot_id,
+        level=LipSyncLevel.L0_NONE,
+        reason_codes=("MOUTH_NOT_VISIBLE",),
+        maximum_duration_deviation=0.08,
+    )
+    rights = _voice().rights.model_copy(
+        update={"allowed_operations": frozenset({"voice_clone", "lipsync"})}
+    )
+    request = LipSyncRequest(
+        features=features,
+        decision=decision,
+        source_video_sha256="b" * 64,
+        adopted_tts_variant_id=uuid4(),
+        audio_sha256="c" * 64,
+        target_language="en-US",
+        target_market="US",
+        rights=rights,
+        seed=1,
+        candidate_count=1,
+    )
+    assert request.decision.level is LipSyncLevel.L0_NONE
+
+    with pytest.raises(ValueError, match="exactly one"):
+        LipSyncRequest(**(request.model_dump() | {"candidate_count": 2}))
+    with pytest.raises(ValueError, match="rights do not permit"):
+        LipSyncRequest(
+            **(
+                request.model_dump()
+                | {
+                    "rights": rights.model_copy(
+                        update={"allowed_operations": frozenset({"voice_clone"})}
+                    )
+                }
+            )
+        )

@@ -9,6 +9,8 @@ class Settings(BaseSettings):
 
     tts_token: SecretStr | None = None
     tts_timeout_seconds: float = 600
+    lipsync_token: SecretStr | None = None
+    lipsync_timeout_seconds: float = 1800
 
 
 @lru_cache

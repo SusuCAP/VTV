@@ -48,3 +48,34 @@ def test_tts_factory_rejects_unregistered_or_wrong_adapter_mode() -> None:
         create_production_worker_for_job(
             job.model_copy(update={"params": {}}), Settings()
         )
+
+
+def test_registry_runtime_constructs_remote_lipsync_adapter() -> None:
+    job = _job({"adapter_mode": "remote_lipsync"}).model_copy(
+        update={
+            "stage_type": "LIPSYNC_GENERATE",
+            "idempotency_key": "lipsync:runtime",
+        }
+    )
+    worker = create_production_worker_for_job(
+        job,
+        Settings(lipsync_token="lipsync-secret", lipsync_timeout_seconds=900),
+    )
+
+    assert worker.lipsync.model_release == "voxcpm2@approved-4"
+    assert worker.lipsync.config.bearer_token == "lipsync-secret"
+    assert worker.lipsync.config.timeout_seconds == 900
+
+
+def test_l0_lipsync_factory_uses_local_passthrough_without_registry_runtime() -> None:
+    job = _job({}).model_copy(
+        update={
+            "stage_type": "LIPSYNC_GENERATE",
+            "idempotency_key": "lipsync:l0",
+            "params": {"lipsync_request": {"decision": {"level": "L0_NONE"}}},
+        }
+    )
+
+    worker = create_production_worker_for_job(job, Settings())
+
+    assert worker.lipsync.model_release == "lipsync-passthrough@1"

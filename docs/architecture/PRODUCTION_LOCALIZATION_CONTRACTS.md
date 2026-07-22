@@ -29,6 +29,10 @@ Adapter 接入后仍须输出同一契约，并由目标市场母语复核与 Go
 必须为 HTTPS 或 localhost，license 和 automation approval 缺一不可，bearer token 仅从
 `VTV_TTS_TOKEN` 注入。
 
+口型路由现已接入强类型 `LipSyncRequest` 与 `LIPSYNC_GENERATE` Production Worker。L1–L5 仅允许
+Registry 批准的 `remote_lipsync` release，远程凭据通过独立 `VTV_LIPSYNC_TOKEN` 注入；执行细节见
+[`LIPSYNC_PRODUCTION_RUNTIME.md`](./LIPSYNC_PRODUCTION_RUNTIME.md)。
+
 远程服务返回 1–4 个严格 JSON 候选及 Base64 WAV。Worker 校验候选数量、连续 variant 编号、
 实际媒体时长、文件 SHA-256 和镜头路由时长门限，再输出独立 `VariantResult` 与
 `TTS_CANDIDATES` Domain Artifact。每个候选保留 seed、速度、情绪、voice/localization/rights/model

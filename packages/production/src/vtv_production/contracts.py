@@ -73,8 +73,18 @@ class VoiceRightsSnapshot(FrozenModel):
     valid_at_execution: bool
 
     def permits(self, *, language: str, market: str, commercial: bool) -> bool:
+        return self.permits_operation(
+            operation="voice_clone",
+            language=language,
+            market=market,
+            commercial=commercial,
+        )
+
+    def permits_operation(
+        self, *, operation: str, language: str, market: str, commercial: bool
+    ) -> bool:
         return (
-            "voice_clone" in self.allowed_operations
+            operation in self.allowed_operations
             and language in self.allowed_languages
             and market in self.allowed_markets
             and (not commercial or self.commercial_allowed)
@@ -179,3 +189,56 @@ class LipSyncRouter(Protocol):
     def router_release(self) -> str: ...
 
     def route(self, features: ShotDialogueFeatures) -> LipSyncDecision: ...
+
+
+class LipSyncRequest(FrozenModel):
+    features: ShotDialogueFeatures
+    decision: LipSyncDecision
+    source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    adopted_tts_variant_id: UUID
+    audio_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_language: str = Field(min_length=2, max_length=35)
+    target_market: str = Field(min_length=2, max_length=35)
+    rights: VoiceRightsSnapshot
+    seed: int = Field(ge=0, le=2**63 - 1)
+    candidate_count: int = Field(default=2, ge=1, le=6)
+    commercial_use: bool = True
+
+    @model_validator(mode="after")
+    def validate_route_and_rights(self) -> LipSyncRequest:
+        if self.features.shot_id != self.decision.shot_id:
+            raise ValueError("lipsync decision must belong to the requested shot")
+        if self.decision.level is LipSyncLevel.L0_NONE and self.candidate_count != 1:
+            raise ValueError("L0 passthrough must produce exactly one deterministic candidate")
+        if not self.rights.permits_operation(
+            operation="lipsync",
+            language=self.target_language,
+            market=self.target_market,
+            commercial=self.commercial_use,
+        ):
+            raise ValueError("voice rights do not permit this lipsync request")
+        return self
+
+
+class LipSyncCandidate(FrozenModel):
+    shot_id: UUID
+    variant_no: int = Field(ge=1, le=6)
+    video_uri: str = Field(min_length=1)
+    video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    duration_seconds: float = Field(gt=0)
+    model_release: str = Field(min_length=1, max_length=256)
+    seed: int = Field(ge=0, le=2**63 - 1)
+    level: LipSyncLevel
+
+
+class LipSyncAdapter(Protocol):
+    @property
+    def model_release(self) -> str: ...
+
+    def render(
+        self,
+        request: LipSyncRequest,
+        source_video: Path,
+        audio: Path,
+        output_directory: Path,
+    ) -> tuple[LipSyncCandidate, ...]: ...

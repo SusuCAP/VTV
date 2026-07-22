@@ -1,8 +1,16 @@
 from .factory import create_production_worker_for_job, execute
 from .runtime import (
+    HttpxLipSyncTransport,
     HttpxTtsTransport,
+    LipSyncEndpoint,
+    LipSyncInferenceError,
+    LipSyncTransport,
+    PassthroughLipSyncAdapter,
+    RawLipSyncCandidate,
+    RawLipSyncResponse,
     RawTtsCandidate,
     RawTtsResponse,
+    RemoteLipSyncAdapter,
     RemoteTtsAdapter,
     TtsAccessDeniedError,
     TtsEndpoint,
@@ -12,10 +20,18 @@ from .runtime import (
 from .worker import ProductionWorker
 
 __all__ = [
+    "HttpxLipSyncTransport",
     "HttpxTtsTransport",
+    "LipSyncEndpoint",
+    "LipSyncInferenceError",
+    "LipSyncTransport",
+    "PassthroughLipSyncAdapter",
     "ProductionWorker",
+    "RawLipSyncCandidate",
+    "RawLipSyncResponse",
     "RawTtsCandidate",
     "RawTtsResponse",
+    "RemoteLipSyncAdapter",
     "RemoteTtsAdapter",
     "TtsAccessDeniedError",
     "TtsEndpoint",

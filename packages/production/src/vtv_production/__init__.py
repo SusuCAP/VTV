@@ -1,6 +1,9 @@
 from .contracts import (
+    LipSyncAdapter,
+    LipSyncCandidate,
     LipSyncDecision,
     LipSyncLevel,
+    LipSyncRequest,
     LipSyncRouter,
     LocalizedUtterance,
     ReviewState,
@@ -18,7 +21,10 @@ from .routing import TieredLipSyncRouter
 
 __all__ = [
     "LipSyncDecision",
+    "LipSyncAdapter",
+    "LipSyncCandidate",
     "LipSyncLevel",
+    "LipSyncRequest",
     "LipSyncRouter",
     "LocalizedUtterance",
     "ReviewState",
