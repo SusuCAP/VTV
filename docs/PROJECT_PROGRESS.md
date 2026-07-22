@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 95% | 数据库驱动 Mock 交付闭环、S3 接入与 Mac 控制端 |
+| Phase 1 基础平台 | 进行中 | 98% | Mock 交付闭环、S3 接入、Mac 控制端真实 API 联调 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -48,11 +48,14 @@
 - [x] 完成 ingest→proxy→shots→mock localize/render→QC→assemble→manifest DAG。
 - [x] 调度器构造标准 StageJob、读取上游资产并登记 Worker 输出 Media Asset。
 - [x] 提供 `vtv-orchestrator` 命令，一次运行队列直到空闲并设定阶段安全上限。
-- [ ] 将 Mac 客户端从演示数据切换到真实控制 API。
+- [x] 新增项目、剧集和任务列表 API，并配置 Vite/Tauri CORS 边界。
+- [x] Mac 客户端读取真实项目/剧集/Job，真实提交分析任务并显示 Job ID。
+- [x] API 不可用时明确标记“离线演示”；空工作区明确标记“尚无项目”。
+- [ ] 实现 Tauri 本地媒体 Agent：ffprobe、流式 SHA-256、分片上传和恢复。
 
 ## 下一提交目标
 
-`feat: run baseline episode delivery through mock orchestrator`
+`feat: connect mac client to control API`
 
 完成后完成 Phase 1 的“Mock 合成端到端 + Mac 控制端真实 API 接入”。
 
@@ -87,3 +90,5 @@
 | 2026-07-22 | S3 Adapter 合约测试 | 预签名、multipart complete、逐分片 SHA-256 与 head 校验通过 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 24 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | `npm run lint:mac && npm run build:mac` | 通过 |
+| 2026-07-22 | FastAPI + Playwright 1600×1000 | 项目/剧集/Job 查询、CORS 预检和分析 202 提交联调通过 |

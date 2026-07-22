@@ -1,4 +1,5 @@
 from .enums import JobStatus, ProjectStatus, StageStatus
+from .episodes import EpisodeRead
 from .jobs import AssetRef, JobAccepted, StageJob, StageResult, VariantResult
 from .projects import Budget, OutputSpec, ProjectCreate, ProjectRead
 from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPart
@@ -6,6 +7,7 @@ from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPa
 __all__ = [
     "AssetRef",
     "Budget",
+    "EpisodeRead",
     "JobAccepted",
     "JobStatus",
     "OutputSpec",

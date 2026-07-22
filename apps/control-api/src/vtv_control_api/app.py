@@ -3,11 +3,13 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
     ProjectNotFoundError,
     ProjectRepository,
     UploadConflictError,
 )
+from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadRead
@@ -30,6 +32,18 @@ def create_app(
 ) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.api_title, version=settings.api_version)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:1420",
+            "http://localhost:1420",
+            "tauri://localhost",
+            "http://tauri.localhost",
+        ],
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Workspace-Id"],
+    )
     repo = repository or create_repository(settings)
     storage = object_store or create_object_store(settings)
     app.state.repository = repo
@@ -45,6 +59,12 @@ def create_app(
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> ProjectRead:
         return await repo.create_project(workspace, payload)
+
+    @app.get("/v1/projects", response_model=list[ProjectRead])
+    async def list_projects(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[ProjectRead]:
+        return await repo.list_projects(workspace)
 
     @app.get("/v1/projects/{project_id}", response_model=ProjectRead)
     async def get_project(
@@ -73,6 +93,26 @@ def create_app(
         status_url = f"/v1/jobs/{job.id}"
         response.headers["Location"] = status_url
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
+
+    @app.get("/v1/projects/{project_id}/episodes", response_model=list[EpisodeRead])
+    async def list_episodes(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[EpisodeRead]:
+        try:
+            return await repo.list_episodes(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get("/v1/projects/{project_id}/jobs", response_model=list[JobRead])
+    async def list_jobs(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[JobRead]:
+        try:
+            return await repo.list_jobs(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     @app.get("/v1/jobs/{job_id}", response_model=JobRead)
     async def get_job(

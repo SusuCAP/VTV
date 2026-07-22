@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_schemas.enums import JobStatus, ProjectStatus
+from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
@@ -44,12 +45,20 @@ class UploadRecord:
     declared_sha256: str
     content_type: str
     part_size_bytes: int
+    filename: str
+    episode_no: int | None
 
 
 class ProjectRepository(Protocol):
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead: ...
 
     async def get_project(self, workspace_id: UUID, project_id: UUID) -> ProjectRead: ...
+
+    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]: ...
+
+    async def list_episodes(self, workspace_id: UUID, project_id: UUID) -> list[EpisodeRead]: ...
+
+    async def list_jobs(self, workspace_id: UUID, project_id: UUID) -> list[JobRead]: ...
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead: ...
 
@@ -142,6 +151,75 @@ class SqlAlchemyProjectRepository:
             if project is None:
                 raise ProjectNotFoundError(project_id)
             return _project_read(project)
+
+    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]:
+        async with self._sessions() as session:
+            projects = list(
+                await session.scalars(
+                    select(Project)
+                    .where(Project.workspace_id == workspace_id)
+                    .order_by(Project.updated_at.desc())
+                )
+            )
+            return [_project_read(project) for project in projects]
+
+    async def list_episodes(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[EpisodeRead]:
+        async with self._sessions() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(project_id)
+            episodes = list(
+                await session.scalars(
+                    select(Episode)
+                    .where(Episode.project_id == project_id)
+                    .order_by(Episode.episode_no)
+                )
+            )
+            result: list[EpisodeRead] = []
+            for episode in episodes:
+                status = await session.scalar(
+                    select(Job.status)
+                    .join(StageRun, StageRun.job_id == Job.id)
+                    .where(StageRun.episode_id == episode.id)
+                    .order_by(Job.created_at.desc())
+                    .limit(1)
+                )
+                result.append(
+                    EpisodeRead(
+                        id=episode.id,
+                        project_id=project_id,
+                        episode_no=episode.episode_no,
+                        title=episode.title,
+                        duration_ms=episode.duration_ms,
+                        processing_status=status or "READY",
+                        source_asset_id=episode.source_asset_id,
+                    )
+                )
+            return result
+
+    async def list_jobs(self, workspace_id: UUID, project_id: UUID) -> list[JobRead]:
+        async with self._sessions() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(project_id)
+            jobs = list(
+                await session.scalars(
+                    select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc())
+                )
+            )
+            return [_job_read(job) for job in jobs]
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead:
         validate_dag(PROJECT_ANALYSIS_DAG)
@@ -464,4 +542,6 @@ def _upload_record(upload: UploadSession) -> UploadRecord:
         declared_sha256=upload.declared_sha256,
         content_type=upload.content_type,
         part_size_bytes=upload.part_size_bytes,
+        filename=upload.filename,
+        episode_no=upload.episode_no,
     )

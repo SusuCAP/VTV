@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from vtv_db.repository import ProjectNotFoundError, UploadConflictError, UploadRecord
 from vtv_schemas.enums import JobStatus, ProjectStatus
+from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
@@ -16,6 +17,7 @@ class MemoryRepository:
         self._projects: dict[UUID, ProjectRead] = {}
         self._jobs: dict[UUID, JobRead] = {}
         self._uploads: dict[UUID, UploadRecord] = {}
+        self._episodes: dict[UUID, list[EpisodeRead]] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -39,6 +41,26 @@ class MemoryRepository:
         if project is None or project.workspace_id != workspace_id:
             raise ProjectNotFoundError(project_id)
         return project
+
+    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]:
+        with self._lock:
+            return [
+                project
+                for project in self._projects.values()
+                if project.workspace_id == workspace_id
+            ]
+
+    async def list_episodes(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[EpisodeRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            return list(self._episodes.get(project_id, []))
+
+    async def list_jobs(self, workspace_id: UUID, project_id: UUID) -> list[JobRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            return [job for job in self._jobs.values() if job.project_id == project_id]
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
@@ -92,6 +114,8 @@ class MemoryRepository:
             declared_sha256=payload.sha256,
             content_type=payload.content_type,
             part_size_bytes=payload.part_size_bytes,
+            filename=payload.filename,
+            episode_no=payload.episode_no,
         )
         with self._lock:
             self._uploads[upload_id] = record
@@ -122,13 +146,16 @@ class MemoryRepository:
             raise UploadConflictError("object SHA-256 does not match upload declaration")
         if record.upload.size_bytes != size_bytes:
             raise UploadConflictError("stored object size does not match upload declaration")
+        episode_id = uuid4()
+        media_asset_id = uuid4()
+        ingest_job_id = uuid4()
         completed = record.upload.model_copy(
             update={
                 "status": "COMPLETED",
                 "completed_parts": parts,
-                "episode_id": uuid4(),
-                "media_asset_id": uuid4(),
-                "ingest_job_id": uuid4(),
+                "episode_id": episode_id,
+                "media_asset_id": media_asset_id,
+                "ingest_job_id": ingest_job_id,
             }
         )
         with self._lock:
@@ -138,6 +165,29 @@ class MemoryRepository:
                 declared_sha256=record.declared_sha256,
                 content_type=content_type,
                 part_size_bytes=record.part_size_bytes,
+                filename=record.filename,
+                episode_no=record.episode_no,
+            )
+            episodes = self._episodes.setdefault(record.upload.project_id, [])
+            episode_no = record.episode_no or len(episodes) + 1
+            episodes.append(
+                EpisodeRead(
+                    id=episode_id,
+                    project_id=record.upload.project_id,
+                    episode_no=episode_no,
+                    title=record.filename,
+                    processing_status="QUEUED",
+                    source_asset_id=media_asset_id,
+                )
+            )
+            self._jobs[ingest_job_id] = JobRead(
+                id=ingest_job_id,
+                project_id=record.upload.project_id,
+                kind="EPISODE_INGEST",
+                status=JobStatus.QUEUED,
+                progress=0,
+                total_stages=8,
+                completed_stages=0,
             )
         return completed
 

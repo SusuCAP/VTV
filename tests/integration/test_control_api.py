@@ -24,6 +24,14 @@ def test_project_and_async_analysis_job_flow() -> None:
         assert refreshed.json()["status"] == "ANALYZING"
         assert refreshed.json()["state_version"] == 2
 
+        projects = client.get("/v1/projects")
+        assert projects.status_code == 200
+        assert [item["id"] for item in projects.json()] == [project["id"]]
+
+        jobs = client.get(f"/v1/projects/{project['id']}/jobs")
+        assert jobs.status_code == 200
+        assert jobs.json()[0]["id"] == accepted.json()["job_id"]
+
 
 def test_workspace_header_enforces_isolation() -> None:
     with TestClient(create_app()) as client:

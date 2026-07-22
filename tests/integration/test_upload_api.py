@@ -60,6 +60,11 @@ def test_multipart_upload_contract_does_not_proxy_media() -> None:
         assert completed.json()["media_asset_id"]
         assert completed.json()["ingest_job_id"]
 
+        episodes = client.get(f"/v1/projects/{project['id']}/episodes")
+        assert episodes.status_code == 200
+        assert episodes.json()[0]["title"] == "episode-01.mp4"
+        assert episodes.json()[0]["processing_status"] == "QUEUED"
+
 
 def test_multipart_complete_rejects_size_mismatch() -> None:
     with TestClient(create_app()) as client:

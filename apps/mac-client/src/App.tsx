@@ -10,8 +10,9 @@ import {
   Play,
   Upload,
 } from "lucide-react";
-import { useState } from "react";
-import { episodes, exceptions } from "./data";
+import { useEffect, useMemo, useState } from "react";
+import { loadLatestProject, startProjectAnalysis, type ApiProject } from "./api";
+import { episodes as demoEpisodes, exceptions, type Episode } from "./data";
 
 const stages = ["接入", "全剧分析", "资产确认", "自动生产", "质量检查", "交付"];
 
@@ -36,19 +37,19 @@ function Pipeline() {
   </section>;
 }
 
-function Metrics() {
+function Metrics({ episodeCount, progress, budgetLimit }: { episodeCount: number; progress: number; budgetLimit: string }) {
   return <section className="metrics">
-    <div><span>总体进度</span><strong className="accent">28%</strong><p>7 / 25 集</p><progress value="28" max="100"/></div>
-    <div><span>预算</span><strong>USD 18,450</strong><p>上限 USD 65,000 · 已用 28%</p><progress value="28" max="100"/></div>
+    <div><span>总体进度</span><strong className="accent">{Math.round(progress * 100)}%</strong><p>{episodeCount} 集已接入</p><progress value={progress * 100} max="100"/></div>
+    <div><span>预算上限</span><strong>{budgetLimit}</strong><p>成本由 Stage Attempt 实际用量汇总</p><progress value="0" max="100"/></div>
     <div><span>异常镜头</span><strong className="accent">156</strong><p>待处理 23</p></div>
   </section>;
 }
 
-function EpisodeList() {
+function EpisodeList({ items, live }: { items: Episode[]; live: boolean }) {
   return <section className="episode-panel">
-    <div className="section-title"><h2>剧集列表</h2><span>共 25 集</span></div>
+    <div className="section-title"><h2>剧集列表</h2><span>{live ? `共 ${items.length} 集` : "离线演示数据"}</span></div>
     <div className="table-head"><span>剧集</span><span>上传状态</span><span>分析状态</span><span>时长</span><span>更新时间</span></div>
-    {episodes.map((episode) => <div className="episode-row" key={episode.id}>
+    {items.map((episode) => <div className="episode-row" key={episode.id}>
       <div><ChevronRight size={14}/><strong>第 {String(episode.id).padStart(2, "0")} 集</strong><small>{episode.filename}</small></div>
       <span className="ok"><Check size={14}/>{episode.upload}</span>
       <div><span>{episode.analysis}</span>{episode.progress && episode.analysis.includes("分析中") ? <progress value={episode.progress} max="100"/> : null}</div>
@@ -80,9 +81,64 @@ function ExceptionReview() {
 }
 
 export default function App() {
-  const [started, setStarted] = useState(false);
+  const [connection, setConnection] = useState<"loading" | "live" | "offline" | "empty">("loading");
+  const [project, setProject] = useState<ApiProject | null>(null);
+  const [episodeItems, setEpisodeItems] = useState<Episode[]>(demoEpisodes);
+  const [jobProgress, setJobProgress] = useState(0.28);
+  const [analysisState, setAnalysisState] = useState("开始分析");
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    loadLatestProject().then((snapshot) => {
+      if (!active) return;
+      if (!snapshot) {
+        setConnection("empty");
+        setEpisodeItems([]);
+        return;
+      }
+      setProject(snapshot.project);
+      setEpisodeItems(snapshot.episodes.map((episode) => ({
+        id: episode.episode_no,
+        filename: episode.title ?? `E${String(episode.episode_no).padStart(2, "0")}.mp4`,
+        upload: episode.upload_status === "COMPLETED" ? "已上传" : episode.upload_status,
+        analysis: episode.processing_status,
+        duration: episode.duration_ms ? new Date(episode.duration_ms).toISOString().slice(11, 19) : "待探测",
+        updated: "服务端",
+        progress: snapshot.jobs.find((job) => job.kind === "EPISODE_INGEST")?.progress ? 100 * (snapshot.jobs.find((job) => job.kind === "EPISODE_INGEST")?.progress ?? 0) : undefined,
+      })));
+      const activeJob = snapshot.jobs.find((job) => ["QUEUED", "RUNNING"].includes(job.status));
+      setJobProgress(activeJob?.progress ?? (snapshot.project.status === "COMPLETED" ? 1 : 0));
+      setConnection("live");
+    }).catch((reason: unknown) => {
+      if (!active) return;
+      setConnection("offline");
+      setError(reason instanceof Error ? reason.message : "控制 API 连接失败");
+    });
+    return () => { active = false; };
+  }, []);
+
+  const statusText = useMemo(() => ({ loading: "正在连接控制 API", live: "控制 API 已连接", offline: "离线演示", empty: "尚无项目" })[connection], [connection]);
+  const startAnalysis = async () => {
+    if (!project) return;
+    setAnalysisState("提交中…");
+    setError(null);
+    try {
+      const jobId = await startProjectAnalysis(project.id);
+      setAnalysisState(`已提交 ${jobId.slice(0, 8)}`);
+    } catch (reason) {
+      setAnalysisState("提交失败");
+      setError(reason instanceof Error ? reason.message : "分析提交失败");
+    }
+  };
+
+  const displayName = project?.name ?? "Drama-US-001";
+  const targetMarket = project?.target_market ?? "US";
+  const locale = project?.locale ?? "en-US";
+  const quality = project?.quality_profile ?? "research_best";
+  const budgetLimit = project ? `${project.budget.currency} ${project.budget.hard_limit}` : "USD 65,000";
   return <div className="app-shell"><Sidebar/><main>
-    <header><div><p>项目列表 / 当前项目</p><h1>Drama-US-001</h1><span>目标市场：美国 · 语言：英语 · 质量档位：research_best</span></div><div className="actions"><button><Upload size={17}/>上传剧集</button><button className="primary" onClick={() => setStarted(true)}><Play size={17}/>{started ? "分析已提交" : "开始分析"}</button></div></header>
-    <Pipeline/><Metrics/><div className="workspace"><EpisodeList/><ExceptionReview/></div>
+    <header><div><p>项目列表 / 当前项目 · <b className={`connection ${connection}`}>{statusText}</b></p><h1>{displayName}</h1><span>目标市场：{targetMarket} · 语言：{locale} · 质量档位：{quality}</span>{error ? <small className="api-error">{error}</small> : null}</div><div className="actions"><button disabled={connection !== "live"} onClick={() => setError("上传需要本地媒体 Agent；当前 API 查询与分析提交已联通。") }><Upload size={17}/>上传剧集</button><button className="primary" disabled={!project || analysisState === "提交中…"} onClick={startAnalysis}><Play size={17}/>{analysisState}</button></div></header>
+    <Pipeline/><Metrics episodeCount={episodeItems.length} progress={jobProgress} budgetLimit={budgetLimit}/><div className="workspace"><EpisodeList items={episodeItems} live={connection === "live"}/><ExceptionReview/></div>
   </main></div>;
 }
