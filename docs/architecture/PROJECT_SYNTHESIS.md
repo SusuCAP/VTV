@@ -13,3 +13,7 @@ Bible ID 与版本，防止使用已经失效的语义约束。
 当前 `DeterministicProjectSynthesizer` 从人物 track、场景和镜头几何构造可重复的候选草稿。
 草稿锚点使用 `pending://`，只用于验证合成链路，必须经过资产选择和确认后才能发布。
 
+`vtv-analysis-worker` 已实现 `PROJECT_SYNTHESIS` Stage。Worker 要求两份 JSON 输入并根据
+强类型字段识别音频与视觉分析，拒绝重复、缺失或未知分析类型。输出
+`project-synthesis.json`，合并所有上游模型 release，并追加项目合成器 release，使草稿
+能够追溯到完整分析链。目标语言来自 Stage 参数，源语言默认采用 ASR 识别语言。

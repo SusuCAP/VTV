@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 40% | 音视频分析与项目级本土化资产合成契约 |
+| Phase 2 全剧分析 | 进行中 | 45% | 可执行项目合成 Worker 与版本化本土化资产草稿 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -76,13 +76,16 @@
 - [x] 强制 Bible 内角色/地点 ID 唯一，并让 Anchor/Continuity 显式锁定 Bible 版本。
 - [x] 实现确定性项目合成器，从 track、scene 与镜头几何生成可审核草稿。
 - [x] 使用 `pending://` 明确区分候选锚点与已确认生产资产。
+- [x] 实现 `PROJECT_SYNTHESIS` Worker，强类型识别音频/视觉分析并拒绝缺失或重复输入。
+- [x] 合并音频、视觉模型 release，并追加项目合成器 release 形成完整 provenance。
+- [x] 输出版本关联的 Bible、Anchor Pack、Continuity Snapshot 可审核草稿。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add project synthesis stage worker`
+`feat: add asset release and invalidation rules`
 
-下一步让 `PROJECT_SYNTHESIS` Worker 消费音频和视觉分析资产，并输出三类版本关联的项目草稿。
+下一步实现资产确认、release 锁定，以及 Bible/Anchor 变更触发的下游 stale 传播规则。
 
 ## 决策日志
 
@@ -134,3 +137,5 @@
 | 2026-07-22 | `pytest` | 36 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 项目合成领域测试 | 2 passed；覆盖版本关联草稿与重复角色 ID 拒绝 |
 | 2026-07-22 | `pytest` | 38 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | PROJECT_SYNTHESIS Worker 测试 | 1 passed；校验强类型输入、草稿输出与跨阶段 provenance 合并 |
+| 2026-07-22 | `pytest` | 39 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

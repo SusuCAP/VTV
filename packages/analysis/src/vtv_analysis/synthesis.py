@@ -112,6 +112,8 @@ class ProjectSynthesis(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class DeterministicProjectSynthesizer:
+    model_release: str = "deterministic-project-synthesis@1"
+
     def synthesize(
         self,
         project_id: str,

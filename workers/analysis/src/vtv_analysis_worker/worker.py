@@ -5,15 +5,18 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from vtv_analysis import (
+    AudioAnalysis,
     AudioAnalysisPipeline,
     DeterministicAsr,
     DeterministicDiarization,
     DeterministicGeometryAdapter,
     DeterministicOcrAdapter,
     DeterministicPersonAdapter,
+    DeterministicProjectSynthesizer,
     DeterministicSceneAdapter,
     DeterministicVad,
     ShotSpan,
+    VisionAnalysis,
     VisionAnalysisPipeline,
 )
 from vtv_media import extract_audio, probe_media
@@ -57,8 +60,13 @@ class AnalysisWorker:
             geometry=DeterministicGeometryAdapter(),
         )
     )
+    synthesizer: DeterministicProjectSynthesizer = field(
+        default_factory=DeterministicProjectSynthesizer
+    )
 
     def execute(self, job: StageJob) -> StageResult:
+        if job.stage_type == "PROJECT_SYNTHESIS":
+            return self._execute_project_synthesis(job)
         if job.stage_type == "VISION_ANALYSIS":
             return self._execute_vision(job)
         if job.stage_type != "ASR_ALIGN":
@@ -109,6 +117,83 @@ class AnalysisWorker:
                         "speech_segments": len(analysis.speech),
                         "transcript_segments": len(analysis.transcript),
                         "speaker_turns": len(analysis.speakers),
+                        "model_releases": releases,
+                    },
+                )
+            ],
+            attempt_usage={"worker": "analysis", "local": True},
+        )
+
+    def _execute_project_synthesis(self, job: StageJob) -> StageResult:
+        json_assets = [
+            asset for asset in job.input_assets if asset.media_type == "application/json"
+        ]
+        if len(json_assets) != 2:
+            raise ValueError("PROJECT_SYNTHESIS requires audio and vision JSON assets")
+
+        audio: AudioAnalysis | None = None
+        vision: VisionAnalysis | None = None
+        upstream_releases: dict[str, str] = {}
+        for asset in json_assets:
+            payload = json.loads(_local_path(asset.uri).read_text(encoding="utf-8"))
+            analysis = payload.get("analysis")
+            if not isinstance(analysis, dict):
+                raise ValueError("PROJECT_SYNTHESIS input is missing analysis object")
+            releases = payload.get("model_releases", {})
+            if not isinstance(releases, dict) or not all(
+                isinstance(key, str) and isinstance(value, str) for key, value in releases.items()
+            ):
+                raise ValueError("PROJECT_SYNTHESIS input has invalid model releases")
+            upstream_releases.update(releases)
+            if "transcript" in analysis and "speakers" in analysis:
+                if audio is not None:
+                    raise ValueError("PROJECT_SYNTHESIS received duplicate audio analysis")
+                audio = AudioAnalysis.model_validate(analysis)
+            elif "people" in analysis and "geometry" in analysis:
+                if vision is not None:
+                    raise ValueError("PROJECT_SYNTHESIS received duplicate vision analysis")
+                vision = VisionAnalysis.model_validate(analysis)
+            else:
+                raise ValueError("PROJECT_SYNTHESIS input analysis type is unknown")
+        if audio is None or vision is None:
+            raise ValueError("PROJECT_SYNTHESIS requires one audio and one vision analysis")
+
+        source_locale = str(job.params.get("source_locale") or audio.language)
+        target_locale = str(job.params.get("target_locale") or "en-US")
+        synthesis = self.synthesizer.synthesize(
+            project_id=str(job.project_id),
+            episode_id=str(job.episode_id or "project-wide"),
+            source_locale=source_locale,
+            target_locale=target_locale,
+            audio=audio,
+            vision=vision,
+        )
+        releases = {**upstream_releases, "project_synthesis": self.synthesizer.model_release}
+        output_directory = _local_path(job.output_prefix)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        output = output_directory / "project-synthesis.json"
+        output.write_text(
+            json.dumps(
+                {"synthesis": synthesis.model_dump(mode="json"), "model_releases": releases},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return StageResult(
+            stage_run_id=job.stage_run_id,
+            stage_attempt_id=job.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=1,
+                    output_assets=[_asset(output, "application/json")],
+                    raw_metrics={
+                        "worker": "analysis",
+                        "stage_type": job.stage_type,
+                        "characters": len(synthesis.bible.characters),
+                        "locations": len(synthesis.bible.locations),
+                        "continuity_snapshots": len(synthesis.continuity),
                         "model_releases": releases,
                     },
                 )
