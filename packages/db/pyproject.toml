@@ -1,0 +1,17 @@
+[project]
+name = "vtv-db"
+version = "0.1.0"
+description = "PostgreSQL persistence and orchestration primitives for VTV"
+requires-python = ">=3.12"
+dependencies = [
+  "asyncpg>=0.30.0",
+  "sqlalchemy[asyncio]>=2.0.39",
+  "vtv-schemas",
+]
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

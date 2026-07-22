@@ -15,6 +15,7 @@ dev = [
 [tool.uv.workspace]
 members = [
   "apps/control-api",
+  "packages/db",
   "packages/schemas",
 ]
 
