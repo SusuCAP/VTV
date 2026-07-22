@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -243,3 +243,106 @@ class LipSyncAdapter(Protocol):
         audio: Path,
         output_directory: Path,
     ) -> tuple[LipSyncCandidate, ...]: ...
+
+
+# --- Visual Generation Contracts ---
+
+
+class SegmentationRequest(FrozenModel):
+    """Request to SAM3.1-compatible segmentation adapter."""
+
+    shot_id: UUID
+    source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    prompt_type: Literal["text", "point", "box"] = "text"
+    prompt: str | tuple[float, float] | tuple[float, float, float, float] = Field(
+        default="person"
+    )
+    output_type: Literal["alpha_matte", "mask_video"] = "alpha_matte"
+
+
+class SegmentationResult(FrozenModel):
+    shot_id: UUID
+    mask_uri: str = Field(min_length=1)
+    mask_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    mask_type: Literal["alpha_matte", "mask_video"]
+    model_release: str = Field(min_length=1, max_length=256)
+
+
+class SegmentationAdapter(Protocol):
+    @property
+    def model_release(self) -> str: ...
+
+    def segment(
+        self,
+        request: SegmentationRequest,
+        source_video: Path,
+        output_dir: Path,
+    ) -> SegmentationResult: ...
+
+
+class VisualGenerationRequest(FrozenModel):
+    """Request to a character/bg/full-regen generation adapter."""
+
+    shot_id: UUID
+    route: str  # VisualRoute value: A-F
+    source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_video_duration_seconds: float = Field(gt=0)
+    reference_asset_sha256s: tuple[str, ...] = ()  # character/scene reference images
+    mask_sha256: str | None = None
+    seed: int = Field(ge=0, le=2**63 - 1)
+    candidate_count: int = Field(default=2, ge=1, le=6)
+    target_market: str = Field(default="en-US", min_length=2, max_length=35)
+    parameters: dict = Field(default_factory=dict)  # model-specific params
+
+
+class VisualCandidate(FrozenModel):
+    shot_id: UUID
+    variant_no: int = Field(ge=1, le=6)
+    video_uri: str = Field(min_length=1)
+    video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    duration_seconds: float = Field(gt=0)
+    model_release: str = Field(min_length=1, max_length=256)
+    seed: int = Field(ge=0, le=2**63 - 1)
+    route: str  # VisualRoute value
+    preview_frame_uri: str | None = None  # optional keyframe preview
+    preview_frame_sha256: str | None = None
+
+
+class VisualGenerationAdapter(Protocol):
+    @property
+    def model_release(self) -> str: ...
+
+    def generate(
+        self,
+        request: VisualGenerationRequest,
+        source_video: Path,
+        output_directory: Path,
+        mask: Path | None = None,
+    ) -> tuple[VisualCandidate, ...]: ...
+
+
+class SubtitleCleanRequest(FrozenModel):
+    """Request to subtitle/watermark removal worker (Route B)."""
+
+    shot_id: UUID
+    source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ocr_boxes: tuple[dict, ...] = ()  # NormalizedBox dicts with x/y/w/h
+
+
+class SubtitleCleanResult(FrozenModel):
+    shot_id: UUID
+    video_uri: str = Field(min_length=1)
+    video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    model_release: str = Field(min_length=1, max_length=256)
+
+
+class SubtitleCleanAdapter(Protocol):
+    @property
+    def model_release(self) -> str: ...
+
+    def clean(
+        self,
+        request: SubtitleCleanRequest,
+        source_video: Path,
+        output_dir: Path,
+    ) -> SubtitleCleanResult: ...

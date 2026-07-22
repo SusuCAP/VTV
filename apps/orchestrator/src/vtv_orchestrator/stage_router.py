@@ -12,6 +12,7 @@ from vtv_media_worker import execute as execute_media
 from vtv_production_worker import execute as execute_production
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
 from vtv_storage import WorkerObjectStoreAdapter
+from vtv_visual_worker import execute as execute_visual
 
 from .mock_worker import execute as execute_mock
 
@@ -30,6 +31,16 @@ ASSEMBLY_STAGES = frozenset(
     }
 )
 C2PA_STAGES = frozenset({"C2PA_SIGN"})
+VISUAL_STAGES = frozenset(
+    {
+        "VISUAL_CHARACTER_REPLACE",
+        "VISUAL_BACKGROUND_REPLACE",
+        "VISUAL_JOINT_REPLACE",
+        "VISUAL_FULL_REGEN",
+        "VISUAL_SUBTITLE_CLEAN",
+        "VISUAL_KEYFRAME_PREVIEW",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +51,7 @@ class StageRouter:
     audio_executor: Callable[[StageJob], StageResult] = execute_audio
     production_executor: Callable[[StageJob], StageResult] = execute_production
     assembly_executor: Callable[[StageJob], StageResult] = execute_assemble
+    visual_executor: Callable[[StageJob], StageResult] = execute_visual
     fallback_executor: Callable[[StageJob], StageResult] = execute_mock
     object_store: WorkerObjectStoreAdapter | None = None
 
@@ -62,6 +74,10 @@ class StageRouter:
             if job.stage_type in C2PA_STAGES:
                 return self._upload_outputs(
                     job, C2paWorker().execute(self._prepare_job(job))
+                )
+            if job.stage_type in VISUAL_STAGES:
+                return self._upload_outputs(
+                    job, self.visual_executor(self._prepare_job(job))
                 )
             return self.fallback_executor(job)
         except Exception as exc:

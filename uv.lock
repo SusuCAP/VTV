@@ -27,6 +27,7 @@ members = [
     "vtv-routing",
     "vtv-schemas",
     "vtv-storage",
+    "vtv-visual-worker",
     "vtv-workspace",
 ]
 
@@ -1666,6 +1667,7 @@ dependencies = [
     { name = "vtv-routing" },
     { name = "vtv-schemas" },
     { name = "vtv-storage" },
+    { name = "vtv-visual-worker" },
 ]
 
 [package.metadata]
@@ -1683,6 +1685,7 @@ requires-dist = [
     { name = "vtv-routing", editable = "packages/routing" },
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
+    { name = "vtv-visual-worker", editable = "workers/visual" },
 ]
 
 [[package]]
@@ -1763,6 +1766,25 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.37.0" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
+
+[[package]]
+name = "vtv-visual-worker"
+version = "0.1.0"
+source = { editable = "workers/visual" }
+dependencies = [
+    { name = "vtv-media" },
+    { name = "vtv-production" },
+    { name = "vtv-routing" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "vtv-media", editable = "packages/media" },
+    { name = "vtv-production", editable = "packages/production" },
+    { name = "vtv-routing", editable = "packages/routing" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
 

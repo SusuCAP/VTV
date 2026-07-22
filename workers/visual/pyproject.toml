@@ -1,0 +1,21 @@
+[project]
+name = "vtv-visual-worker"
+version = "0.1.0"
+description = "Visual production worker (character/background/full-regen/subtitle-clean)"
+requires-python = ">=3.12"
+dependencies = [
+  "vtv-schemas",
+  "vtv-production",
+  "vtv-routing",
+  "vtv-media",
+]
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+vtv-production = { workspace = true }
+vtv-routing = { workspace = true }
+vtv-media = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

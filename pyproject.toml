@@ -35,6 +35,7 @@ members = [
   "workers/analysis",
   "workers/audio",
   "workers/assemble",
+  "workers/visual",
 ]
 
 [tool.pytest.ini_options]
