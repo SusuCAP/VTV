@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 23% | 媒体处理与可执行 ASR_ALIGN 音频分析 Worker |
+| Phase 2 全剧分析 | 进行中 | 29% | 音频 Worker 与人物/场景/OCR/几何 Adapter 契约 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -65,13 +65,17 @@
 - [x] 扩展 ffprobe 媒体探测以接受纯音频，同时保留视频摄取的严格校验默认值。
 - [x] 实现 `ASR_ALIGN` Worker：音频规范化、结构化转录、词级时间戳和说话人区间输出。
 - [x] 在结果资产和 Stage Result 中双写 VAD/ASR/diarization 模型 release provenance。
+- [x] 固化人物 observation/track、场景、OCR 和画面几何的可替换 Adapter 契约。
+- [x] 统一视觉观察时间轴与 `[0,1]` 空间坐标，拒绝媒体越界和画框溢出。
+- [x] 保留 embedding 资产引用、人脸可见性、OCR script、主体/保护区域与相机运动字段。
+- [x] 实现四类确定性视觉 Adapter 和聚合 Pipeline，支持无模型合同验证。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add vision analysis adapter contracts`
+`feat: add vision analysis stage worker`
 
-下一步建立人物、场景、OCR 与画面几何分析契约，并形成 `VISION_ANALYSIS` 的可替换 Adapter 边界。
+下一步接入镜头清单与 `VISION_ANALYSIS` Stage Worker，输出带四类模型 release 的结构化视觉资产。
 
 ## 决策日志
 
@@ -117,3 +121,5 @@
 | 2026-07-22 | `pytest` | 31 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | ASR_ALIGN Worker 组件测试 | 1 passed；真实 FFmpeg 合成 WAV，校验结构化结果与模型 provenance |
 | 2026-07-22 | `pytest` | 32 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 视觉分析 Adapter 合同测试 | 3 passed；覆盖聚合输出、空间框溢出和媒体时间越界拒绝 |
+| 2026-07-22 | `pytest` | 35 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
