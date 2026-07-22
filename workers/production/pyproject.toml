@@ -1,0 +1,21 @@
+[project]
+name = "vtv-production-worker"
+version = "0.1.0"
+description = "Localization, dubbing and lipsync worker for VTV"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.28.1",
+  "pydantic-settings>=2.8.1",
+  "vtv-media",
+  "vtv-production",
+  "vtv-schemas",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+vtv-media = { workspace = true }
+vtv-production = { workspace = true }
+vtv-schemas = { workspace = true }

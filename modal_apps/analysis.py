@@ -15,10 +15,12 @@ SOURCE_PATHS = (
     "packages/analysis/src",
     "packages/audio/src",
     "packages/media/src",
+    "packages/production/src",
     "packages/storage/src",
     "workers/analysis/src",
     "workers/audio/src",
     "workers/media/src",
+    "workers/production/src",
     "apps/orchestrator/src",
 )
 

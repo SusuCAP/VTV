@@ -19,6 +19,7 @@ members = [
     "vtv-media-worker",
     "vtv-orchestrator",
     "vtv-production",
+    "vtv-production-worker",
     "vtv-schemas",
     "vtv-storage",
     "vtv-workspace",
@@ -1588,6 +1589,7 @@ dependencies = [
     { name = "vtv-audio-worker" },
     { name = "vtv-db" },
     { name = "vtv-media-worker" },
+    { name = "vtv-production-worker" },
     { name = "vtv-schemas" },
     { name = "vtv-storage" },
 ]
@@ -1601,6 +1603,7 @@ requires-dist = [
     { name = "vtv-audio-worker", editable = "workers/audio" },
     { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-media-worker", editable = "workers/media" },
+    { name = "vtv-production-worker", editable = "workers/production" },
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
 ]
@@ -1615,6 +1618,27 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+
+[[package]]
+name = "vtv-production-worker"
+version = "0.1.0"
+source = { editable = "workers/production" }
+dependencies = [
+    { name = "httpx" },
+    { name = "pydantic-settings" },
+    { name = "vtv-media" },
+    { name = "vtv-production" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "pydantic-settings", specifier = ">=2.8.1" },
+    { name = "vtv-media", editable = "packages/media" },
+    { name = "vtv-production", editable = "packages/production" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
 
 [[package]]
 name = "vtv-schemas"

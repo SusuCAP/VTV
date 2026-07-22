@@ -11,6 +11,7 @@ dependencies = [
   "vtv-media-worker",
   "vtv-analysis-worker",
   "vtv-audio-worker",
+  "vtv-production-worker",
   "vtv-schemas",
   "vtv-storage",
 ]
@@ -23,6 +24,7 @@ vtv-db = { workspace = true }
 vtv-media-worker = { workspace = true }
 vtv-analysis-worker = { workspace = true }
 vtv-audio-worker = { workspace = true }
+vtv-production-worker = { workspace = true }
 vtv-schemas = { workspace = true }
 vtv-storage = { workspace = true }
 

@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 10% | 本土化、声音授权、TTS 候选与 L0–L5 口型路由契约 |
+| Phase 3 自动生产 | 进行中 | 20% | 本土化/授权契约、L0–L5 路由与多候选 TTS Worker |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -166,15 +166,19 @@
 - [x] TTS 请求在推理前校验人物、语言、市场、商业范围、有效状态和 voice_clone 操作授权。
 - [x] 固化每句 1–4 个候选及 voice/localization/model release、seed、速度、情绪和音频 hash provenance。
 - [x] 实现 L0–L5 可解释口型路由，近景采用 4% 时长偏差、其他镜头采用 8% 门限。
+- [x] 实现 Registry 控制的远程 TTS Adapter，强制 HTTPS、许可记录、自动化批准和环境 token。
+- [x] TTS 响应采用严格 JSON/Base64 WAV，校验 1–4 个候选数量、连续编号和实际媒体时长。
+- [x] 实现 `TTS_GENERATE` Production Worker，输出逐候选资产、指标及完整 release/seed provenance。
+- [x] Orchestrator 本地与 Modal 路由新增 Production Worker，继续复用 S3 物化和不可变回传边界。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add production dubbing worker`
+`feat: add episode production workflow`
 
-下一步实现可执行 TTS Adapter、逐句多候选 Audio Worker、时长/音频完整性门禁和 Registry/Modal
-路由；同时在 Modal API 网络恢复后补跑云端验收。
+下一步建立从已发布 Localization/Voice Release 生成逐句 TTS、口型路线、候选 selection、混音和
+逐集合成的生产 DAG/API；同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -271,3 +275,5 @@
 | 2026-07-22 | `pytest` | 106 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Phase 3 本土化领域契约 | 8 passed；覆盖声音授权阻断、release 绑定与 L0–L5 全路由 |
 | 2026-07-22 | `pytest` | 114 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 多候选 TTS Worker/运行时 | 9 passed；覆盖 WAV、时长门限、准入阻断、Registry 工厂和路由 |
+| 2026-07-22 | `pytest` | 119 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

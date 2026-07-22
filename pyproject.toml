@@ -27,6 +27,7 @@ members = [
   "packages/schemas",
   "packages/storage",
   "workers/media",
+  "workers/production",
   "workers/analysis",
   "workers/audio",
 ]

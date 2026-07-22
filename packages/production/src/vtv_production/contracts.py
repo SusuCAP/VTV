@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
@@ -140,7 +141,9 @@ class TtsAdapter(Protocol):
     @property
     def model_release(self) -> str: ...
 
-    def synthesize(self, request: TtsRequest) -> tuple[TtsCandidate, ...]: ...
+    def synthesize(
+        self, request: TtsRequest, output_directory: Path
+    ) -> tuple[TtsCandidate, ...]: ...
 
 
 class LipSyncLevel(StrEnum):
