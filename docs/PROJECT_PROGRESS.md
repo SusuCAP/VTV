@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 78% | 逐集合成 DAG 与不可变 Delivery/Provenance Manifest 契约 |
+| Phase 3 自动生产 | 进行中 | 82% | Delivery Release、CAS 批准与服务端 Provenance Manifest 发布 API |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -216,14 +216,18 @@
 - [x] 新增 `vtv.delivery-manifest.v1` 强类型交付契约，覆盖逐集 Master、字幕、质量报告和镜头清单。
 - [x] Manifest 固定编辑链、实际模型 release、人工批准、QC evaluator、成本、最终编码与 C2PA 状态 provenance。
 - [x] 交付门禁拒绝 hard-failure QC、角色缺失/重复、镜头时间线断裂和不可追溯 Master。
+- [x] 新增 Delivery/Delivery Asset 数据模型与迁移，Episode 内版本递增且每个交付角色唯一。
+- [x] Delivery Draft 捕获 Project state version；批准时使用 Delivery CAS 并拒绝项目漂移。
+- [x] Manifest 仅由服务端从不可变资产 evidence metadata 生成，客户端不能伪造 provenance。
+- [x] Delivery 批准与 `delivery.approved` Outbox 同事务提交，并提供 Workspace 隔离的创建/详情/列表 API。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add delivery release API`
+`feat: generate delivery evidence assets`
 
-本提交完成后，下一步实现 Deliverables/Provenance Manifest、质量报告与镜头清单交付闭环；
+本提交完成后，下一步实现质量报告与镜头清单资产生成 Worker，并将其接入 Assembly→Delivery DAG；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -350,3 +354,7 @@
 | 2026-07-22 | Delivery/Provenance Manifest 契约 | 3 passed；覆盖稳定 fingerprint、编辑链闭包、镜头连续性和 hard-failure QC 阻断 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 149 passed，4 skipped；仅保留 Starlette TestClient 上游弃用提示 |
+| 2026-07-22 | Delivery Release/API | 5 passed，5 个真实 PostgreSQL 用例待外部数据库执行；覆盖 Draft、CAS 批准、服务端 Manifest、查询与 Outbox |
+| 2026-07-22 | SQLAlchemy metadata | 26 tables loaded；`deliveries` 与 `delivery_assets` 约束和外键可解析 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 151 passed，5 skipped；仅保留 Starlette TestClient 上游弃用提示 |

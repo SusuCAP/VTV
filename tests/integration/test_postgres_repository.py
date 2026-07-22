@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from vtv_db.models import (
     ArtifactRelease,
     CandidateGroup,
+    Delivery,
+    DeliveryAsset,
     Episode,
     Job,
     MediaAsset,
@@ -23,6 +25,7 @@ from vtv_db.models import (
     StageRun,
 )
 from vtv_db.repository import SqlAlchemyProjectRepository
+from vtv_delivery import DeliveryApprove, DeliveryCreate
 from vtv_orchestrator.mock_worker import execute
 from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
@@ -760,3 +763,150 @@ async def test_episode_assembly_job_persists_authoritative_four_stage_dag(
     assert sum(item.status == "READY" for item in runs) == 3
     assert sum(item.status == "PENDING" for item in runs) == 1
     assert dependency_count == 3
+
+
+async def test_delivery_release_persists_manifest_and_outbox_atomically(
+    database: async_sessionmaker,
+) -> None:
+    repository = SqlAlchemyProjectRepository(database)
+    workspace_id = UUID(int=801)
+    project = await repository.create_project(
+        workspace_id,
+        ProjectCreate(name="Delivery SQL", target_market="US", locale="en-US"),
+    )
+    episode_id = UUID(int=802)
+    source_id, master_id, subtitle_id, quality_id, shots_id = (
+        UUID(int=803),
+        UUID(int=804),
+        UUID(int=805),
+        UUID(int=806),
+        UUID(int=807),
+    )
+    stage_id = UUID(int=808)
+
+    def asset(
+        asset_id: UUID,
+        uri: str,
+        digest: str,
+        content_type: str,
+        metadata: dict | None = None,
+    ) -> MediaAsset:
+        return MediaAsset(
+            id=asset_id,
+            workspace_id=workspace_id,
+            project_id=project.id,
+            object_uri=uri,
+            sha256=digest,
+            size_bytes=100,
+            content_type=content_type,
+            metadata_json={"episode_id": str(episode_id), **(metadata or {})},
+        )
+
+    async with database.begin() as session:
+        session.add_all(
+            (
+                asset(source_id, "s3://input/source.mp4", "a" * 64, "video/mp4"),
+                asset(
+                    master_id,
+                    "s3://deliveries/master.mp4",
+                    "b" * 64,
+                    "video/mp4",
+                    {
+                        "edit_chain": [
+                            {
+                                "stage_run_id": str(stage_id),
+                                "stage_type": "ASSEMBLE_EPISODE",
+                                "input_sha256s": ["a" * 64],
+                                "output_sha256s": ["b" * 64],
+                                "parameters_sha256": "f" * 64,
+                            }
+                        ],
+                        "models": [],
+                        "cost": {
+                            "currency": "USD",
+                            "total": "1.000000",
+                            "by_stage": {"ASSEMBLE_EPISODE": "1.000000"},
+                        },
+                        "final_encoding": {"video_codec": "h264", "audio_codec": "aac"},
+                    },
+                ),
+                asset(
+                    subtitle_id,
+                    "s3://deliveries/en-US.srt",
+                    "c" * 64,
+                    "application/x-subrip",
+                ),
+                asset(
+                    quality_id,
+                    "s3://deliveries/quality.json",
+                    "d" * 64,
+                    "application/json",
+                    {
+                        "qc": [
+                            {
+                                "metric_name": "master_duration",
+                                "metric_version": "v1",
+                                "evaluator_release": "ffmpeg-7",
+                                "score": 1,
+                                "verdict": "PASS",
+                            }
+                        ]
+                    },
+                ),
+                asset(
+                    shots_id,
+                    "s3://deliveries/shots.json",
+                    "e" * 64,
+                    "application/json",
+                    {
+                        "shots": [
+                            {
+                                "shot_id": str(UUID(int=809)),
+                                "shot_no": 1,
+                                "start_ms": 0,
+                                "end_ms": 2000,
+                                "route": "L0",
+                                "qc_verdict": "SOURCE_UNCHANGED",
+                            }
+                        ]
+                    },
+                ),
+            )
+        )
+        session.add(
+            Episode(
+                id=episode_id,
+                project_id=project.id,
+                episode_no=1,
+                source_asset_id=source_id,
+                duration_ms=2000,
+            )
+        )
+    draft = await repository.create_delivery(
+        workspace_id,
+        project.id,
+        DeliveryCreate(
+            episode_id=episode_id,
+            master_asset_id=master_id,
+            subtitle_asset_ids=(subtitle_id,),
+            quality_report_asset_id=quality_id,
+            shot_list_asset_id=shots_id,
+            expected_project_state_version=1,
+        ),
+    )
+    assert draft.status == "DRAFT"
+    approved = await repository.approve_delivery(
+        workspace_id,
+        draft.id,
+        DeliveryApprove(expected_state_version=1, actor_id="producer@example.com"),
+    )
+    assert approved.status == "APPROVED"
+    assert approved.manifest and approved.manifest.assets[1].role == "MASTER_VIDEO"
+    assert approved.manifest_fingerprint == approved.manifest.fingerprint
+    async with database() as session:
+        assert await session.scalar(select(func.count()).select_from(Delivery)) == 1
+        assert await session.scalar(select(func.count()).select_from(DeliveryAsset)) == 4
+        event = await session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_type == "delivery.approved")
+        )
+        assert event and event.payload["manifest_fingerprint"] == approved.manifest_fingerprint

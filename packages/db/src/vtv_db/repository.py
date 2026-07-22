@@ -9,6 +9,19 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from vtv_delivery import (
+    ApprovalEvidence,
+    CostSummary,
+    DeliveredAsset,
+    DeliveryApprove,
+    DeliveryCreate,
+    DeliveryManifestBuilder,
+    DeliveryRead,
+    EditStageEvidence,
+    ModelEvidence,
+    QcEvidence,
+    ShotDeliveryEntry,
+)
 from vtv_evaluation import evaluate_release
 from vtv_production import (
     LipSyncRequest,
@@ -67,6 +80,8 @@ from .models import (
     BenchmarkRelease,
     BenchmarkSampleResult,
     CandidateGroup,
+    Delivery,
+    DeliveryAsset,
     Episode,
     ExecutionControl,
     Job,
@@ -126,6 +141,10 @@ class CandidateConflictError(ValueError):
     pass
 
 
+class DeliveryConflictError(ValueError):
+    pass
+
+
 TTS_REQUIRED_QC_METRICS = frozenset(
     {
         "tts_intelligibility",
@@ -180,6 +199,86 @@ LOUDNESS_PRESETS = {
 }
 
 
+def _build_delivery_manifest(
+    *,
+    delivery_id: UUID,
+    workspace_id: UUID,
+    project_id: UUID,
+    episode_id: UUID,
+    project_state_version: int,
+    source: dict,
+    selected_assets: list[tuple[str, dict]],
+    actor_id: str,
+    approved_at: datetime,
+    c2pa_requested: bool,
+) -> dict:
+    master = next(asset for role, asset in selected_assets if role == "MASTER_VIDEO")
+    quality_report = next(asset for role, asset in selected_assets if role == "QUALITY_REPORT")
+    shot_list = next(asset for role, asset in selected_assets if role == "SHOT_LIST")
+    master_metadata = master.get("metadata", {})
+    quality_metadata = quality_report.get("metadata", {})
+    shot_metadata = shot_list.get("metadata", {})
+    try:
+        edit_chain = tuple(
+            EditStageEvidence.model_validate(value)
+            for value in master_metadata["edit_chain"]
+        )
+        models = tuple(
+            ModelEvidence.model_validate(value)
+            for value in master_metadata.get("models", [])
+        )
+        qc = tuple(QcEvidence.model_validate(value) for value in quality_metadata["qc"])
+        shots = tuple(
+            ShotDeliveryEntry.model_validate(value) for value in shot_metadata["shots"]
+        )
+        cost = CostSummary.model_validate(master_metadata["cost"])
+        final_encoding = dict(master_metadata["final_encoding"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise DeliveryConflictError("delivery evidence metadata is incomplete") from exc
+
+    def delivered_asset(role: str, asset: dict) -> DeliveredAsset:
+        return DeliveredAsset(
+            asset_id=asset["id"],
+            role=role,
+            object_uri=asset["object_uri"],
+            sha256=asset["sha256"],
+            size_bytes=asset["size_bytes"],
+            content_type=asset["content_type"],
+            metadata=asset.get("metadata", {}),
+        )
+
+    manifest = DeliveryManifestBuilder.build(
+        delivery_id=delivery_id,
+        workspace_id=workspace_id,
+        project_id=project_id,
+        episode_id=episode_id,
+        project_state_version=project_state_version,
+        generated_at=approved_at,
+        assets=(
+            delivered_asset("SOURCE_VIDEO", source),
+            *(delivered_asset(role, asset) for role, asset in selected_assets),
+        ),
+        edit_chain=edit_chain,
+        models=models,
+        approvals=(
+            ApprovalEvidence(
+                subject_type="DELIVERY",
+                subject_id=delivery_id,
+                decision="APPROVED",
+                actor_id=actor_id,
+                state_version=1,
+                decided_at=approved_at,
+            ),
+        ),
+        qc=qc,
+        shots=shots,
+        cost=cost,
+        final_encoding=final_encoding,
+        c2pa_status="PENDING" if c2pa_requested else "NOT_REQUESTED",
+    )
+    return manifest.model_dump(mode="json")
+
+
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
     upload: UploadRead
@@ -215,6 +314,22 @@ class ProjectRepository(Protocol):
     async def create_episode_assembly_job(
         self, workspace_id: UUID, project_id: UUID, payload: EpisodeAssemblyJobCreate
     ) -> JobRead: ...
+
+    async def create_delivery(
+        self, workspace_id: UUID, project_id: UUID, payload: DeliveryCreate
+    ) -> DeliveryRead: ...
+
+    async def list_deliveries(
+        self, workspace_id: UUID, project_id: UUID, episode_id: UUID | None = None
+    ) -> list[DeliveryRead]: ...
+
+    async def get_delivery(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead: ...
+
+    async def approve_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryApprove
+    ) -> DeliveryRead: ...
 
     async def create_rights_release(
         self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
@@ -1838,6 +1953,218 @@ class SqlAlchemyProjectRepository:
             await session.flush()
             return _job_read(job)
 
+    async def create_delivery(
+        self, workspace_id: UUID, project_id: UUID, payload: DeliveryCreate
+    ) -> DeliveryRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project)
+                .where(Project.id == project_id, Project.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            if project.state_version != payload.expected_project_state_version:
+                raise DeliveryConflictError(
+                    "project state version mismatch: "
+                    f"expected {payload.expected_project_state_version}, "
+                    f"actual {project.state_version}"
+                )
+            episode = await session.scalar(
+                select(Episode).where(
+                    Episode.id == payload.episode_id,
+                    Episode.project_id == project_id,
+                )
+            )
+            if episode is None or episode.source_asset_id is None:
+                raise ProjectNotFoundError(payload.episode_id)
+            role_by_id: dict[UUID, str] = {
+                payload.master_asset_id: "MASTER_VIDEO",
+                payload.quality_report_asset_id: "QUALITY_REPORT",
+                payload.shot_list_asset_id: "SHOT_LIST",
+            }
+            requested_ids = set(role_by_id)
+            requested_ids.update(payload.subtitle_asset_ids)
+            requested_ids.update(payload.additional_asset_ids)
+            assets = list(
+                await session.scalars(
+                    select(MediaAsset).where(
+                        MediaAsset.id.in_(requested_ids),
+                        MediaAsset.workspace_id == workspace_id,
+                        MediaAsset.project_id == project_id,
+                    )
+                )
+            )
+            if {asset.id for asset in assets} != requested_ids:
+                raise ProjectNotFoundError("delivery asset")
+            asset_by_id = {asset.id: asset for asset in assets}
+            subtitle_roles: set[str] = set()
+            for asset_id in payload.subtitle_asset_ids:
+                asset = asset_by_id[asset_id]
+                role = (
+                    "SUBTITLE_VTT"
+                    if asset.object_uri.lower().endswith(".vtt")
+                    else "SUBTITLE_SRT"
+                )
+                if role in subtitle_roles:
+                    raise DeliveryConflictError("subtitle formats must be unique")
+                subtitle_roles.add(role)
+                role_by_id[asset_id] = role
+            allowed_additional = {"POSTER", "TRAILER", "AD_CUT"}
+            for asset_id in payload.additional_asset_ids:
+                role = asset_by_id[asset_id].metadata_json.get("delivery_role")
+                if role not in allowed_additional or role in role_by_id.values():
+                    raise DeliveryConflictError("additional asset has invalid delivery role")
+                role_by_id[asset_id] = role
+            for asset in assets:
+                if asset.metadata_json.get("episode_id") != str(episode.id):
+                    raise DeliveryConflictError("delivery assets must belong to the episode")
+            if not asset_by_id[payload.master_asset_id].content_type.startswith("video/"):
+                raise DeliveryConflictError("master asset must be video")
+            if not asset_by_id[payload.quality_report_asset_id].content_type.endswith("json"):
+                raise DeliveryConflictError("quality report must be JSON")
+            if not asset_by_id[payload.shot_list_asset_id].content_type.endswith("json"):
+                raise DeliveryConflictError("shot list must be JSON")
+            version = int(
+                await session.scalar(
+                    select(func.coalesce(func.max(Delivery.version), 0) + 1).where(
+                        Delivery.episode_id == episode.id
+                    )
+                )
+            )
+            delivery = Delivery(
+                id=self._id_factory(),
+                workspace_id=workspace_id,
+                project_id=project_id,
+                episode_id=episode.id,
+                version=version,
+                project_state_version=project.state_version,
+                c2pa_requested=payload.c2pa_requested,
+            )
+            session.add(delivery)
+            session.add_all(
+                DeliveryAsset(delivery_id=delivery.id, asset_id=asset_id, role=role)
+                for asset_id, role in role_by_id.items()
+            )
+            await session.flush()
+            return _delivery_read(delivery)
+
+    async def list_deliveries(
+        self, workspace_id: UUID, project_id: UUID, episode_id: UUID | None = None
+    ) -> list[DeliveryRead]:
+        async with self._sessions() as session:
+            statement = select(Delivery).where(
+                Delivery.workspace_id == workspace_id,
+                Delivery.project_id == project_id,
+            )
+            if episode_id is not None:
+                statement = statement.where(Delivery.episode_id == episode_id)
+            rows = await session.scalars(
+                statement.order_by(Delivery.episode_id, Delivery.version.desc())
+            )
+            return [_delivery_read(row) for row in rows]
+
+    async def get_delivery(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead:
+        async with self._sessions() as session:
+            delivery = await session.scalar(
+                select(Delivery).where(
+                    Delivery.id == delivery_id,
+                    Delivery.workspace_id == workspace_id,
+                )
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            return _delivery_read(delivery)
+
+    async def approve_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryApprove
+    ) -> DeliveryRead:
+        async with self._sessions.begin() as session:
+            delivery = await session.scalar(
+                select(Delivery)
+                .where(Delivery.id == delivery_id, Delivery.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            if delivery.state_version != payload.expected_state_version:
+                raise DeliveryConflictError(
+                    "delivery state version mismatch: "
+                    f"expected {payload.expected_state_version}, actual {delivery.state_version}"
+                )
+            if delivery.status != "DRAFT":
+                raise DeliveryConflictError("only draft deliveries can be approved")
+            project = await session.scalar(
+                select(Project)
+                .where(
+                    Project.id == delivery.project_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            episode = await session.get(Episode, delivery.episode_id)
+            if project is None or episode is None or episode.source_asset_id is None:
+                raise ProjectNotFoundError(delivery.project_id)
+            if project.state_version != delivery.project_state_version:
+                raise DeliveryConflictError("project changed after delivery draft was created")
+            source = await session.scalar(
+                select(MediaAsset).where(
+                    MediaAsset.id == episode.source_asset_id,
+                    MediaAsset.workspace_id == workspace_id,
+                    MediaAsset.project_id == delivery.project_id,
+                )
+            )
+            rows = list(
+                (
+                    await session.execute(
+                        select(DeliveryAsset, MediaAsset)
+                        .join(MediaAsset, MediaAsset.id == DeliveryAsset.asset_id)
+                        .where(DeliveryAsset.delivery_id == delivery.id)
+                    )
+                ).all()
+            )
+            if source is None or not rows:
+                raise DeliveryConflictError("delivery assets are incomplete")
+            approved_at = datetime.now(UTC)
+            manifest_json = _build_delivery_manifest(
+                delivery_id=delivery.id,
+                workspace_id=workspace_id,
+                project_id=delivery.project_id,
+                episode_id=delivery.episode_id,
+                project_state_version=delivery.project_state_version,
+                source=_media_asset_record(source),
+                selected_assets=[
+                    (link.role, _media_asset_record(asset)) for link, asset in rows
+                ],
+                actor_id=payload.actor_id,
+                approved_at=approved_at,
+                c2pa_requested=delivery.c2pa_requested,
+            )
+            manifest = DeliveryManifestBuilder.build(**manifest_json)
+            delivery.manifest = manifest_json
+            delivery.manifest_fingerprint = manifest.fingerprint
+            delivery.status = "APPROVED"
+            delivery.state_version += 1
+            delivery.approved_by = payload.actor_id
+            delivery.approved_at = approved_at
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="delivery",
+                    aggregate_id=delivery.id,
+                    event_type="delivery.approved",
+                    payload={
+                        "delivery_id": str(delivery.id),
+                        "episode_id": str(delivery.episode_id),
+                        "manifest_fingerprint": manifest.fingerprint,
+                    },
+                )
+            )
+            await session.flush()
+            return _delivery_read(delivery)
+
     async def create_artifact_release(
         self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate
     ) -> ArtifactReleaseRead:
@@ -2964,6 +3291,39 @@ def _job_read(job: Job) -> JobRead:
         progress=progress,
         total_stages=job.total_stages,
         completed_stages=job.completed_stages,
+    )
+
+
+def _media_asset_record(asset: MediaAsset) -> dict:
+    return {
+        "id": asset.id,
+        "object_uri": asset.object_uri,
+        "sha256": asset.sha256,
+        "size_bytes": asset.size_bytes,
+        "content_type": asset.content_type,
+        "metadata": asset.metadata_json,
+    }
+
+
+def _delivery_read(delivery: Delivery) -> DeliveryRead:
+    return DeliveryRead(
+        id=delivery.id,
+        workspace_id=delivery.workspace_id,
+        project_id=delivery.project_id,
+        episode_id=delivery.episode_id,
+        version=delivery.version,
+        status=delivery.status,
+        state_version=delivery.state_version,
+        manifest_fingerprint=delivery.manifest_fingerprint,
+        manifest=(
+            DeliveryManifestBuilder.build(**delivery.manifest)
+            if delivery.manifest is not None
+            else None
+        ),
+        approved_by=delivery.approved_by,
+        approved_at=delivery.approved_at,
+        created_at=delivery.created_at,
+        updated_at=delivery.updated_at,
     )
 
 

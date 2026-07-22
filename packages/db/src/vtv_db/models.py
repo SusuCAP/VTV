@@ -282,6 +282,61 @@ class MediaAsset(TimestampMixin, Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
 
+class Delivery(TimestampMixin, Base):
+    __tablename__ = "deliveries"
+    __table_args__ = (
+        UniqueConstraint("episode_id", "version"),
+        CheckConstraint("version >= 1", name="ck_deliveries_version"),
+        CheckConstraint("state_version >= 1", name="ck_deliveries_state_version"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'APPROVED', 'REVOKED')",
+            name="ck_deliveries_status",
+        ),
+        CheckConstraint(
+            "(status = 'DRAFT' AND manifest IS NULL AND manifest_fingerprint IS NULL "
+            "AND approved_by IS NULL AND approved_at IS NULL) OR "
+            "(status IN ('APPROVED', 'REVOKED') AND manifest IS NOT NULL "
+            "AND manifest_fingerprint IS NOT NULL AND approved_by IS NOT NULL "
+            "AND approved_at IS NOT NULL)",
+            name="ck_deliveries_approval_payload",
+        ),
+        Index("ix_deliveries_project_episode_status", "project_id", "episode_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    episode_id: Mapped[UUID] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="DRAFT")
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+    project_state_version: Mapped[int] = mapped_column(BigInteger)
+    c2pa_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    manifest: Mapped[dict | None] = mapped_column(JSONB)
+    manifest_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    approved_by: Mapped[str | None] = mapped_column(String(200))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DeliveryAsset(Base):
+    __tablename__ = "delivery_assets"
+    __table_args__ = (UniqueConstraint("delivery_id", "role"),)
+
+    delivery_id: Mapped[UUID] = mapped_column(
+        ForeignKey("deliveries.id", ondelete="CASCADE"), primary_key=True
+    )
+    asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(32))
+
+
 class RenderVariant(TimestampMixin, Base):
     __tablename__ = "render_variants"
     __table_args__ = (

@@ -165,3 +165,48 @@ class DeliveryManifestBuilder:
     @staticmethod
     def build(**values: object) -> DeliveryManifest:
         return DeliveryManifest.model_validate(values)
+
+
+class DeliveryCreate(BaseModel):
+    episode_id: UUID
+    master_asset_id: UUID
+    subtitle_asset_ids: tuple[UUID, ...] = Field(min_length=1, max_length=2)
+    quality_report_asset_id: UUID
+    shot_list_asset_id: UUID
+    additional_asset_ids: tuple[UUID, ...] = ()
+    expected_project_state_version: int = Field(ge=1)
+    c2pa_requested: bool = False
+
+    @model_validator(mode="after")
+    def unique_assets(self) -> DeliveryCreate:
+        values = (
+            self.master_asset_id,
+            *self.subtitle_asset_ids,
+            self.quality_report_asset_id,
+            self.shot_list_asset_id,
+            *self.additional_asset_ids,
+        )
+        if len(values) != len(set(values)):
+            raise ValueError("delivery asset IDs must be unique")
+        return self
+
+
+class DeliveryApprove(BaseModel):
+    expected_state_version: int = Field(ge=1)
+    actor_id: str = Field(min_length=1, max_length=200)
+
+
+class DeliveryRead(BaseModel):
+    id: UUID
+    workspace_id: UUID
+    project_id: UUID
+    episode_id: UUID
+    version: int = Field(ge=1)
+    status: Literal["DRAFT", "APPROVED", "REVOKED"]
+    state_version: int = Field(ge=1)
+    manifest_fingerprint: str | None = Field(default=None, pattern=SHA256_PATTERN)
+    manifest: DeliveryManifest | None = None
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime

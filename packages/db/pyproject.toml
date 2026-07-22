@@ -8,11 +8,13 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0.39",
   "vtv-schemas",
   "vtv-production",
+  "vtv-delivery",
 ]
 
 [tool.uv.sources]
 vtv-schemas = { workspace = true }
 vtv-production = { workspace = true }
+vtv-delivery = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

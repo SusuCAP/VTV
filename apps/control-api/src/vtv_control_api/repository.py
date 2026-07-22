@@ -24,15 +24,18 @@ from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
     CandidateConflictError,
+    DeliveryConflictError,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
     RightsReleaseConflictError,
     UploadConflictError,
     UploadRecord,
+    _build_delivery_manifest,
     _build_tts_request,
 )
 from vtv_db.rights import evaluate_rights_release
+from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryManifestBuilder, DeliveryRead
 from vtv_evaluation import evaluate_release
 from vtv_production import LipSyncRequest, ShotDialogueFeatures, TieredLipSyncRouter
 from vtv_schemas.analysis import AnalysisDocumentRead
@@ -81,6 +84,8 @@ class MemoryRepository:
         self._variant_stage_params: dict[UUID, dict] = {}
         self._lipsync_shots: dict[UUID, dict] = {}
         self._lipsync_assets: dict[UUID, dict] = {}
+        self._deliveries: dict[UUID, DeliveryRead] = {}
+        self._delivery_inputs: dict[UUID, dict] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -946,6 +951,189 @@ class MemoryRepository:
                 }
             )
         return job
+
+    async def create_delivery(
+        self, workspace_id: UUID, project_id: UUID, payload: DeliveryCreate
+    ) -> DeliveryRead:
+        project = await self.get_project(workspace_id, project_id)
+        if project.state_version != payload.expected_project_state_version:
+            raise DeliveryConflictError(
+                "project state version mismatch: "
+                f"expected {payload.expected_project_state_version}, "
+                f"actual {project.state_version}"
+            )
+        with self._lock:
+            episode = next(
+                (
+                    item
+                    for item in self._episodes.get(project_id, [])
+                    if item.id == payload.episode_id
+                ),
+                None,
+            )
+        if episode is None or episode.source_asset_id is None:
+            raise ProjectNotFoundError(payload.episode_id)
+        role_by_id: dict[UUID, str] = {
+            payload.master_asset_id: "MASTER_VIDEO",
+            payload.quality_report_asset_id: "QUALITY_REPORT",
+            payload.shot_list_asset_id: "SHOT_LIST",
+        }
+        requested_ids = set(role_by_id)
+        requested_ids.update(payload.subtitle_asset_ids)
+        requested_ids.update(payload.additional_asset_ids)
+        with self._lock:
+            asset_by_id = {
+                asset_id: self._lipsync_assets.get(asset_id) for asset_id in requested_ids
+            }
+        if any(asset is None for asset in asset_by_id.values()):
+            raise ProjectNotFoundError("delivery asset")
+        for asset_id in payload.subtitle_asset_ids:
+            asset = asset_by_id[asset_id]
+            assert asset is not None
+            role = (
+                "SUBTITLE_VTT"
+                if str(asset.get("object_uri", "")).lower().endswith(".vtt")
+                else "SUBTITLE_SRT"
+            )
+            if role in role_by_id.values():
+                raise DeliveryConflictError("subtitle formats must be unique")
+            role_by_id[asset_id] = role
+        allowed_additional = {"POSTER", "TRAILER", "AD_CUT"}
+        for asset_id in payload.additional_asset_ids:
+            asset = asset_by_id[asset_id]
+            assert asset is not None
+            role = asset.get("metadata", {}).get("delivery_role")
+            if role not in allowed_additional or role in role_by_id.values():
+                raise DeliveryConflictError("additional asset has invalid delivery role")
+            role_by_id[asset_id] = role
+        for asset in asset_by_id.values():
+            assert asset is not None
+            if asset.get("project_id") != project_id or asset.get("episode_id") != episode.id:
+                raise DeliveryConflictError("delivery assets must belong to the episode")
+        master = asset_by_id[payload.master_asset_id]
+        report = asset_by_id[payload.quality_report_asset_id]
+        shot_list = asset_by_id[payload.shot_list_asset_id]
+        assert master is not None and report is not None and shot_list is not None
+        if not str(master.get("content_type", "")).startswith("video/"):
+            raise DeliveryConflictError("master asset must be video")
+        if not str(report.get("content_type", "")).endswith("json"):
+            raise DeliveryConflictError("quality report must be JSON")
+        if not str(shot_list.get("content_type", "")).endswith("json"):
+            raise DeliveryConflictError("shot list must be JSON")
+        now = datetime.now(UTC)
+        with self._lock:
+            version = 1 + max(
+                (
+                    item.version
+                    for item in self._deliveries.values()
+                    if item.episode_id == episode.id
+                ),
+                default=0,
+            )
+            delivery = DeliveryRead(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                project_id=project_id,
+                episode_id=episode.id,
+                version=version,
+                status="DRAFT",
+                state_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            self._deliveries[delivery.id] = delivery
+            self._delivery_inputs[delivery.id] = {
+                "project_state_version": project.state_version,
+                "c2pa_requested": payload.c2pa_requested,
+                "roles": role_by_id,
+            }
+        return delivery
+
+    async def list_deliveries(
+        self, workspace_id: UUID, project_id: UUID, episode_id: UUID | None = None
+    ) -> list[DeliveryRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            result = [
+                item
+                for item in self._deliveries.values()
+                if item.workspace_id == workspace_id
+                and item.project_id == project_id
+                and (episode_id is None or item.episode_id == episode_id)
+            ]
+        return sorted(result, key=lambda item: (str(item.episode_id), -item.version))
+
+    async def get_delivery(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryRead:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id:
+            raise ProjectNotFoundError(delivery_id)
+        return delivery
+
+    async def approve_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryApprove
+    ) -> DeliveryRead:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+            inputs = self._delivery_inputs.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id or inputs is None:
+            raise ProjectNotFoundError(delivery_id)
+        if delivery.state_version != payload.expected_state_version:
+            raise DeliveryConflictError(
+                "delivery state version mismatch: "
+                f"expected {payload.expected_state_version}, actual {delivery.state_version}"
+            )
+        if delivery.status != "DRAFT":
+            raise DeliveryConflictError("only draft deliveries can be approved")
+        project = await self.get_project(workspace_id, delivery.project_id)
+        if project.state_version != inputs["project_state_version"]:
+            raise DeliveryConflictError("project changed after delivery draft was created")
+        with self._lock:
+            episode = next(
+                item
+                for item in self._episodes[delivery.project_id]
+                if item.id == delivery.episode_id
+            )
+            source = self._lipsync_assets.get(episode.source_asset_id)
+            selected = [
+                (role, self._lipsync_assets[asset_id])
+                for asset_id, role in inputs["roles"].items()
+            ]
+        if source is None:
+            raise DeliveryConflictError("delivery source asset is missing")
+        now = datetime.now(UTC)
+        manifest_json = _build_delivery_manifest(
+            delivery_id=delivery.id,
+            workspace_id=workspace_id,
+            project_id=delivery.project_id,
+            episode_id=delivery.episode_id,
+            project_state_version=inputs["project_state_version"],
+            source=source,
+            selected_assets=selected,
+            actor_id=payload.actor_id,
+            approved_at=now,
+            c2pa_requested=inputs["c2pa_requested"],
+        )
+        manifest = DeliveryManifestBuilder.build(**manifest_json)
+        approved = delivery.model_copy(
+            update={
+                "status": "APPROVED",
+                "state_version": delivery.state_version + 1,
+                "manifest": manifest,
+                "manifest_fingerprint": manifest.fingerprint,
+                "approved_by": payload.actor_id,
+                "approved_at": now,
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            current = self._deliveries.get(delivery.id)
+            if current is None or current.state_version != delivery.state_version:
+                raise DeliveryConflictError("delivery changed during approval")
+            self._deliveries[delivery.id] = approved
+        return approved
 
     async def list_candidate_groups(
         self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None

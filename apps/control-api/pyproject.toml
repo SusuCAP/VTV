@@ -10,12 +10,14 @@ dependencies = [
   "vtv-db",
   "vtv-schemas",
   "vtv-storage",
+  "vtv-delivery",
 ]
 
 [tool.uv.sources]
 vtv-db = { workspace = true }
 vtv-schemas = { workspace = true }
 vtv-storage = { workspace = true }
+vtv-delivery = { workspace = true }
 
 [project.scripts]
 vtv-api = "vtv_control_api.__main__:main"

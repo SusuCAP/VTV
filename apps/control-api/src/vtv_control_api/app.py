@@ -8,6 +8,7 @@ from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
     CandidateConflictError,
+    DeliveryConflictError,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
@@ -15,6 +16,7 @@ from vtv_db.repository import (
     RightsReleaseConflictError,
     UploadConflictError,
 )
+from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryRead
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -298,6 +300,68 @@ def create_app(
         status_url = f"/v1/jobs/{job.id}"
         response.headers["Location"] = status_url
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
+
+    @app.post(
+        "/v1/projects/{project_id}/deliveries",
+        response_model=DeliveryRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_delivery(
+        project_id: UUID,
+        payload: DeliveryCreate,
+        response: Response,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryRead:
+        try:
+            delivery = await repo.create_delivery(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project, episode, or delivery asset not found"
+            ) from exc
+        except DeliveryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response.headers["Location"] = f"/v1/deliveries/{delivery.id}"
+        return delivery
+
+    @app.get(
+        "/v1/projects/{project_id}/deliveries",
+        response_model=list[DeliveryRead],
+    )
+    async def list_deliveries(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        episode_id: Annotated[UUID | None, Query()] = None,
+    ) -> list[DeliveryRead]:
+        try:
+            return await repo.list_deliveries(workspace, project_id, episode_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get("/v1/deliveries/{delivery_id}", response_model=DeliveryRead)
+    async def get_delivery(
+        delivery_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryRead:
+        try:
+            return await repo.get_delivery(workspace, delivery_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="delivery not found") from exc
+
+    @app.post(
+        "/v1/deliveries/{delivery_id}/approve",
+        response_model=DeliveryRead,
+    )
+    async def approve_delivery(
+        delivery_id: UUID,
+        payload: DeliveryApprove,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryRead:
+        try:
+            return await repo.approve_delivery(workspace, delivery_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="delivery not found") from exc
+        except DeliveryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/v1/projects/{project_id}/episodes", response_model=list[EpisodeRead])
     async def list_episodes(

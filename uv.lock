@@ -1542,6 +1542,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "vtv-db" },
+    { name = "vtv-delivery" },
     { name = "vtv-schemas" },
     { name = "vtv-storage" },
 ]
@@ -1552,6 +1553,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.8.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "vtv-db", editable = "packages/db" },
+    { name = "vtv-delivery", editable = "packages/delivery" },
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
 ]
@@ -1563,6 +1565,7 @@ source = { editable = "packages/db" }
 dependencies = [
     { name = "asyncpg" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "vtv-delivery" },
     { name = "vtv-production" },
     { name = "vtv-schemas" },
 ]
@@ -1571,6 +1574,7 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-delivery", editable = "packages/delivery" },
     { name = "vtv-production", editable = "packages/production" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
