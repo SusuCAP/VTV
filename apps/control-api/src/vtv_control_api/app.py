@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
+    AnalysisNotReadyError,
     ArtifactConflictError,
     ProjectNotFoundError,
     ProjectRepository,
@@ -103,6 +104,8 @@ def create_app(
             job = await repo.create_analysis_job(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+        except AnalysisNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         status_url = f"/v1/jobs/{job.id}"
         response.headers["Location"] = status_url
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)

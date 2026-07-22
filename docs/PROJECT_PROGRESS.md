@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 59% | 资产 Release 事务、Outbox、控制 API 与自动失效 |
+| Phase 2 全剧分析 | 进行中 | 67% | 多集分析 fan-out、按集资产追踪与项目级汇聚 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -88,13 +88,18 @@
 - [x] 每次创建、确认、发布和失效均在业务事务内写入 Outbox 事件。
 - [x] 创建 superseding 版本时自动失效旧版本及全部下游，消除客户端竞态窗口。
 - [x] API 将状态错误、依赖门禁和 CAS 冲突稳定映射为 HTTP 409。
+- [x] 项目分析按每个已上传 Episode 展开 ingest/proxy/shots/ASR/vision 五阶段链。
+- [x] 单一 `PROJECT_SYNTHESIS` 依赖所有集的 ASR 和视觉结果，N 集总阶段数为 `5N+1`。
+- [x] 空项目分析返回 409，阻止创建没有源资产且无法执行的 DAG。
+- [x] Stage 输出资产透传 episode/stage 元数据，项目合成按集严格配对输入。
+- [x] 合成器跨集合并 track/scene，并生成逐集 Continuity Snapshot 与异构 release provenance。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: project analysis episode fanout`
+`feat: route stages to concrete local workers`
 
-下一步修正项目分析入口的多集 fan-out，使 ingest/proxy/shots/ASR/vision 真正从各集源资产启动并汇聚到项目合成。
+下一步把编排器从全量 Mock executor 改为按 stage type 路由 Media Worker、Analysis Worker 与保留的 Mock 生产阶段。
 
 ## 决策日志
 
@@ -152,3 +157,5 @@
 | 2026-07-22 | `pytest` | 42 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Artifact Release API 集成测试 | 3 passed；覆盖发布链、CAS 冲突及 supersede 自动传递失效 |
 | 2026-07-22 | `pytest` | 45 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 多集分析 DAG 与汇聚测试 | 通过；两集生成 11 stages、空集拒绝、四份分析资产按集配对 |
+| 2026-07-22 | `pytest` | 47 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

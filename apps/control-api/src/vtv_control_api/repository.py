@@ -10,6 +10,7 @@ from vtv_db.releases import (
     publish_release,
 )
 from vtv_db.repository import (
+    AnalysisNotReadyError,
     ArtifactConflictError,
     ProjectNotFoundError,
     UploadConflictError,
@@ -78,13 +79,17 @@ class MemoryRepository:
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        with self._lock:
+            episodes = list(self._episodes.get(project_id, []))
+        if not episodes:
+            raise AnalysisNotReadyError("project analysis requires an uploaded episode")
         job = JobRead(
             id=uuid4(),
             project_id=project.id,
             kind="PROJECT_ANALYSIS",
             status=JobStatus.QUEUED,
             progress=0,
-            total_stages=6,
+            total_stages=len(episodes) * 5 + 1,
             completed_stages=0,
         )
         with self._lock:

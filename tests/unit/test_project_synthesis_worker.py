@@ -61,15 +61,21 @@ def test_project_synthesis_worker_combines_analysis_and_provenance(tmp_path: Pat
             "model_releases": {"people": "people@1"},
         },
     )
+    episode_one, episode_two = str(uuid4()), str(uuid4())
+    inputs = [
+        audio.model_copy(update={"metadata": {"episode_id": episode_one}}),
+        vision.model_copy(update={"metadata": {"episode_id": episode_one}}),
+        audio.model_copy(update={"metadata": {"episode_id": episode_two}}),
+        vision.model_copy(update={"metadata": {"episode_id": episode_two}}),
+    ]
     output = tmp_path / "output"
     job = StageJob(
         stage_run_id=uuid4(),
         stage_attempt_id=uuid4(),
         project_id=uuid4(),
-        episode_id=uuid4(),
         idempotency_key="test:project-synthesis",
         stage_type="PROJECT_SYNTHESIS",
-        input_assets=[audio, vision],
+        input_assets=inputs,
         output_prefix=output.resolve().as_uri(),
         runtime_profile_id="gpu-analysis",
         observed_control_version=1,
@@ -83,5 +89,10 @@ def test_project_synthesis_worker_combines_analysis_and_provenance(tmp_path: Pat
     assert result.status == "OUTPUT_READY"
     assert payload["synthesis"]["bible"]["target_locale"] == "en-US"
     assert payload["synthesis"]["bible"]["characters"][0]["character_id"] == "character-001"
+    assert len(payload["synthesis"]["continuity"]) == 2
+    assert {item["episode_id"] for item in payload["synthesis"]["continuity"]} == {
+        episode_one,
+        episode_two,
+    }
     assert payload["model_releases"]["asr_align"] == "asr@1"
     assert payload["model_releases"]["project_synthesis"].endswith("@1")

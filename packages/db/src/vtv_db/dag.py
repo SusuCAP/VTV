@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from uuid import UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,19 +10,52 @@ class StageDefinition:
     depends_on: tuple[str, ...] = ()
 
 
-PROJECT_ANALYSIS_DAG: tuple[StageDefinition, ...] = (
-    StageDefinition("ingest", "INGEST_VALIDATE", "cpu-media"),
-    StageDefinition("proxy", "PROXY_GENERATE", "cpu-media", ("ingest",)),
-    StageDefinition("shots", "SHOT_DETECT", "gpu-analysis-light", ("proxy",)),
-    StageDefinition("asr", "ASR_ALIGN", "gpu-audio", ("proxy",)),
-    StageDefinition("vision", "VISION_ANALYSIS", "gpu-analysis", ("proxy", "shots")),
-    StageDefinition(
-        "synthesis",
-        "PROJECT_SYNTHESIS",
-        "gpu-analysis",
-        ("asr", "vision"),
-    ),
-)
+@dataclass(frozen=True, slots=True)
+class ScopedStageDefinition(StageDefinition):
+    episode_id: UUID | None = None
+
+
+def build_project_analysis_dag(
+    episode_ids: tuple[UUID, ...],
+) -> tuple[ScopedStageDefinition, ...]:
+    if not episode_ids:
+        raise ValueError("project analysis requires at least one episode")
+    definitions: list[ScopedStageDefinition] = []
+    synthesis_dependencies: list[str] = []
+    for episode_id in episode_ids:
+        prefix = f"episode:{episode_id}"
+        ingest = f"{prefix}:ingest"
+        proxy = f"{prefix}:proxy"
+        shots = f"{prefix}:shots"
+        asr = f"{prefix}:asr"
+        vision = f"{prefix}:vision"
+        definitions.extend(
+            (
+                ScopedStageDefinition(
+                    ingest, "INGEST_VALIDATE", "cpu-media", episode_id=episode_id
+                ),
+                ScopedStageDefinition(proxy, "PROXY_GENERATE", "cpu-media", (ingest,), episode_id),
+                ScopedStageDefinition(
+                    shots, "SHOT_DETECT", "gpu-analysis-light", (proxy,), episode_id
+                ),
+                ScopedStageDefinition(asr, "ASR_ALIGN", "gpu-audio", (proxy,), episode_id),
+                ScopedStageDefinition(
+                    vision, "VISION_ANALYSIS", "gpu-analysis", (proxy, shots), episode_id
+                ),
+            )
+        )
+        synthesis_dependencies.extend((asr, vision))
+    definitions.append(
+        ScopedStageDefinition(
+            "synthesis",
+            "PROJECT_SYNTHESIS",
+            "gpu-analysis",
+            tuple(synthesis_dependencies),
+        )
+    )
+    result = tuple(definitions)
+    validate_dag(result)
+    return result
 
 
 EPISODE_BASELINE_DAG: tuple[StageDefinition, ...] = (

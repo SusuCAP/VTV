@@ -123,9 +123,28 @@ class DeterministicProjectSynthesizer:
         audio: AudioAnalysis,
         vision: VisionAnalysis,
     ) -> ProjectSynthesis:
-        del audio
-        tracks = sorted({person.track_id for person in vision.people})
-        scenes = sorted({scene.scene_id for scene in vision.scenes})
+        return self.synthesize_series(
+            project_id,
+            source_locale,
+            target_locale,
+            ((episode_id, audio, vision),),
+        )
+
+    def synthesize_series(
+        self,
+        project_id: str,
+        source_locale: str,
+        target_locale: str,
+        episodes: tuple[tuple[str, AudioAnalysis, VisionAnalysis], ...],
+    ) -> ProjectSynthesis:
+        if not episodes:
+            raise ValueError("project synthesis requires at least one episode analysis")
+        tracks = sorted(
+            {person.track_id for _, _, vision in episodes for person in vision.people}
+        )
+        scenes = sorted(
+            {scene.scene_id for _, _, vision in episodes for scene in vision.scenes}
+        )
         bible_id = f"bible-{project_id}"
         bible = LocalizationBible(
             bible_id=bible_id,
@@ -169,18 +188,22 @@ class DeterministicProjectSynthesizer:
             anchors=anchors,
         )
         continuity = tuple(
-            ContinuitySnapshot(
-                snapshot_id=f"continuity-{episode_id}-{index}",
-                episode_id=episode_id,
-                shot_no=index,
-                bible_id=bible_id,
-                bible_version=1,
-                location_id=(bible.locations[0].location_id if bible.locations else None),
-                characters=tuple(
-                    CharacterContinuity(character_id=character.character_id)
-                    for character in bible.characters
-                ),
+            snapshot
+            for episode_id, _audio, vision in episodes
+            for snapshot in (
+                ContinuitySnapshot(
+                    snapshot_id=f"continuity-{episode_id}-{index}",
+                    episode_id=episode_id,
+                    shot_no=index,
+                    bible_id=bible_id,
+                    bible_version=1,
+                    location_id=(bible.locations[0].location_id if bible.locations else None),
+                    characters=tuple(
+                        CharacterContinuity(character_id=character.character_id)
+                        for character in bible.characters
+                    ),
+                )
+                for index in range(1, len(vision.geometry) + 1)
             )
-            for index in range(1, len(vision.geometry) + 1)
         )
         return ProjectSynthesis(bible=bible, anchor_pack=anchor_pack, continuity=continuity)

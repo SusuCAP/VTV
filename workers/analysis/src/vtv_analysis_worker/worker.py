@@ -128,13 +128,16 @@ class AnalysisWorker:
         json_assets = [
             asset for asset in job.input_assets if asset.media_type == "application/json"
         ]
-        if len(json_assets) != 2:
-            raise ValueError("PROJECT_SYNTHESIS requires audio and vision JSON assets")
+        if len(json_assets) < 2:
+            raise ValueError("PROJECT_SYNTHESIS requires episode audio and vision JSON assets")
 
-        audio: AudioAnalysis | None = None
-        vision: VisionAnalysis | None = None
-        upstream_releases: dict[str, str] = {}
+        episode_inputs: dict[str, dict[str, AudioAnalysis | VisionAnalysis]] = {}
+        upstream_release_sets: dict[str, set[str]] = {}
         for asset in json_assets:
+            episode_id = str(
+                asset.metadata.get("episode_id") or job.episode_id or "project-wide"
+            )
+            inputs = episode_inputs.setdefault(episode_id, {})
             payload = json.loads(_local_path(asset.uri).read_text(encoding="utf-8"))
             analysis = payload.get("analysis")
             if not isinstance(analysis, dict):
@@ -144,31 +147,49 @@ class AnalysisWorker:
                 isinstance(key, str) and isinstance(value, str) for key, value in releases.items()
             ):
                 raise ValueError("PROJECT_SYNTHESIS input has invalid model releases")
-            upstream_releases.update(releases)
+            for key, value in releases.items():
+                upstream_release_sets.setdefault(key, set()).add(value)
             if "transcript" in analysis and "speakers" in analysis:
-                if audio is not None:
-                    raise ValueError("PROJECT_SYNTHESIS received duplicate audio analysis")
-                audio = AudioAnalysis.model_validate(analysis)
+                if "audio" in inputs:
+                    raise ValueError(
+                        f"PROJECT_SYNTHESIS received duplicate audio analysis for {episode_id}"
+                    )
+                inputs["audio"] = AudioAnalysis.model_validate(analysis)
             elif "people" in analysis and "geometry" in analysis:
-                if vision is not None:
-                    raise ValueError("PROJECT_SYNTHESIS received duplicate vision analysis")
-                vision = VisionAnalysis.model_validate(analysis)
+                if "vision" in inputs:
+                    raise ValueError(
+                        f"PROJECT_SYNTHESIS received duplicate vision analysis for {episode_id}"
+                    )
+                inputs["vision"] = VisionAnalysis.model_validate(analysis)
             else:
                 raise ValueError("PROJECT_SYNTHESIS input analysis type is unknown")
-        if audio is None or vision is None:
-            raise ValueError("PROJECT_SYNTHESIS requires one audio and one vision analysis")
-
-        source_locale = str(job.params.get("source_locale") or audio.language)
+        incomplete = [
+            key
+            for key, value in episode_inputs.items()
+            if set(value) != {"audio", "vision"}
+        ]
+        if incomplete:
+            raise ValueError(f"PROJECT_SYNTHESIS has incomplete episode inputs: {incomplete}")
+        episodes = tuple(
+            (episode_id, inputs["audio"], inputs["vision"])
+            for episode_id, inputs in sorted(episode_inputs.items())
+        )
+        first_audio = episodes[0][1]
+        if not isinstance(first_audio, AudioAnalysis):
+            raise TypeError("PROJECT_SYNTHESIS internal audio grouping failed")
+        source_locale = str(job.params.get("source_locale") or first_audio.language)
         target_locale = str(job.params.get("target_locale") or "en-US")
-        synthesis = self.synthesizer.synthesize(
+        synthesis = self.synthesizer.synthesize_series(
             project_id=str(job.project_id),
-            episode_id=str(job.episode_id or "project-wide"),
             source_locale=source_locale,
             target_locale=target_locale,
-            audio=audio,
-            vision=vision,
+            episodes=episodes,
         )
-        releases = {**upstream_releases, "project_synthesis": self.synthesizer.model_release}
+        releases: dict[str, str | list[str]] = {
+            key: next(iter(values)) if len(values) == 1 else sorted(values)
+            for key, values in upstream_release_sets.items()
+        }
+        releases["project_synthesis"] = self.synthesizer.model_release
         output_directory = _local_path(job.output_prefix)
         output_directory.mkdir(parents=True, exist_ok=True)
         output = output_directory / "project-synthesis.json"

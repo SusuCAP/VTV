@@ -15,7 +15,7 @@ from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
-from .dag import EPISODE_BASELINE_DAG, PROJECT_ANALYSIS_DAG, validate_dag
+from .dag import EPISODE_BASELINE_DAG, build_project_analysis_dag
 from .models import (
     ArtifactRelease,
     ArtifactReleaseDependency,
@@ -45,6 +45,10 @@ class ProjectNotFoundError(KeyError):
 
 
 class UploadConflictError(ValueError):
+    pass
+
+
+class AnalysisNotReadyError(ValueError):
     pass
 
 
@@ -270,7 +274,6 @@ class SqlAlchemyProjectRepository:
             return [_job_read(job) for job in jobs]
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead:
-        validate_dag(PROJECT_ANALYSIS_DAG)
         async with self._sessions.begin() as session:
             project = await session.scalar(
                 select(Project)
@@ -282,34 +285,57 @@ class SqlAlchemyProjectRepository:
             control = await session.get(ExecutionControl, project_id)
             if control is None:
                 raise RuntimeError("project execution control is missing")
-
-            validate_dag(EPISODE_BASELINE_DAG)
+            episodes = list(
+                await session.scalars(
+                    select(Episode)
+                    .where(Episode.project_id == project_id, Episode.source_asset_id.is_not(None))
+                    .order_by(Episode.episode_no)
+                    .with_for_update()
+                )
+            )
+            if not episodes:
+                raise AnalysisNotReadyError("project analysis requires an uploaded episode")
+            definitions = build_project_analysis_dag(tuple(episode.id for episode in episodes))
+            episode_by_id = {episode.id: episode for episode in episodes}
             job = Job(
                 id=self._id_factory(),
                 project_id=project_id,
                 kind="PROJECT_ANALYSIS",
                 status=JobStatus.QUEUED,
                 idempotency_key=f"project-analysis:{project.state_version}",
-                total_stages=len(PROJECT_ANALYSIS_DAG),
+                total_stages=len(definitions),
             )
             session.add(job)
             runs: dict[str, StageRun] = {}
-            for definition in PROJECT_ANALYSIS_DAG:
+            for definition in definitions:
+                episode = episode_by_id.get(definition.episode_id)
+                params = {
+                    "source_locale": "zh-CN",
+                    "target_locale": project.locale,
+                }
+                if episode is not None:
+                    params.update(
+                        {
+                            "episode_id": str(episode.id),
+                            "source_asset_id": str(episode.source_asset_id),
+                        }
+                    )
                 run = StageRun(
                     id=self._id_factory(),
                     job_id=job.id,
                     project_id=project_id,
+                    episode_id=definition.episode_id,
                     stage_type=definition.stage_type,
                     status="READY" if not definition.depends_on else "PENDING",
                     idempotency_key=f"{job.id}:{definition.key}",
                     runtime_profile_id=definition.runtime_profile_id,
                     observed_control_version=control.control_version,
-                    params={},
+                    params=params,
                 )
                 runs[definition.key] = run
                 session.add(run)
             await session.flush()
-            for definition in PROJECT_ANALYSIS_DAG:
+            for definition in definitions:
                 for dependency in definition.depends_on:
                     session.add(
                         StageDependency(
@@ -326,7 +352,11 @@ class SqlAlchemyProjectRepository:
                     aggregate_type="job",
                     aggregate_id=job.id,
                     event_type="analysis.requested",
-                    payload={"job_id": str(job.id), "project_id": str(project_id)},
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(project_id),
+                        "episode_ids": [str(episode.id) for episode in episodes],
+                    },
                 )
             )
             await session.flush()

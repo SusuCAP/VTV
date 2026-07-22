@@ -11,6 +11,7 @@ class AssetRef(BaseModel):
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     media_type: str
     size_bytes: int = Field(default=1, gt=0)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class VariantResult(BaseModel):

@@ -119,6 +119,7 @@ class Scheduler:
                     sha256=asset.sha256,
                     media_type=asset.content_type,
                     size_bytes=asset.size_bytes,
+                    metadata=asset.metadata_json,
                 )
                 for asset in assets
             ],
@@ -183,6 +184,8 @@ class Scheduler:
                             metadata={
                                 "stage_attempt_id": str(claim.stage_attempt_id),
                                 "variant_no": variant.variant_no,
+                                "stage_type": claim.stage_type,
+                                "episode_id": str(claim.episode_id) if claim.episode_id else None,
                             },
                         )
                         .on_conflict_do_nothing(
