@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 75% | 采用画面/对白/stem 门禁与 Picture/Subtitle/Mix/Master 数据库 DAG |
+| Phase 3 自动生产 | 进行中 | 78% | 逐集合成 DAG 与不可变 Delivery/Provenance Manifest 契约 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -213,12 +213,15 @@
 - [x] Project output spec 权威注入 Master，客户端不能绕过宽高、fps、编解码与字幕配置。
 - [x] Scheduler 从完成的上游 Media Asset 动态绑定真实 picture/audio/SRT hash，拒绝缺失或歧义输入。
 - [x] Proxy Media Asset 新增 duration/width/height/fps metadata，为逐集生产提供权威源媒体参数。
+- [x] 新增 `vtv.delivery-manifest.v1` 强类型交付契约，覆盖逐集 Master、字幕、质量报告和镜头清单。
+- [x] Manifest 固定编辑链、实际模型 release、人工批准、QC evaluator、成本、最终编码与 C2PA 状态 provenance。
+- [x] 交付门禁拒绝 hard-failure QC、角色缺失/重复、镜头时间线断裂和不可追溯 Master。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add deliverable manifests`
+`feat: add delivery release API`
 
 本提交完成后，下一步实现 Deliverables/Provenance Manifest、质量报告与镜头清单交付闭环；
 同时在 Modal API 网络恢复后补跑云端验收。
@@ -344,3 +347,6 @@
 | 2026-07-22 | Episode Assembly Job/API 与 Scheduler 动态绑定 | 8 passed，4 个真实 PostgreSQL 用例待外部数据库执行；覆盖四阶段 DAG、幂等、采用门禁和上游真实 hash 注入 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 146 passed，4 skipped；仅保留 Starlette TestClient 上游弃用提示 |
+| 2026-07-22 | Delivery/Provenance Manifest 契约 | 3 passed；覆盖稳定 fingerprint、编辑链闭包、镜头连续性和 hard-failure QC 阻断 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 149 passed，4 skipped；仅保留 Starlette TestClient 上游弃用提示 |
