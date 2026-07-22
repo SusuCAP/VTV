@@ -12,7 +12,13 @@ from vtv_db.repository import (
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
-from vtv_schemas.uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadRead
+from vtv_schemas.uploads import (
+    MultipartComplete,
+    MultipartInit,
+    MultipartUpload,
+    UploadPart,
+    UploadRead,
+)
 from vtv_storage import ObjectStoreAdapter, UploadIntegrityError, UploadNotFoundError
 
 from .config import get_settings
@@ -133,6 +139,25 @@ def create_app(
         payload: MultipartInit,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> MultipartUpload:
+        existing = await repo.find_active_upload(
+            workspace,
+            payload.project_id,
+            payload.sha256,
+        )
+        if existing:
+            part_count = ceil(existing.upload.size_bytes / existing.part_size_bytes)
+            parts = storage.presign_parts(
+                object_key=existing.upload.object_key,
+                provider_upload_id=existing.provider_upload_id,
+                part_numbers=list(range(1, part_count + 1)),
+            )
+            return MultipartUpload(
+                upload_id=existing.upload.upload_id,
+                object_key=existing.upload.object_key,
+                part_size_bytes=existing.part_size_bytes,
+                parts=parts,
+                completed_parts=existing.upload.completed_parts,
+            )
         upload_id = uuid4()
         safe_name = payload.filename.replace("/", "_").replace("\\", "_")
         object_key = (
@@ -162,6 +187,22 @@ def create_app(
             parts=backend.parts,
         )
 
+    @app.put("/v1/uploads/{upload_id}/parts/{part_number}", response_model=UploadRead)
+    async def record_upload_part(
+        upload_id: UUID,
+        part_number: int,
+        payload: UploadPart,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> UploadRead:
+        if payload.part_number != part_number:
+            raise HTTPException(status_code=422, detail="part number path/body mismatch")
+        try:
+            return await repo.record_upload_part(workspace, upload_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="upload not found") from exc
+        except UploadConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/v1/uploads/{upload_id}/multipart-complete", response_model=UploadRead)
     async def multipart_complete(
         upload_id: UUID,
@@ -179,6 +220,15 @@ def create_app(
                 raise UploadIntegrityError("independent object SHA-256 is required")
             if payload.object_checksum_sha256 != record.declared_sha256:
                 raise UploadIntegrityError("object SHA-256 does not match upload declaration")
+            checkpointed = {
+                part.part_number: part.model_dump(mode="json")
+                for part in record.upload.completed_parts
+            }
+            submitted = {
+                part.part_number: part.model_dump(mode="json") for part in payload.parts
+            }
+            if submitted != checkpointed:
+                raise UploadIntegrityError("multipart completion does not match checkpointed parts")
             stored = storage.complete_multipart(
                 object_key=record.upload.object_key,
                 provider_upload_id=record.provider_upload_id,

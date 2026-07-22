@@ -75,6 +75,20 @@ class ProjectRepository(Protocol):
 
     async def get_upload(self, workspace_id: UUID, upload_id: UUID) -> UploadRecord: ...
 
+    async def find_active_upload(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        sha256: str,
+    ) -> UploadRecord | None: ...
+
+    async def record_upload_part(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        part: UploadPart,
+    ) -> UploadRead: ...
+
     async def complete_upload(
         self,
         workspace_id: UUID,
@@ -342,6 +356,55 @@ class SqlAlchemyProjectRepository:
             if upload is None:
                 raise ProjectNotFoundError(upload_id)
             return _upload_record(upload)
+
+    async def find_active_upload(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        sha256: str,
+    ) -> UploadRecord | None:
+        async with self._sessions() as session:
+            upload = await session.scalar(
+                select(UploadSession)
+                .where(
+                    UploadSession.workspace_id == workspace_id,
+                    UploadSession.project_id == project_id,
+                    UploadSession.declared_sha256 == sha256,
+                    UploadSession.status == "UPLOADING",
+                )
+                .order_by(UploadSession.created_at.desc())
+                .limit(1)
+            )
+            return _upload_record(upload) if upload else None
+
+    async def record_upload_part(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        part: UploadPart,
+    ) -> UploadRead:
+        async with self._sessions.begin() as session:
+            upload = await session.scalar(
+                select(UploadSession)
+                .where(
+                    UploadSession.id == upload_id,
+                    UploadSession.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if upload is None:
+                raise ProjectNotFoundError(upload_id)
+            if upload.status != "UPLOADING":
+                raise UploadConflictError(f"upload is already {upload.status}")
+            if part.size_bytes > upload.part_size_bytes:
+                raise UploadConflictError("part exceeds declared part size")
+            completed = {
+                item["part_number"]: item for item in upload.completed_parts
+            }
+            completed[part.part_number] = part.model_dump(mode="json")
+            upload.completed_parts = [completed[number] for number in sorted(completed)]
+            await session.flush()
+            return _upload_read(upload)
 
     async def complete_upload(
         self,

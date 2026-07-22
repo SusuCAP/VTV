@@ -31,23 +31,36 @@ class S3ObjectStore:
         provider_upload_id = response["UploadId"]
         return BackendMultipart(
             provider_upload_id=provider_upload_id,
-            parts=[
-                PresignedPart(
-                    part_number=number,
-                    url=self._client.generate_presigned_url(
-                        "upload_part",
-                        Params={
-                            "Bucket": self._bucket,
-                            "Key": object_key,
-                            "UploadId": provider_upload_id,
-                            "PartNumber": number,
-                        },
-                        ExpiresIn=self._presign_ttl_seconds,
-                    ),
-                )
-                for number in range(1, part_count + 1)
-            ],
+            parts=self.presign_parts(
+                object_key=object_key,
+                provider_upload_id=provider_upload_id,
+                part_numbers=list(range(1, part_count + 1)),
+            ),
         )
+
+    def presign_parts(
+        self,
+        *,
+        object_key: str,
+        provider_upload_id: str,
+        part_numbers: list[int],
+    ) -> list[PresignedPart]:
+        return [
+            PresignedPart(
+                part_number=number,
+                url=self._client.generate_presigned_url(
+                    "upload_part",
+                    Params={
+                        "Bucket": self._bucket,
+                        "Key": object_key,
+                        "UploadId": provider_upload_id,
+                        "PartNumber": number,
+                    },
+                    ExpiresIn=self._presign_ttl_seconds,
+                ),
+            )
+            for number in part_numbers
+        ]
 
     def complete_multipart(
         self,

@@ -129,6 +129,51 @@ class MemoryRepository:
         await self.get_project(workspace_id, record.upload.project_id)
         return record
 
+    async def find_active_upload(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        sha256: str,
+    ) -> UploadRecord | None:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            matches = [
+                record
+                for record in self._uploads.values()
+                if record.upload.project_id == project_id
+                and record.declared_sha256 == sha256
+                and record.upload.status == "UPLOADING"
+            ]
+        return matches[-1] if matches else None
+
+    async def record_upload_part(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        part: UploadPart,
+    ) -> UploadRead:
+        record = await self.get_upload(workspace_id, upload_id)
+        if record.upload.status != "UPLOADING":
+            raise UploadConflictError(f"upload is already {record.upload.status}")
+        if part.size_bytes > record.part_size_bytes:
+            raise UploadConflictError("part exceeds declared part size")
+        completed = {item.part_number: item for item in record.upload.completed_parts}
+        completed[part.part_number] = part
+        upload = record.upload.model_copy(
+            update={"completed_parts": [completed[number] for number in sorted(completed)]}
+        )
+        with self._lock:
+            self._uploads[upload_id] = UploadRecord(
+                upload=upload,
+                provider_upload_id=record.provider_upload_id,
+                declared_sha256=record.declared_sha256,
+                content_type=record.content_type,
+                part_size_bytes=record.part_size_bytes,
+                filename=record.filename,
+                episode_no=record.episode_no,
+            )
+        return upload
+
     async def complete_upload(
         self,
         workspace_id: UUID,

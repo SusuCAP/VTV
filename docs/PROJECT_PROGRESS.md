@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 98% | Mock 交付闭环、S3 接入、Mac 控制端真实 API 联调 |
+| Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -51,11 +51,14 @@
 - [x] 新增项目、剧集和任务列表 API，并配置 Vite/Tauri CORS 边界。
 - [x] Mac 客户端读取真实项目/剧集/Job，真实提交分析任务并显示 Job ID。
 - [x] API 不可用时明确标记“离线演示”；空工作区明确标记“尚无项目”。
-- [ ] 实现 Tauri 本地媒体 Agent：ffprobe、流式 SHA-256、分片上传和恢复。
+- [x] 实现 Tauri 本地媒体 Agent：文件选择、ffprobe 与 4 MiB 缓冲流式 SHA-256。
+- [x] 实现逐分片 SHA-256/ETag checkpoint、会话复用、URL 重发和断点恢复。
+- [x] Rust Agent 直接上传预签名 URL，完成后创建 Episode/Media Asset/ingest DAG。
+- [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: connect mac client to control API`
+`feat: add resumable Tauri media upload agent`
 
 完成后完成 Phase 1 的“Mock 合成端到端 + Mac 控制端真实 API 接入”。
 
@@ -92,3 +95,7 @@
 | 2026-07-22 | `pytest` | 24 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | `npm run lint:mac && npm run build:mac` | 通过 |
 | 2026-07-22 | FastAPI + Playwright 1600×1000 | 项目/剧集/Job 查询、CORS 预检和分析 202 提交联调通过 |
+| 2026-07-22 | Rust SHA-256 单测 | 通过；与 `shasum -a 256` 测试向量交叉验证 |
+| 2026-07-22 | `cargo check --offline && cargo test --offline` | 通过 |
+| 2026-07-22 | Tauri debug application build | 通过，生成 `target/debug/vtv-mac-client` |
+| 2026-07-22 | multipart resume API | 相同 SHA 会话复用、逐 part checkpoint 与完成清单匹配测试通过 |

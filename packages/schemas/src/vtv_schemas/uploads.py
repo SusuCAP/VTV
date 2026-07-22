@@ -33,6 +33,7 @@ class MultipartUpload(BaseModel):
     object_key: str
     part_size_bytes: int
     parts: list[PresignedPart]
+    completed_parts: list[UploadPart] = Field(default_factory=list)
 
 
 class MultipartComplete(BaseModel):

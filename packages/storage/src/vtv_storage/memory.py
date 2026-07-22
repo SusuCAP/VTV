@@ -25,14 +25,30 @@ class MemoryObjectStore:
         self._uploads[provider_upload_id] = (object_key, content_type)
         return BackendMultipart(
             provider_upload_id=provider_upload_id,
-            parts=[
-                PresignedPart(
-                    part_number=number,
-                    url=f"https://object-store.invalid/{provider_upload_id}/parts/{number}",
-                )
-                for number in range(1, part_count + 1)
-            ],
+            parts=self.presign_parts(
+                object_key=object_key,
+                provider_upload_id=provider_upload_id,
+                part_numbers=list(range(1, part_count + 1)),
+            ),
         )
+
+    def presign_parts(
+        self,
+        *,
+        object_key: str,
+        provider_upload_id: str,
+        part_numbers: list[int],
+    ) -> list[PresignedPart]:
+        state = self._uploads.get(provider_upload_id)
+        if state is None or state[0] != object_key:
+            raise UploadNotFoundError(provider_upload_id)
+        return [
+            PresignedPart(
+                part_number=number,
+                url=f"https://object-store.invalid/{provider_upload_id}/parts/{number}",
+            )
+            for number in part_numbers
+        ]
 
     def complete_multipart(
         self,

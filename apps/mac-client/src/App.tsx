@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { loadLatestProject, startProjectAnalysis, type ApiProject } from "./api";
 import { episodes as demoEpisodes, exceptions, type Episode } from "./data";
+import { uploadEpisodeFromDialog } from "./localAgent";
 
 const stages = ["接入", "全剧分析", "资产确认", "自动生产", "质量检查", "交付"];
 
@@ -86,7 +87,9 @@ export default function App() {
   const [episodeItems, setEpisodeItems] = useState<Episode[]>(demoEpisodes);
   const [jobProgress, setJobProgress] = useState(0.28);
   const [analysisState, setAnalysisState] = useState("开始分析");
+  const [uploadState, setUploadState] = useState("上传剧集");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -123,12 +126,37 @@ export default function App() {
     if (!project) return;
     setAnalysisState("提交中…");
     setError(null);
+    setNotice(null);
     try {
       const jobId = await startProjectAnalysis(project.id);
       setAnalysisState(`已提交 ${jobId.slice(0, 8)}`);
     } catch (reason) {
       setAnalysisState("提交失败");
       setError(reason instanceof Error ? reason.message : "分析提交失败");
+    }
+  };
+  const uploadEpisode = async () => {
+    if (!project) return;
+    setError(null);
+    setUploadState("选择文件…");
+    try {
+      const result = await uploadEpisodeFromDialog(
+        project.id,
+        episodeItems.length + 1,
+        (progress) => setUploadState(
+          `上传 ${Math.round(100 * progress.uploadedBytes / progress.totalBytes)}%`,
+        ),
+      );
+      if (!result) {
+        setUploadState("上传剧集");
+        return;
+      }
+      setUploadState("上传完成");
+      setNotice(`已创建接入任务 ${result.ingestJobId?.slice(0, 8) ?? "—"}`);
+      window.setTimeout(() => window.location.reload(), 800);
+    } catch (reason) {
+      setUploadState("上传失败");
+      setError(reason instanceof Error ? reason.message : "媒体上传失败");
     }
   };
 
@@ -138,7 +166,7 @@ export default function App() {
   const quality = project?.quality_profile ?? "research_best";
   const budgetLimit = project ? `${project.budget.currency} ${project.budget.hard_limit}` : "USD 65,000";
   return <div className="app-shell"><Sidebar/><main>
-    <header><div><p>项目列表 / 当前项目 · <b className={`connection ${connection}`}>{statusText}</b></p><h1>{displayName}</h1><span>目标市场：{targetMarket} · 语言：{locale} · 质量档位：{quality}</span>{error ? <small className="api-error">{error}</small> : null}</div><div className="actions"><button disabled={connection !== "live"} onClick={() => setError("上传需要本地媒体 Agent；当前 API 查询与分析提交已联通。") }><Upload size={17}/>上传剧集</button><button className="primary" disabled={!project || analysisState === "提交中…"} onClick={startAnalysis}><Play size={17}/>{analysisState}</button></div></header>
+    <header><div><p>项目列表 / 当前项目 · <b className={`connection ${connection}`}>{statusText}</b></p><h1>{displayName}</h1><span>目标市场：{targetMarket} · 语言：{locale} · 质量档位：{quality}</span>{error ? <small className="api-error">{error}</small> : null}{notice ? <small className="api-notice">{notice}</small> : null}</div><div className="actions"><button disabled={connection !== "live" || uploadState.includes("上传 ")} onClick={uploadEpisode}><Upload size={17}/>{uploadState}</button><button className="primary" disabled={!project || analysisState === "提交中…"} onClick={startAnalysis}><Play size={17}/>{analysisState}</button></div></header>
     <Pipeline/><Metrics episodeCount={episodeItems.length} progress={jobProgress} budgetLimit={budgetLimit}/><div className="workspace"><EpisodeList items={episodeItems} live={connection === "live"}/><ExceptionReview/></div>
   </main></div>;
 }

@@ -36,6 +36,14 @@ class ObjectStoreAdapter(Protocol):
         part_count: int,
     ) -> BackendMultipart: ...
 
+    def presign_parts(
+        self,
+        *,
+        object_key: str,
+        provider_upload_id: str,
+        part_numbers: list[int],
+    ) -> list[PresignedPart]: ...
+
     def complete_multipart(
         self,
         *,

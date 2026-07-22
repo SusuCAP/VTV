@@ -44,6 +44,39 @@ def test_multipart_upload_contract_does_not_proxy_media() -> None:
         assert len(upload["parts"]) == 2
         assert all("object-store.invalid" in part["url"] for part in upload["parts"])
 
+        checkpoint_parts = [
+            {
+                "part_number": 1,
+                "size_bytes": 64 * 1024 * 1024,
+                "etag": "p1",
+            },
+            {
+                "part_number": 2,
+                "size_bytes": 32 * 1024 * 1024,
+                "etag": "p2",
+            },
+        ]
+        for part in checkpoint_parts:
+            checkpoint = client.put(
+                f"/v1/uploads/{upload['upload_id']}/parts/{part['part_number']}",
+                json=part,
+            )
+            assert checkpoint.status_code == 200
+
+        resumed = client.post(
+            "/v1/uploads/multipart-init",
+            json={
+                "project_id": project["id"],
+                "filename": "episode-01.mp4",
+                "content_type": "video/mp4",
+                "size_bytes": size,
+                "part_size_bytes": 64 * 1024 * 1024,
+                "sha256": "a" * 64,
+            },
+        )
+        assert resumed.json()["upload_id"] == upload["upload_id"]
+        assert len(resumed.json()["completed_parts"]) == 2
+
         completed = client.post(
             f"/v1/uploads/{upload['upload_id']}/multipart-complete",
             json={
@@ -111,6 +144,15 @@ def test_completed_object_is_registered_as_orphan_when_database_commit_fails() -
                 "sha256": sha256,
             },
         ).json()
+        checkpoint = {
+            "part_number": 1,
+            "size_bytes": 32 * 1024 * 1024,
+            "etag": "etag",
+        }
+        assert client.put(
+            f"/v1/uploads/{upload['upload_id']}/parts/1",
+            json=checkpoint,
+        ).status_code == 200
         response = client.post(
             f"/v1/uploads/{upload['upload_id']}/multipart-complete",
             json={
