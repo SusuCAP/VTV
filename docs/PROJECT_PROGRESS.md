@@ -10,7 +10,7 @@
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
-| Phase 4 QC 与批量 | 进行中 | 0% | — |
+| Phase 4 QC 与批量 | 进行中 | 75% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
