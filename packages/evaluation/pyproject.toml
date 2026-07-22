@@ -1,0 +1,10 @@
+[project]
+name = "vtv-evaluation"
+version = "0.1.0"
+description = "Golden Dataset benchmark and model release gates for VTV"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.10.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

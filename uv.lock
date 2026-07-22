@@ -12,6 +12,7 @@ members = [
     "vtv-analysis-worker",
     "vtv-control-api",
     "vtv-db",
+    "vtv-evaluation",
     "vtv-media",
     "vtv-media-worker",
     "vtv-orchestrator",
@@ -1500,6 +1501,17 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
+
+[[package]]
+name = "vtv-evaluation"
+version = "0.1.0"
+source = { editable = "packages/evaluation" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
 
 [[package]]
 name = "vtv-media"

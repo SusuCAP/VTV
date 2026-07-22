@@ -19,6 +19,7 @@ members = [
   "apps/control-api",
   "apps/orchestrator",
   "packages/db",
+  "packages/evaluation",
   "packages/analysis",
   "packages/media",
   "packages/schemas",

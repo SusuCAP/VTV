@@ -128,15 +128,20 @@
 - [x] Modal 函数复用 S3 物化/校验/不可变回传边界，密钥仅允许由 Modal Secret 注入。
 - [x] 编排 CLI 新增 `--worker-mode modal`，仅远程派发分析阶段并校验返回 identity。
 - [x] Modal 网络/协议异常转换为可重试 StageResult，数据库业务 ID 不依赖平台调用 ID。
+- [x] 新增独立 `vtv-evaluation` workspace 包，固化 Golden Dataset、样本与阈值 Policy。
+- [x] Dataset/Policy 以规范 JSON 生成不可变 SHA-256 指纹，固定标注和批准阈值版本。
+- [x] 发布判定覆盖技术访问、复现、回滚、校准、样本量、硬失败和人工退回门禁。
+- [x] 关键指标以置信下界而非均值准入，关键样本单次失败不可被总体平均掩盖。
+- [x] 聚合单位合格输出成本与 nearest-rank P95；单次报告返回全部失败原因且不短路。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add production audio model adapters`
+`feat: persist golden benchmark releases`
 
-下一步接入首组真实 VAD/ASR/diarization 权重与 Golden Dataset；同时在 Modal API 网络恢复后
-补跑部署、health 和单 Stage 云端验收。
+下一步持久化不可变 benchmark report，并将 Model Release 进入 CANARY 的门禁绑定已批准
+报告；随后接入首组真实 VAD/ASR/diarization 权重。同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -214,3 +219,5 @@
 | 2026-07-22 | Modal CLI/profile | 1.5.2 安装于项目 `.venv`；`zhuaiba88` profile 已激活 |
 | 2026-07-22 | Modal 首次部署 | 阻塞于 `api.modal.com` HTTP 503；官方状态正常，本机代理/直连均复现 |
 | 2026-07-22 | `pytest` | 69 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Golden Dataset 发布门禁 | 4 passed；覆盖完整批准、多门禁失败、样本完整性与不可变配置 |
+| 2026-07-22 | `pytest` | 73 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
