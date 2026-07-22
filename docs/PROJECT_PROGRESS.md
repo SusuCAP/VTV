@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 未开始 | 0% | — |
+| Phase 3 自动生产 | 进行中 | 10% | 本土化、声音授权、TTS 候选与 L0–L5 口型路由契约 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -162,15 +162,19 @@
 - [x] 新增框 IoU、时间段 IoU、场景标签 F1 与多语言 OCR 字符准确率四项 Golden Shots 指标。
 - [x] 实现视觉 Golden Shots runner，校验源视频、规范标注 hash 与时长后生成 benchmark API payload。
 - [x] Runner 聚合人物/几何框、场景时间与标签、OCR 五项分数，并隔离单样本推理失败。
+- [x] 新增 `vtv-production` 领域包，固化逐句本土化、声音授权、TTS 请求与候选契约。
+- [x] TTS 请求在推理前校验人物、语言、市场、商业范围、有效状态和 voice_clone 操作授权。
+- [x] 固化每句 1–4 个候选及 voice/localization/model release、seed、速度、情绪和音频 hash provenance。
+- [x] 实现 L0–L5 可解释口型路由，近景采用 4% 时长偏差、其他镜头采用 8% 门限。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add production localization model adapters`
+`feat: add production dubbing worker`
 
-下一步进入 Phase 3，固化剧本翻译、配音、口型与视觉修复的生产 Adapter 边界和首批可执行模型
-bundle；同时在 Modal API 网络恢复后补跑云端验收。
+下一步实现可执行 TTS Adapter、逐句多候选 Audio Worker、时长/音频完整性门禁和 Registry/Modal
+路由；同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -265,3 +269,5 @@ bundle；同时在 Modal API 网络恢复后补跑云端验收。
 | 2026-07-22 | `pytest` | 104 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 视觉 Golden Shots runner | 2 passed；覆盖完整 payload、五项满分和标注 hash 漂移拒绝 |
 | 2026-07-22 | `pytest` | 106 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Phase 3 本土化领域契约 | 8 passed；覆盖声音授权阻断、release 绑定与 L0–L5 全路由 |
+| 2026-07-22 | `pytest` | 114 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

@@ -18,6 +18,7 @@ members = [
     "vtv-media",
     "vtv-media-worker",
     "vtv-orchestrator",
+    "vtv-production",
     "vtv-schemas",
     "vtv-storage",
     "vtv-workspace",
@@ -1603,6 +1604,17 @@ requires-dist = [
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
 ]
+
+[[package]]
+name = "vtv-production"
+version = "0.1.0"
+source = { editable = "packages/production" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
 
 [[package]]
 name = "vtv-schemas"

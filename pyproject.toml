@@ -23,6 +23,7 @@ members = [
   "packages/analysis",
   "packages/audio",
   "packages/media",
+  "packages/production",
   "packages/schemas",
   "packages/storage",
   "workers/media",
