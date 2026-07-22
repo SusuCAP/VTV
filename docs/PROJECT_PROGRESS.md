@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 98% | 模型准入 API、稳定灰度选择与 StageJob 运行时注入 |
+| Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -124,13 +124,19 @@
 - [x] CANARY 提升为 ACTIVE 时同事务关闭旧基线，所有审批/切换继续使用 state version CAS。
 - [x] 分析 DAG 固化选中的 Model Release 外键，并将非敏感运行参数注入 StageJob。
 - [x] Analysis Worker 读取 Stage 注入配置构造远程 Adapter，bearer token 始终仅来自环境。
+- [x] 新增 Modal `vtv-analysis` App、固定依赖镜像、health 与强类型分析 Stage 函数。
+- [x] Modal 函数复用 S3 物化/校验/不可变回传边界，密钥仅允许由 Modal Secret 注入。
+- [x] 编排 CLI 新增 `--worker-mode modal`，仅远程派发分析阶段并校验返回 identity。
+- [x] Modal 网络/协议异常转换为可重试 StageResult，数据库业务 ID 不依赖平台调用 ID。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
+- [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add modal analysis runtime`
+`feat: add production audio model adapters`
 
-下一步接入 Modal 测试环境，建立可部署的分析 Worker 入口、远程调用合同与本地/云端验证路径。
+下一步接入首组真实 VAD/ASR/diarization 权重与 Golden Dataset；同时在 Modal API 网络恢复后
+补跑部署、health 和单 Stage 云端验收。
 
 ## 决策日志
 
@@ -204,3 +210,7 @@
 | 2026-07-22 | `pytest` | 63 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Model Release API/灰度选择 | 12 passed；覆盖审批 CAS、ACTIVE+CANARY、稳定分流及 Stage 注入 |
 | 2026-07-22 | `pytest` | 67 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Modal Executor/Router 聚焦测试 | 6 passed；覆盖强类型回包、identity 拒绝与三路本地路由 |
+| 2026-07-22 | Modal CLI/profile | 1.5.2 安装于项目 `.venv`；`zhuaiba88` profile 已激活 |
+| 2026-07-22 | Modal 首次部署 | 阻塞于 `api.modal.com` HTTP 503；官方状态正常，本机代理/直连均复现 |
+| 2026-07-22 | `pytest` | 69 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
