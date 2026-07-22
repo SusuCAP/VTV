@@ -4,6 +4,8 @@ from .contracts import (
     EpisodeAssemblyRequest,
     LoudnessPreset,
     MixRole,
+    PictureConformRequest,
+    PictureEdit,
     SubtitleCue,
     SubtitleDocument,
 )
@@ -15,6 +17,8 @@ __all__ = [
     "EpisodeAssemblyRequest",
     "LoudnessPreset",
     "MixRole",
+    "PictureConformRequest",
+    "PictureEdit",
     "SubtitleCue",
     "SubtitleDocument",
     "render_srt",

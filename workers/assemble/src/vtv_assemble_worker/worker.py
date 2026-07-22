@@ -12,6 +12,7 @@ from vtv_assembly import (
     AudioMixRequest,
     EpisodeAssemblyRequest,
     MixRole,
+    PictureConformRequest,
     SubtitleDocument,
     render_srt,
     render_vtt,
@@ -33,6 +34,8 @@ class AssembleWorker:
             return self._audio_mix(job)
         if job.stage_type == "ASSEMBLE_EPISODE":
             return self._assemble(job)
+        if job.stage_type == "PICTURE_CONFORM":
+            return self._picture_conform(job)
         raise ValueError(f"unsupported assemble stage: {job.stage_type}")
 
     def _subtitle(self, job: StageJob) -> StageResult:
@@ -315,6 +318,125 @@ class AssembleWorker:
             [asset],
             "EPISODE_MASTER",
             {"output": asset.metadata},
+            request.source_video_sha256,
+        )
+
+    def _picture_conform(self, job: StageJob) -> StageResult:
+        try:
+            request = PictureConformRequest.model_validate(
+                job.params["picture_conform_request"]
+            )
+        except (KeyError, ValueError) as exc:
+            raise ValueError(
+                "PICTURE_CONFORM requires a valid picture_conform_request"
+            ) from exc
+        assets = {item.sha256: item for item in job.input_assets}
+        expected = {request.source_video_sha256} | {
+            item.replacement_sha256 for item in request.edits
+        }
+        if set(assets) != expected:
+            raise ValueError("PICTURE_CONFORM inputs do not match declared assets")
+        source = _local_path(assets[request.source_video_sha256].uri)
+        source_probe = probe_media(source)
+        if abs(source_probe.duration_seconds - request.duration_seconds) > 0.05:
+            raise ValueError("picture source duration differs from request by more than 50 ms")
+        video = source_probe.video_streams[0]
+        if video.width is None or video.height is None:
+            raise ValueError("picture source has no usable dimensions")
+        fps = video.frame_rate or 24
+        output_directory = _local_path(job.output_prefix)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        output = output_directory / "picture-master.mp4"
+        temporary = _temporary(output)
+        command: list[str | Path] = [self.ffmpeg_executable, "-nostdin", "-y", "-i", source]
+        for edit in request.edits:
+            replacement = _local_path(assets[edit.replacement_sha256].uri)
+            replacement_probe = probe_media(replacement)
+            edit_duration = edit.end_seconds - edit.start_seconds
+            if replacement_probe.duration_seconds + 0.05 < edit_duration:
+                raise ValueError("picture replacement is shorter than its authoritative shot")
+            command.extend(("-i", replacement))
+        filters: list[str] = []
+        segment_labels: list[str] = []
+        cursor = 0.0
+        segment_no = 0
+        for input_index, edit in enumerate(request.edits, 1):
+            if edit.start_seconds > cursor:
+                label = f"seg{segment_no}"
+                filters.append(
+                    f"[0:v]trim=start={cursor}:end={edit.start_seconds},"
+                    f"setpts=PTS-STARTPTS[{label}]"
+                )
+                segment_labels.append(label)
+                segment_no += 1
+            label = f"seg{segment_no}"
+            edit_duration = edit.end_seconds - edit.start_seconds
+            filters.append(
+                f"[{input_index}:v]trim=duration={edit_duration},"
+                f"scale={video.width}:{video.height}:force_original_aspect_ratio=decrease,"
+                f"pad={video.width}:{video.height}:(ow-iw)/2:(oh-ih)/2,"
+                f"fps={fps},setsar=1,setpts=PTS-STARTPTS[{label}]"
+            )
+            segment_labels.append(label)
+            segment_no += 1
+            cursor = edit.end_seconds
+        if cursor < request.duration_seconds:
+            label = f"seg{segment_no}"
+            filters.append(
+                f"[0:v]trim=start={cursor}:end={request.duration_seconds},"
+                f"setpts=PTS-STARTPTS[{label}]"
+            )
+            segment_labels.append(label)
+        inputs = "".join(f"[{item}]" for item in segment_labels)
+        filters.append(f"{inputs}concat=n={len(segment_labels)}:v=1:a=0[outv]")
+        command.extend(
+            (
+                "-filter_complex",
+                ";".join(filters),
+                "-map",
+                "[outv]",
+                "-an",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "12",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                temporary,
+            )
+        )
+        try:
+            run_media_process(command, timeout_seconds=self.timeout_seconds)
+            temporary.replace(output)
+        finally:
+            temporary.unlink(missing_ok=True)
+        conformed = probe_media(output)
+        if abs(conformed.duration_seconds - request.duration_seconds) > 0.05:
+            raise ValueError("picture master duration differs from source by more than 50 ms")
+        asset = _asset(
+            output,
+            "video/mp4",
+            {
+                "duration_seconds": conformed.duration_seconds,
+                "width": conformed.video_streams[0].width,
+                "height": conformed.video_streams[0].height,
+                "fps": conformed.video_streams[0].frame_rate,
+                "edit_count": len(request.edits),
+                "adopted_shot_ids": [item.shot_id for item in request.edits],
+            },
+        )
+        return _result(
+            job,
+            [asset],
+            "EPISODE_PICTURE_MASTER",
+            {
+                "duration_seconds": conformed.duration_seconds,
+                "edits": [item.model_dump() for item in request.edits],
+            },
             request.source_video_sha256,
         )
 

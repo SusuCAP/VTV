@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 65% | TTS/口型闭环与确定性字幕、响度重混、逐集合成运行时 |
+| Phase 3 自动生产 | 进行中 | 68% | 采用 Shot 画面回 conform、字幕、响度重混与逐集合成运行时 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -203,12 +203,15 @@
 - [x] 平台响度 preset 执行后复测 LUFS/true peak；超过 1 LU/0.2 dB 容差即硬失败并保留实测证据。
 - [x] Episode Assembly 固定分辨率、帧率、编解码和显式音视频映射，完成后复核音轨、尺寸与 50 ms 时长门禁。
 - [x] Assembly Worker 接入本地 Stage Router 和 S3 物化/不可变回传边界。
+- [x] 新增 Picture Conform 合同，拒绝采用 Shot 区间重叠、越界、重复候选和候选时长不足。
+- [x] FFmpeg 按源片未修改段 + adopted replacement 重建整集画面，统一尺寸/SAR/fps 并保持 50 ms 时长不变量。
+- [x] 真实帧色彩测试证明只有权威 Shot 区间被采用候选替换，区间外源片保持不变。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add deterministic assembly runtime`
+`feat: add adopted picture conform`
 
 本提交完成后，下一步实现逐集合成 Job/API、采用产物门禁和 Subtitle→Mix→Master 数据库 DAG；
 同时在 Modal API 网络恢复后补跑云端验收。
@@ -328,3 +331,6 @@
 | 2026-07-22 | Subtitle/Mix/Assembly 真实 FFmpeg 链 | 3 passed；覆盖时间码、Pillow 烧录、TTS 延迟/混响、响度复测和 9:16 H.264/AAC master |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 140 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | Picture Conform 合同/真实 FFmpeg | 2 passed；覆盖区间门禁、源片保留、采用 Shot 替换和 50 ms 全集时长不变量 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 142 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |

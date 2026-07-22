@@ -3,6 +3,7 @@ from hashlib import sha256
 from pathlib import Path
 from uuid import uuid4
 
+from PIL import Image
 from vtv_assemble_worker import AssembleWorker
 from vtv_media import probe_media
 from vtv_schemas.jobs import AssetRef, StageJob
@@ -32,7 +33,7 @@ def _audio(path: Path, frequency: int, duration: float) -> None:
     )
 
 
-def _video(path: Path, duration: float) -> None:
+def _video(path: Path, duration: float, color: str = "blue") -> None:
     _run(
         [
             "ffmpeg",
@@ -41,7 +42,7 @@ def _video(path: Path, duration: float) -> None:
             "-f",
             "lavfi",
             "-i",
-            f"color=c=blue:s=160x90:r=24:d={duration}",
+            f"color=c={color}:s=160x90:r=24:d={duration}",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -200,3 +201,64 @@ def test_subtitle_mix_and_burned_episode_master_pipeline(tmp_path: Path) -> None
     assert probe.audio_streams
     assert abs(probe.duration_seconds - 2) <= 0.05
     assert master_asset.metadata["burned_subtitles"] is True
+
+
+def test_picture_conform_replaces_only_adopted_shot_interval(tmp_path: Path) -> None:
+    source_path = tmp_path / "source-red.mp4"
+    replacement_path = tmp_path / "replacement-blue.mp4"
+    _video(source_path, 2, "red")
+    _video(replacement_path, 1, "blue")
+    source = _asset(source_path, "video/mp4")
+    replacement = _asset(replacement_path, "video/mp4")
+    worker = AssembleWorker()
+
+    result = worker.execute(
+        _job(
+            tmp_path,
+            "PICTURE_CONFORM",
+            inputs=(source, replacement),
+            params={
+                "picture_conform_request": {
+                    "source_video_sha256": source.sha256,
+                    "duration_seconds": 2,
+                    "edits": [
+                        {
+                            "shot_id": "shot-1",
+                            "replacement_sha256": replacement.sha256,
+                            "start_seconds": 0.5,
+                            "end_seconds": 1.5,
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    output = Path(result.variants[0].output_assets[0].uri.removeprefix("file://"))
+    probe = probe_media(output)
+    assert abs(probe.duration_seconds - 2) <= 0.05
+    assert result.variants[0].output_assets[0].metadata["adopted_shot_ids"] == [
+        "shot-1"
+    ]
+    before = tmp_path / "before.png"
+    during = tmp_path / "during.png"
+    for timestamp, destination in ((0.25, before), (1.0, during)):
+        _run(
+            [
+                "ffmpeg",
+                "-loglevel",
+                "error",
+                "-ss",
+                str(timestamp),
+                "-i",
+                str(output),
+                "-frames:v",
+                "1",
+                "-y",
+                str(destination),
+            ]
+        )
+    red_pixel = Image.open(before).convert("RGB").getpixel((80, 45))
+    blue_pixel = Image.open(during).convert("RGB").getpixel((80, 45))
+    assert red_pixel[0] > red_pixel[2]
+    assert blue_pixel[2] > blue_pixel[0]

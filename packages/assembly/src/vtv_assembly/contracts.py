@@ -113,3 +113,34 @@ class EpisodeAssemblyRequest(FrozenModel):
         ):
             raise ValueError("subtitle cue exceeds episode duration")
         return self
+
+
+class PictureEdit(FrozenModel):
+    shot_id: str = Field(min_length=1, max_length=128)
+    replacement_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def valid_interval(self) -> PictureEdit:
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("picture edit end must be after start")
+        return self
+
+
+class PictureConformRequest(FrozenModel):
+    source_video_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    duration_seconds: float = Field(gt=0)
+    edits: tuple[PictureEdit, ...] = ()
+
+    @model_validator(mode="after")
+    def ordered_non_overlapping_edits(self) -> PictureConformRequest:
+        hashes = [item.replacement_sha256 for item in self.edits]
+        if len(hashes) != len(set(hashes)):
+            raise ValueError("picture replacements must be unique")
+        for index, edit in enumerate(self.edits):
+            if edit.end_seconds > self.duration_seconds + 0.05:
+                raise ValueError("picture edit exceeds episode duration")
+            if index and edit.start_seconds < self.edits[index - 1].end_seconds:
+                raise ValueError("picture edits must be ordered and non-overlapping")
+        return self
