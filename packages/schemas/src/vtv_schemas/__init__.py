@@ -1,3 +1,10 @@
+from .assembly import (
+    AdoptedDialogueSelection,
+    AdoptedPictureSelection,
+    AssemblySubtitleCue,
+    EpisodeAssemblyJobCreate,
+    StemSelection,
+)
 from .candidates import (
     CandidateAdopt,
     CandidateGroupRead,
@@ -38,6 +45,9 @@ from .rights import (
 from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPart
 
 __all__ = [
+    "AdoptedDialogueSelection",
+    "AdoptedPictureSelection",
+    "AssemblySubtitleCue",
     "BenchmarkReleaseCreate",
     "BenchmarkReleaseRead",
     "AssetRef",
@@ -57,6 +67,7 @@ __all__ = [
     "LipSyncJobCreate",
     "LipSyncShotCreate",
     "EpisodeRead",
+    "EpisodeAssemblyJobCreate",
     "JobAccepted",
     "JobStatus",
     "OutputSpec",
@@ -73,6 +84,7 @@ __all__ = [
     "StageJob",
     "StageResult",
     "StageStatus",
+    "StemSelection",
     "MultipartComplete",
     "MultipartInit",
     "MultipartUpload",

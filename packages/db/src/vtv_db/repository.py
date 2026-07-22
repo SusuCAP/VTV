@@ -22,6 +22,7 @@ from vtv_production import (
     VoiceRightsSnapshot,
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
     CandidateAdopt,
@@ -157,6 +158,27 @@ LIPSYNC_MODEL_KEYS = {
     "L5_FULL_REGEN": "LIPSYNC_L5",
 }
 
+LOUDNESS_PRESETS = {
+    "web-dialogue": {
+        "name": "web-dialogue",
+        "integrated_lufs": -16,
+        "true_peak_dbfs": -1.5,
+        "loudness_range_lu": 11,
+    },
+    "broadcast": {
+        "name": "broadcast",
+        "integrated_lufs": -24,
+        "true_peak_dbfs": -2,
+        "loudness_range_lu": 7,
+    },
+    "mobile": {
+        "name": "mobile",
+        "integrated_lufs": -14,
+        "true_peak_dbfs": -1,
+        "loudness_range_lu": 9,
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
@@ -188,6 +210,10 @@ class ProjectRepository(Protocol):
 
     async def create_lipsync_job(
         self, workspace_id: UUID, project_id: UUID, payload: LipSyncJobCreate
+    ) -> JobRead: ...
+
+    async def create_episode_assembly_job(
+        self, workspace_id: UUID, project_id: UUID, payload: EpisodeAssemblyJobCreate
     ) -> JobRead: ...
 
     async def create_rights_release(
@@ -1474,6 +1500,338 @@ class SqlAlchemyProjectRepository:
                         "episode_id": str(episode.id),
                         "shot_count": len(planned),
                         "router_release": router.router_release,
+                    },
+                )
+            )
+            await session.flush()
+            return _job_read(job)
+
+    async def create_episode_assembly_job(
+        self, workspace_id: UUID, project_id: UUID, payload: EpisodeAssemblyJobCreate
+    ) -> JobRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project)
+                .where(Project.id == project_id, Project.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            idempotency_key = f"episode-assembly:{payload.fingerprint}"
+            existing = await session.scalar(
+                select(Job).where(
+                    Job.project_id == project_id,
+                    Job.idempotency_key == idempotency_key,
+                )
+            )
+            if existing is not None:
+                return _job_read(existing)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise RuntimeError("project execution control is missing")
+            if control.cancel_requested or control.hard_budget_blocked:
+                raise ProductionNotReadyError("project execution control blocks production")
+            episode = await session.scalar(
+                select(Episode).where(
+                    Episode.id == payload.episode_id,
+                    Episode.project_id == project_id,
+                )
+            )
+            if episode is None:
+                raise ProjectNotFoundError(payload.episode_id)
+            source = await session.scalar(
+                select(MediaAsset).where(
+                    MediaAsset.id == payload.source_video_asset_id,
+                    MediaAsset.workspace_id == workspace_id,
+                    MediaAsset.project_id == project_id,
+                )
+            )
+            if (
+                source is None
+                or not source.content_type.startswith("video/")
+                or source.metadata_json.get("episode_id") != str(episode.id)
+            ):
+                raise ProductionNotReadyError(
+                    "assembly source must be a video asset bound to the requested episode"
+                )
+            duration = source.metadata_json.get("duration_seconds")
+            if not isinstance(duration, (int, float)) or duration <= 0:
+                raise ProductionNotReadyError(
+                    "assembly source requires authoritative duration_seconds metadata"
+                )
+            duration = float(duration)
+            picture_assets: list[MediaAsset] = []
+            picture_edits: list[dict] = []
+            previous_end = 0.0
+            selections = sorted(
+                payload.picture_selections,
+                key=lambda item: str(item.shot_id),
+            )
+            resolved_pictures: list[tuple[Shot, RenderVariant, MediaAsset]] = []
+            for item in selections:
+                row = (
+                    await session.execute(
+                        select(Shot, RenderVariant, MediaAsset)
+                        .join(CandidateGroup, CandidateGroup.shot_id == Shot.id)
+                        .join(
+                            RenderVariant,
+                            RenderVariant.candidate_group_id == CandidateGroup.id,
+                        )
+                        .join(MediaAsset, MediaAsset.id == RenderVariant.output_asset_id)
+                        .where(
+                            Shot.id == item.shot_id,
+                            Shot.episode_id == episode.id,
+                            RenderVariant.id == item.adopted_variant_id,
+                            RenderVariant.status == "ADOPTED",
+                            CandidateGroup.project_id == project_id,
+                            CandidateGroup.purpose.in_(("LIPSYNC", "RENDER")),
+                            CandidateGroup.adopted_variant_id == RenderVariant.id,
+                            MediaAsset.workspace_id == workspace_id,
+                            MediaAsset.content_type.like("video/%"),
+                        )
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise ProductionNotReadyError(
+                        "picture conform requires adopted same-episode video variants"
+                    )
+                resolved_pictures.append(row)
+            for shot, _variant, asset in sorted(
+                resolved_pictures, key=lambda row: row[0].start_ms
+            ):
+                start = shot.start_ms / 1000
+                end = shot.end_ms / 1000
+                if start < previous_end or end > duration + 0.05:
+                    raise ProductionNotReadyError(
+                        "adopted picture shot intervals overlap or exceed episode duration"
+                    )
+                previous_end = end
+                picture_assets.append(asset)
+                picture_edits.append(
+                    {
+                        "shot_id": str(shot.id),
+                        "replacement_sha256": asset.sha256,
+                        "start_seconds": start,
+                        "end_seconds": end,
+                    }
+                )
+            dialogue_assets: list[MediaAsset] = []
+            mix_tracks: list[dict] = []
+            for item in payload.dialogue_selections:
+                row = (
+                    await session.execute(
+                        select(RenderVariant, CandidateGroup, StageRun, MediaAsset)
+                        .join(
+                            CandidateGroup,
+                            CandidateGroup.id == RenderVariant.candidate_group_id,
+                        )
+                        .join(StageRun, StageRun.id == RenderVariant.stage_run_id)
+                        .join(MediaAsset, MediaAsset.id == RenderVariant.output_asset_id)
+                        .where(
+                            RenderVariant.id == item.adopted_variant_id,
+                            RenderVariant.status == "ADOPTED",
+                            CandidateGroup.project_id == project_id,
+                            CandidateGroup.purpose == "TTS",
+                            CandidateGroup.adopted_variant_id == RenderVariant.id,
+                            StageRun.episode_id == episode.id,
+                            MediaAsset.workspace_id == workspace_id,
+                            MediaAsset.content_type.like("audio/%"),
+                        )
+                    )
+                ).one_or_none()
+                if row is None:
+                    raise ProductionNotReadyError(
+                        "audio mix requires adopted same-episode TTS variants"
+                    )
+                variant, _, run, asset = row
+                try:
+                    utterance = run.params["tts_request"]["localized"]["utterance"]
+                    start = float(utterance["start_seconds"])
+                    end = float(utterance["end_seconds"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProductionNotReadyError(
+                        "adopted TTS variant has invalid timeline provenance"
+                    ) from exc
+                if start < 0 or end <= start or end > duration + 0.05:
+                    raise ProductionNotReadyError(
+                        "adopted TTS timeline exceeds episode duration"
+                    )
+                dialogue_assets.append(asset)
+                mix_tracks.append(
+                    {
+                        "asset_sha256": asset.sha256,
+                        "role": "DIALOGUE",
+                        "start_seconds": start,
+                        "gain_db": item.gain_db,
+                        "room_reverb": item.room_reverb,
+                    }
+                )
+            stem_assets: list[MediaAsset] = []
+            for item in payload.stem_selections:
+                asset = await session.scalar(
+                    select(MediaAsset).where(
+                        MediaAsset.id == item.asset_id,
+                        MediaAsset.workspace_id == workspace_id,
+                        MediaAsset.project_id == project_id,
+                        MediaAsset.content_type.like("audio/%"),
+                    )
+                )
+                if (
+                    asset is None
+                    or asset.metadata_json.get("episode_id") != str(episode.id)
+                    or asset.metadata_json.get("stem_kind") != item.role
+                ):
+                    raise ProductionNotReadyError(
+                        "stem asset must match the requested episode and role"
+                    )
+                stem_assets.append(asset)
+                mix_tracks.append(
+                    {
+                        "asset_sha256": asset.sha256,
+                        "role": item.role,
+                        "start_seconds": 0,
+                        "gain_db": item.gain_db,
+                        "room_reverb": 0,
+                    }
+                )
+            subtitle_document = {
+                "locale": project.locale,
+                "cues": [item.model_dump(mode="json") for item in payload.subtitle_cues],
+            }
+            if any(item.end_seconds > duration + 0.05 for item in payload.subtitle_cues):
+                raise ProductionNotReadyError("subtitle cue exceeds episode duration")
+            configured_formats = list(project.output_spec.get("subtitle_formats", ["srt"]))
+            sidecar_formats = [item for item in configured_formats if item in {"srt", "vtt"}]
+            if payload.burn_subtitles and "srt" not in sidecar_formats:
+                sidecar_formats.insert(0, "srt")
+            if not sidecar_formats:
+                sidecar_formats = ["srt"]
+            job = Job(
+                id=self._id_factory(),
+                project_id=project_id,
+                kind="EPISODE_ASSEMBLY",
+                status=JobStatus.QUEUED,
+                idempotency_key=idempotency_key,
+                total_stages=4,
+            )
+            picture = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=project_id,
+                episode_id=episode.id,
+                stage_type="PICTURE_CONFORM",
+                status="READY",
+                idempotency_key=f"{job.id}:picture-conform",
+                runtime_profile_id="cpu-assemble",
+                observed_control_version=control.control_version,
+                params={
+                    "input_asset_ids": [
+                        str(source.id),
+                        *(str(item.id) for item in picture_assets),
+                    ],
+                    "picture_conform_request": {
+                        "source_video_sha256": source.sha256,
+                        "duration_seconds": duration,
+                        "edits": picture_edits,
+                    },
+                },
+            )
+            subtitle = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=project_id,
+                episode_id=episode.id,
+                stage_type="SUBTITLE_RENDER",
+                status="READY",
+                idempotency_key=f"{job.id}:subtitles",
+                runtime_profile_id="cpu-assemble",
+                observed_control_version=control.control_version,
+                params={
+                    "subtitle_document": subtitle_document,
+                    "formats": sidecar_formats,
+                },
+            )
+            mix = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=project_id,
+                episode_id=episode.id,
+                stage_type="AUDIO_MIX",
+                status="READY",
+                idempotency_key=f"{job.id}:audio-mix",
+                runtime_profile_id="cpu-assemble",
+                observed_control_version=control.control_version,
+                params={
+                    "input_asset_ids": [
+                        *(str(item.id) for item in dialogue_assets),
+                        *(str(item.id) for item in stem_assets),
+                    ],
+                    "audio_mix_request": {
+                        "duration_seconds": duration,
+                        "tracks": mix_tracks,
+                        "preset": LOUDNESS_PRESETS[payload.loudness_preset],
+                        "sample_rate": 48_000,
+                        "channels": 2,
+                    },
+                },
+            )
+            output = project.output_spec
+            master = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=project_id,
+                episode_id=episode.id,
+                stage_type="ASSEMBLE_EPISODE",
+                status="PENDING",
+                idempotency_key=f"{job.id}:master",
+                runtime_profile_id="cpu-assemble",
+                observed_control_version=control.control_version,
+                params={
+                    "episode_assembly_template": {
+                        "duration_seconds": duration,
+                        "width": output["width"],
+                        "height": output["height"],
+                        "fps": output["fps"],
+                        "video_codec": output["video_codec"],
+                        "audio_codec": output["audio_codec"],
+                        "burn_subtitles": payload.burn_subtitles,
+                        "subtitle_document": subtitle_document,
+                    }
+                },
+            )
+            session.add(job)
+            session.add_all((picture, subtitle, mix, master))
+            session.add_all(
+                (
+                    StageDependency(
+                        stage_run_id=master.id,
+                        depends_on_stage_run_id=picture.id,
+                    ),
+                    StageDependency(
+                        stage_run_id=master.id,
+                        depends_on_stage_run_id=subtitle.id,
+                    ),
+                    StageDependency(
+                        stage_run_id=master.id,
+                        depends_on_stage_run_id=mix.id,
+                    ),
+                )
+            )
+            project.status = ProjectStatus.PRODUCING
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="job",
+                    aggregate_id=job.id,
+                    event_type="assembly.requested",
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(project_id),
+                        "episode_id": str(episode.id),
+                        "picture_edit_count": len(picture_edits),
+                        "dialogue_track_count": len(dialogue_assets),
+                        "stem_count": len(stem_assets),
                     },
                 )
             )

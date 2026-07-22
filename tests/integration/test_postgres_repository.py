@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from vtv_db.models import (
     ArtifactRelease,
+    CandidateGroup,
     Episode,
     Job,
     MediaAsset,
@@ -25,6 +26,13 @@ from vtv_db.repository import SqlAlchemyProjectRepository
 from vtv_orchestrator.mock_worker import execute
 from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
+from vtv_schemas.assembly import (
+    AdoptedDialogueSelection,
+    AdoptedPictureSelection,
+    AssemblySubtitleCue,
+    EpisodeAssemblyJobCreate,
+    StemSelection,
+)
 from vtv_schemas.candidates import CandidateAdopt, CandidateQcCreate, QcMetricCreate
 from vtv_schemas.jobs import AssetRef, StageResult, VariantResult
 from vtv_schemas.production import (
@@ -536,3 +544,219 @@ async def test_dubbing_job_persists_registry_and_rights_bound_stages(
     assert failed_run and failed_run.status == "EXECUTION_FAILED"
     assert orphan_count == 1
     assert variant_count == 2
+
+
+async def test_episode_assembly_job_persists_authoritative_four_stage_dag(
+    database: async_sessionmaker,
+) -> None:
+    repository = SqlAlchemyProjectRepository(database)
+    workspace_id = UUID(int=701)
+    project = await repository.create_project(
+        workspace_id,
+        ProjectCreate(name="Assembly SQL", target_market="US", locale="en-US"),
+    )
+    source_id, episode_id, shot_id = UUID(int=702), UUID(int=703), UUID(int=704)
+    picture_asset_id, dialogue_asset_id, stem_asset_id = (
+        UUID(int=705),
+        UUID(int=706),
+        UUID(int=707),
+    )
+    picture_group_id, dialogue_group_id = UUID(int=708), UUID(int=709)
+    picture_run_id, dialogue_run_id = UUID(int=710), UUID(int=711)
+    picture_variant_id, dialogue_variant_id = UUID(int=712), UUID(int=713)
+    async with database.begin() as session:
+        session.add_all(
+            (
+                MediaAsset(
+                    id=source_id,
+                    workspace_id=workspace_id,
+                    project_id=project.id,
+                    object_uri="s3://bucket/assembly-source.mp4",
+                    sha256="a" * 64,
+                    size_bytes=100,
+                    content_type="video/mp4",
+                    metadata_json={
+                        "episode_id": str(episode_id),
+                        "duration_seconds": 3.0,
+                    },
+                ),
+                MediaAsset(
+                    id=picture_asset_id,
+                    workspace_id=workspace_id,
+                    project_id=project.id,
+                    object_uri="s3://bucket/adopted-picture.mp4",
+                    sha256="b" * 64,
+                    size_bytes=30,
+                    content_type="video/mp4",
+                    metadata_json={"episode_id": str(episode_id)},
+                ),
+                MediaAsset(
+                    id=dialogue_asset_id,
+                    workspace_id=workspace_id,
+                    project_id=project.id,
+                    object_uri="s3://bucket/adopted-dialogue.wav",
+                    sha256="c" * 64,
+                    size_bytes=30,
+                    content_type="audio/wav",
+                    metadata_json={"episode_id": str(episode_id)},
+                ),
+                MediaAsset(
+                    id=stem_asset_id,
+                    workspace_id=workspace_id,
+                    project_id=project.id,
+                    object_uri="s3://bucket/background.wav",
+                    sha256="d" * 64,
+                    size_bytes=30,
+                    content_type="audio/wav",
+                    metadata_json={
+                        "episode_id": str(episode_id),
+                        "stem_kind": "BACKGROUND",
+                    },
+                ),
+            )
+        )
+        session.add(
+            Episode(
+                id=episode_id,
+                project_id=project.id,
+                episode_no=1,
+                source_asset_id=source_id,
+            )
+        )
+        session.add(
+            Shot(
+                id=shot_id,
+                episode_id=episode_id,
+                shot_no=1,
+                start_ms=1000,
+                end_ms=2000,
+            )
+        )
+        session.add_all(
+            (
+                CandidateGroup(
+                    id=picture_group_id,
+                    project_id=project.id,
+                    shot_id=shot_id,
+                    purpose="LIPSYNC",
+                ),
+                CandidateGroup(
+                    id=dialogue_group_id,
+                    project_id=project.id,
+                    purpose="TTS",
+                ),
+                StageRun(
+                    id=picture_run_id,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    shot_id=shot_id,
+                    candidate_group_id=picture_group_id,
+                    stage_type="LIPSYNC_GENERATE",
+                    status="ADOPTED",
+                    idempotency_key="assembly-sql-picture",
+                    runtime_profile_id="gpu-render",
+                    observed_control_version=1,
+                ),
+                StageRun(
+                    id=dialogue_run_id,
+                    project_id=project.id,
+                    episode_id=episode_id,
+                    candidate_group_id=dialogue_group_id,
+                    stage_type="TTS_GENERATE",
+                    status="ADOPTED",
+                    idempotency_key="assembly-sql-dialogue",
+                    runtime_profile_id="gpu-audio",
+                    observed_control_version=1,
+                    params={
+                        "tts_request": {
+                            "localized": {
+                                "utterance": {
+                                    "start_seconds": 1.0,
+                                    "end_seconds": 2.0,
+                                }
+                            }
+                        }
+                    },
+                ),
+            )
+        )
+    async with database.begin() as session:
+        session.add_all(
+            (
+                RenderVariant(
+                    id=picture_variant_id,
+                    candidate_group_id=picture_group_id,
+                    stage_run_id=picture_run_id,
+                    variant_no=1,
+                    status="ADOPTED",
+                    output_asset_id=picture_asset_id,
+                ),
+                RenderVariant(
+                    id=dialogue_variant_id,
+                    candidate_group_id=dialogue_group_id,
+                    stage_run_id=dialogue_run_id,
+                    variant_no=1,
+                    status="ADOPTED",
+                    output_asset_id=dialogue_asset_id,
+                ),
+            )
+        )
+    async with database.begin() as session:
+        picture_group = await session.get(CandidateGroup, picture_group_id)
+        dialogue_group = await session.get(CandidateGroup, dialogue_group_id)
+        assert picture_group and dialogue_group
+        picture_group.status = "ADOPTED"
+        picture_group.state_version = 2
+        picture_group.adopted_variant_id = picture_variant_id
+        dialogue_group.status = "ADOPTED"
+        dialogue_group.state_version = 2
+        dialogue_group.adopted_variant_id = dialogue_variant_id
+
+    job = await repository.create_episode_assembly_job(
+        workspace_id,
+        project.id,
+        EpisodeAssemblyJobCreate(
+            episode_id=episode_id,
+            source_video_asset_id=source_id,
+            picture_selections=(
+                AdoptedPictureSelection(
+                    shot_id=shot_id,
+                    adopted_variant_id=picture_variant_id,
+                ),
+            ),
+            dialogue_selections=(
+                AdoptedDialogueSelection(
+                    adopted_variant_id=dialogue_variant_id,
+                    gain_db=-1,
+                    room_reverb=0.2,
+                ),
+            ),
+            stem_selections=(
+                StemSelection(asset_id=stem_asset_id, role="BACKGROUND", gain_db=-12),
+            ),
+            subtitle_cues=(
+                AssemblySubtitleCue(
+                    index=1,
+                    start_seconds=1,
+                    end_seconds=2,
+                    text="Hello.",
+                ),
+            ),
+        ),
+    )
+    async with database() as session:
+        runs = list(await session.scalars(select(StageRun).where(StageRun.job_id == job.id)))
+        dependency_count = await session.scalar(
+            select(func.count())
+            .select_from(StageDependency)
+            .where(StageDependency.stage_run_id.in_([item.id for item in runs]))
+        )
+    assert {item.stage_type for item in runs} == {
+        "PICTURE_CONFORM",
+        "SUBTITLE_RENDER",
+        "AUDIO_MIX",
+        "ASSEMBLE_EPISODE",
+    }
+    assert sum(item.status == "READY" for item in runs) == 3
+    assert sum(item.status == "PENDING" for item in runs) == 1
+    assert dependency_count == 3

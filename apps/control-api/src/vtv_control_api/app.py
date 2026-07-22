@@ -16,6 +16,7 @@ from vtv_db.repository import (
     UploadConflictError,
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
     CandidateAdopt,
@@ -266,6 +267,31 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(
                 status_code=404, detail="project, episode, or shot not found"
+            ) from exc
+        except ProductionNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        status_url = f"/v1/jobs/{job.id}"
+        response.headers["Location"] = status_url
+        return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
+
+    @app.post(
+        "/v1/projects/{project_id}/assembly-jobs",
+        response_model=JobAccepted,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def create_episode_assembly_job(
+        project_id: UUID,
+        payload: EpisodeAssemblyJobCreate,
+        response: Response,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> JobAccepted:
+        try:
+            job = await repo.create_episode_assembly_job(
+                workspace, project_id, payload
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project or episode not found"
             ) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

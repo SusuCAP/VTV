@@ -22,7 +22,7 @@ def _output_directory(prefix: str) -> Path:
     return directory
 
 
-def _asset(path: Path, media_type: str) -> AssetRef:
+def _asset(path: Path, media_type: str, metadata: dict | None = None) -> AssetRef:
     digest = sha256()
     with path.open("rb") as handle:
         while chunk := handle.read(4 * 1024 * 1024):
@@ -32,6 +32,7 @@ def _asset(path: Path, media_type: str) -> AssetRef:
         sha256=digest.hexdigest(),
         media_type=media_type,
         size_bytes=path.stat().st_size,
+        metadata=metadata or {},
     )
 
 
@@ -53,6 +54,14 @@ def execute(job: StageJob) -> StageResult:
     elif job.stage_type == "PROXY_GENERATE":
         output = generate_proxy(source, output_directory / "proxy.mp4")
         media_type = "video/mp4"
+        proxy = probe_media(output)
+        video = proxy.video_streams[0]
+        asset_metadata = {
+            "duration_seconds": proxy.duration_seconds,
+            "width": video.width,
+            "height": video.height,
+            "fps": video.frame_rate,
+        }
         domain_payload = None
         document_type = None
     else:
@@ -62,7 +71,10 @@ def execute(job: StageJob) -> StageResult:
         output.write_text(json.dumps(domain_payload, ensure_ascii=False, indent=2))
         media_type = "application/json"
         document_type = "SHOT_LIST"
-    asset = _asset(output, media_type)
+        asset_metadata = {}
+    if job.stage_type == "INGEST_VALIDATE":
+        asset_metadata = {}
+    asset = _asset(output, media_type, asset_metadata)
     return StageResult(
         stage_run_id=job.stage_run_id,
         stage_attempt_id=job.stage_attempt_id,

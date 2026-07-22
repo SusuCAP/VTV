@@ -134,6 +134,16 @@ class Scheduler:
                 if {item.id for item in explicit_assets} != set(identifiers):
                     raise ValueError("one or more explicit stage input assets are missing")
                 assets.extend(explicit_assets)
+            params = claim.params
+            if claim.stage_type == "ASSEMBLE_EPISODE":
+                template = claim.params.get("episode_assembly_template")
+                if not isinstance(template, dict):
+                    raise ValueError("ASSEMBLE_EPISODE is missing its immutable template")
+                assets, request = _resolve_assembly_inputs(assets, template)
+                params = {
+                    **claim.params,
+                    "episode_assembly_request": request,
+                }
         return StageJob(
             stage_run_id=claim.stage_run_id,
             stage_attempt_id=claim.stage_attempt_id,
@@ -160,7 +170,7 @@ class Scheduler:
             runtime_profile_id=claim.runtime_profile_id,
             model_release_id=claim.model_release_id,
             observed_control_version=claim.observed_control_version,
-            params=claim.params,
+            params=params,
             trace_id=f"stage-{claim.stage_run_id}",
         )
 
@@ -517,6 +527,44 @@ async def _rights_commit_failure(
     if request.get("commercial_use", True) and release.commercial_scope != "COMMERCIAL":
         return "COMMERCIAL_USE_NOT_ALLOWED"
     return None
+
+
+def _resolve_assembly_inputs(
+    assets: list[MediaAsset], template: dict
+) -> tuple[list[MediaAsset], dict]:
+    pictures = [
+        item
+        for item in assets
+        if item.metadata_json.get("stage_type") == "PICTURE_CONFORM"
+        and item.content_type.startswith("video/")
+    ]
+    mixes = [
+        item
+        for item in assets
+        if item.metadata_json.get("stage_type") == "AUDIO_MIX"
+        and item.content_type.startswith("audio/")
+    ]
+    subtitles = [
+        item
+        for item in assets
+        if item.metadata_json.get("stage_type") == "SUBTITLE_RENDER"
+        and item.content_type == "application/x-subrip"
+    ]
+    if len(pictures) != 1 or len(mixes) != 1:
+        raise ValueError("ASSEMBLE_EPISODE requires one picture master and one audio mix")
+    burn_subtitles = template.get("burn_subtitles") is True
+    if burn_subtitles and len(subtitles) != 1:
+        raise ValueError("burned master requires exactly one SRT dependency")
+    selected_assets = [pictures[0], mixes[0]]
+    request = {
+        **template,
+        "source_video_sha256": pictures[0].sha256,
+        "mixed_audio_sha256": mixes[0].sha256,
+        "subtitle_sha256": subtitles[0].sha256 if burn_subtitles else None,
+    }
+    if burn_subtitles:
+        selected_assets.append(subtitles[0])
+    return selected_assets, request
 
 
 def _record_orphan_outputs(

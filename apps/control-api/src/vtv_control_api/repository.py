@@ -19,6 +19,7 @@ from vtv_db.releases import (
 )
 from vtv_db.repository import (
     LIPSYNC_MODEL_KEYS,
+    LOUDNESS_PRESETS,
     REQUIRED_QC_METRICS_BY_PURPOSE,
     AnalysisNotReadyError,
     ArtifactConflictError,
@@ -35,6 +36,7 @@ from vtv_db.rights import evaluate_rights_release
 from vtv_evaluation import evaluate_release
 from vtv_production import LipSyncRequest, ShotDialogueFeatures, TieredLipSyncRouter
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
     CandidateAdopt,
@@ -693,6 +695,243 @@ class MemoryRepository:
             status=JobStatus.QUEUED,
             progress=0,
             total_stages=len(stage_params),
+            completed_stages=0,
+        )
+        with self._lock:
+            self._jobs[job.id] = job
+            self._job_idempotency[(project_id, idempotency_key)] = job.id
+            self._production_stage_params[job.id] = stage_params
+            self._projects[project.id] = project.model_copy(
+                update={
+                    "status": ProjectStatus.PRODUCING,
+                    "state_version": project.state_version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        return job
+
+    async def create_episode_assembly_job(
+        self, workspace_id: UUID, project_id: UUID, payload: EpisodeAssemblyJobCreate
+    ) -> JobRead:
+        project = await self.get_project(workspace_id, project_id)
+        idempotency_key = f"episode-assembly:{payload.fingerprint}"
+        with self._lock:
+            existing_id = self._job_idempotency.get((project_id, idempotency_key))
+            if existing_id is not None:
+                return self._jobs[existing_id]
+            episode = next(
+                (
+                    item
+                    for item in self._episodes.get(project_id, [])
+                    if item.id == payload.episode_id
+                ),
+                None,
+            )
+            source = self._lipsync_assets.get(payload.source_video_asset_id)
+        if episode is None:
+            raise ProjectNotFoundError(payload.episode_id)
+        if (
+            source is None
+            or source.get("project_id") != project_id
+            or source.get("episode_id") != episode.id
+            or not str(source.get("content_type", "")).startswith("video/")
+            or float(source.get("duration_seconds", 0)) <= 0
+        ):
+            raise ProductionNotReadyError(
+                "assembly source must be a duration-bound same-episode video"
+            )
+        duration = float(source["duration_seconds"])
+        picture_assets: list[tuple[dict, dict]] = []
+        for item in payload.picture_selections:
+            with self._lock:
+                group = next(
+                    (
+                        value
+                        for value in self._candidate_groups.values()
+                        if value.project_id == project_id
+                        and value.purpose in {"LIPSYNC", "RENDER"}
+                        and value.shot_id == item.shot_id
+                        and value.adopted_variant_id == item.adopted_variant_id
+                    ),
+                    None,
+                )
+                shot = self._lipsync_shots.get(item.shot_id)
+            if group is None or shot is None or shot.get("episode_id") != episode.id:
+                raise ProductionNotReadyError(
+                    "picture conform requires adopted same-episode video variants"
+                )
+            variant = next(
+                value for value in group.variants if value.id == item.adopted_variant_id
+            )
+            with self._lock:
+                asset = self._lipsync_assets.get(variant.output_asset_id)
+            if (
+                variant.status != "ADOPTED"
+                or asset is None
+                or not str(asset.get("content_type", "")).startswith("video/")
+            ):
+                raise ProductionNotReadyError(
+                    "picture conform requires adopted same-episode video variants"
+                )
+            picture_assets.append((shot, asset))
+        picture_assets.sort(key=lambda value: value[0]["start_seconds"])
+        previous_end = 0.0
+        picture_edits: list[dict] = []
+        for shot, asset in picture_assets:
+            start = float(shot["start_seconds"])
+            end = float(shot["end_seconds"])
+            if start < previous_end or end > duration + 0.05:
+                raise ProductionNotReadyError(
+                    "adopted picture intervals overlap or exceed episode duration"
+                )
+            previous_end = end
+            picture_edits.append(
+                {
+                    "shot_id": str(shot["id"]),
+                    "replacement_sha256": asset["sha256"],
+                    "start_seconds": start,
+                    "end_seconds": end,
+                }
+            )
+        dialogue_assets: list[dict] = []
+        mix_tracks: list[dict] = []
+        for item in payload.dialogue_selections:
+            with self._lock:
+                group = next(
+                    (
+                        value
+                        for value in self._candidate_groups.values()
+                        if value.project_id == project_id
+                        and value.purpose == "TTS"
+                        and value.adopted_variant_id == item.adopted_variant_id
+                    ),
+                    None,
+                )
+            if group is None:
+                raise ProductionNotReadyError(
+                    "audio mix requires adopted same-episode TTS variants"
+                )
+            variant = next(
+                value for value in group.variants if value.id == item.adopted_variant_id
+            )
+            with self._lock:
+                asset = self._lipsync_assets.get(variant.output_asset_id)
+                params = self._variant_stage_params.get(variant.id)
+            if (
+                variant.status != "ADOPTED"
+                or asset is None
+                or asset.get("episode_id") != episode.id
+                or not str(asset.get("content_type", "")).startswith("audio/")
+                or not isinstance(params, dict)
+            ):
+                raise ProductionNotReadyError(
+                    "audio mix requires adopted same-episode TTS variants"
+                )
+            try:
+                utterance = params["tts_request"]["localized"]["utterance"]
+                start = float(utterance["start_seconds"])
+                end = float(utterance["end_seconds"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProductionNotReadyError(
+                    "adopted TTS variant has invalid timeline provenance"
+                ) from exc
+            if end <= start or end > duration + 0.05:
+                raise ProductionNotReadyError("adopted TTS timeline exceeds episode")
+            dialogue_assets.append(asset)
+            mix_tracks.append(
+                {
+                    "asset_sha256": asset["sha256"],
+                    "role": "DIALOGUE",
+                    "start_seconds": start,
+                    "gain_db": item.gain_db,
+                    "room_reverb": item.room_reverb,
+                }
+            )
+        stem_assets: list[dict] = []
+        for item in payload.stem_selections:
+            with self._lock:
+                asset = self._lipsync_assets.get(item.asset_id)
+            if (
+                asset is None
+                or asset.get("episode_id") != episode.id
+                or asset.get("stem_kind") != item.role
+            ):
+                raise ProductionNotReadyError(
+                    "stem asset must match the requested episode and role"
+                )
+            stem_assets.append(asset)
+            mix_tracks.append(
+                {
+                    "asset_sha256": asset["sha256"],
+                    "role": item.role,
+                    "start_seconds": 0,
+                    "gain_db": item.gain_db,
+                    "room_reverb": 0,
+                }
+            )
+        if any(item.end_seconds > duration + 0.05 for item in payload.subtitle_cues):
+            raise ProductionNotReadyError("subtitle cue exceeds episode duration")
+        subtitle_document = {
+            "locale": project.locale,
+            "cues": [item.model_dump(mode="json") for item in payload.subtitle_cues],
+        }
+        formats = [item for item in project.output.subtitle_formats if item in {"srt", "vtt"}]
+        if payload.burn_subtitles and "srt" not in formats:
+            formats.insert(0, "srt")
+        output = project.output
+        stage_params = [
+            {
+                "stage_type": "PICTURE_CONFORM",
+                "input_asset_ids": [
+                    str(payload.source_video_asset_id),
+                    *(str(item[1]["id"]) for item in picture_assets),
+                ],
+                "picture_conform_request": {
+                    "source_video_sha256": source["sha256"],
+                    "duration_seconds": duration,
+                    "edits": picture_edits,
+                },
+            },
+            {
+                "stage_type": "SUBTITLE_RENDER",
+                "subtitle_document": subtitle_document,
+                "formats": formats or ["srt"],
+            },
+            {
+                "stage_type": "AUDIO_MIX",
+                "input_asset_ids": [
+                    *(str(item["id"]) for item in dialogue_assets),
+                    *(str(item["id"]) for item in stem_assets),
+                ],
+                "audio_mix_request": {
+                    "duration_seconds": duration,
+                    "tracks": mix_tracks,
+                    "preset": LOUDNESS_PRESETS[payload.loudness_preset],
+                    "sample_rate": 48_000,
+                    "channels": 2,
+                },
+            },
+            {
+                "stage_type": "ASSEMBLE_EPISODE",
+                "episode_assembly_template": {
+                    "duration_seconds": duration,
+                    "width": output.width,
+                    "height": output.height,
+                    "fps": output.fps,
+                    "video_codec": output.video_codec,
+                    "audio_codec": output.audio_codec,
+                    "burn_subtitles": payload.burn_subtitles,
+                    "subtitle_document": subtitle_document,
+                },
+            },
+        ]
+        job = JobRead(
+            id=uuid4(),
+            project_id=project_id,
+            kind="EPISODE_ASSEMBLY",
+            status=JobStatus.QUEUED,
+            progress=0,
+            total_stages=4,
             completed_stages=0,
         )
         with self._lock:

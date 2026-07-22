@@ -123,3 +123,7 @@ def test_media_worker_stages(
         assert result.domain_artifacts[0].document_type == "SHOT_LIST"
     else:
         assert result.domain_artifacts == []
+        assert asset.metadata["duration_seconds"] == pytest.approx(1.2, abs=0.15)
+        assert asset.metadata["width"]
+        assert asset.metadata["height"]
+        assert asset.metadata["fps"]

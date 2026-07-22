@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 68% | 采用 Shot 画面回 conform、字幕、响度重混与逐集合成运行时 |
+| Phase 3 自动生产 | 进行中 | 75% | 采用画面/对白/stem 门禁与 Picture/Subtitle/Mix/Master 数据库 DAG |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -206,14 +206,21 @@
 - [x] 新增 Picture Conform 合同，拒绝采用 Shot 区间重叠、越界、重复候选和候选时长不足。
 - [x] FFmpeg 按源片未修改段 + adopted replacement 重建整集画面，统一尺寸/SAR/fps 并保持 50 ms 时长不变量。
 - [x] 真实帧色彩测试证明只有权威 Shot 区间被采用候选替换，区间外源片保持不变。
+- [x] 新增逐集 Assembly Job Schema/API，以规范 JSON SHA-256 实现请求幂等。
+- [x] 创建事务只接受同集 adopted LIPSYNC/RENDER 与 TTS Variant，并从 TTS provenance 读取对白时间线。
+- [x] stem 资产强制匹配 Episode 与 MUSIC/EFFECTS/BACKGROUND role；字幕强制连续、非重叠、不越集时长。
+- [x] 数据库创建 Picture/Subtitle/Mix 三路 READY Stage、Master PENDING Stage 和三条依赖边。
+- [x] Project output spec 权威注入 Master，客户端不能绕过宽高、fps、编解码与字幕配置。
+- [x] Scheduler 从完成的上游 Media Asset 动态绑定真实 picture/audio/SRT hash，拒绝缺失或歧义输入。
+- [x] Proxy Media Asset 新增 duration/width/height/fps metadata，为逐集生产提供权威源媒体参数。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add adopted picture conform`
+`feat: add deliverable manifests`
 
-本提交完成后，下一步实现逐集合成 Job/API、采用产物门禁和 Subtitle→Mix→Master 数据库 DAG；
+本提交完成后，下一步实现 Deliverables/Provenance Manifest、质量报告与镜头清单交付闭环；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -334,3 +341,6 @@
 | 2026-07-22 | Picture Conform 合同/真实 FFmpeg | 2 passed；覆盖区间门禁、源片保留、采用 Shot 替换和 50 ms 全集时长不变量 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 142 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | Episode Assembly Job/API 与 Scheduler 动态绑定 | 8 passed，4 个真实 PostgreSQL 用例待外部数据库执行；覆盖四阶段 DAG、幂等、采用门禁和上游真实 hash 注入 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 146 passed，4 skipped；仅保留 Starlette TestClient 上游弃用提示 |
