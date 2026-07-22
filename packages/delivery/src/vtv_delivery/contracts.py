@@ -270,3 +270,24 @@ class C2paSignResult(BaseModel):
     credential_asset_sha256: str = Field(pattern=SHA256_PATTERN)
     credential_asset_uri: str = Field(min_length=1)
     credential_size_bytes: int = Field(gt=0)
+
+
+class DeliveryPackageAsset(BaseModel):
+    role: str
+    object_uri: str
+    sha256: str
+    size_bytes: int
+    content_type: str
+    download_url: str  # 15-minute presigned URL (passthrough: object_uri itself)
+
+
+class DeliveryPackage(BaseModel):
+    delivery_id: UUID
+    manifest_fingerprint: str
+    assets: list[DeliveryPackageAsset]
+    expires_at: datetime  # presigned URLs expire at this time
+
+
+class DeliveryRevoke(BaseModel):
+    reason: str = Field(min_length=1, max_length=200)
+    actor_id: str = Field(min_length=1, max_length=200)

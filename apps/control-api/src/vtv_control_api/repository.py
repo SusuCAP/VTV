@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import RLock
 from uuid import UUID, uuid4
 
@@ -38,7 +38,15 @@ from vtv_db.repository import (
     _build_tts_request,
 )
 from vtv_db.rights import evaluate_rights_release
-from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryManifestBuilder, DeliveryRead
+from vtv_delivery import (
+    DeliveryApprove,
+    DeliveryCreate,
+    DeliveryManifestBuilder,
+    DeliveryPackage,
+    DeliveryPackageAsset,
+    DeliveryRead,
+    DeliveryRevoke,
+)
 from vtv_evaluation import evaluate_release
 from vtv_evaluation.contracts import (
     EvaluatorReleaseCreate,
@@ -58,7 +66,7 @@ from vtv_schemas.candidates import (
 )
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobRead, ProduceRequest
+from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
@@ -1302,6 +1310,119 @@ class MemoryRepository:
                 raise DeliveryConflictError("delivery changed during completion")
             self._deliveries[delivery_id] = updated
         return updated
+
+    async def get_delivery_package(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryPackage:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+            inputs = self._delivery_inputs.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id or inputs is None:
+            raise ProjectNotFoundError(delivery_id)
+        if delivery.status != "APPROVED":
+            raise DeliveryConflictError(
+                f"only APPROVED deliveries can generate a package, got {delivery.status}"
+            )
+        roles: dict[UUID, str] = inputs.get("roles", {})
+        expires_at = datetime.now(UTC) + timedelta(minutes=15)
+        assets = []
+        with self._lock:
+            for asset_id_obj, role in roles.items():
+                asset_id = (
+                    asset_id_obj if isinstance(asset_id_obj, UUID) else UUID(str(asset_id_obj))
+                )
+                asset = self._lipsync_assets.get(asset_id)
+                if asset is None:
+                    continue
+                assets.append(
+                    DeliveryPackageAsset(
+                        role=role,
+                        object_uri=asset.get("object_uri", ""),
+                        sha256=asset.get("sha256", "a" * 64),
+                        size_bytes=asset.get("size_bytes", 100),
+                        content_type=asset.get("content_type", "application/octet-stream"),
+                        download_url=asset.get("object_uri", ""),
+                    )
+                )
+        return DeliveryPackage(
+            delivery_id=delivery_id,
+            manifest_fingerprint=delivery.manifest_fingerprint or "",
+            assets=assets,
+            expires_at=expires_at,
+        )
+
+    async def revoke_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryRevoke
+    ) -> DeliveryRead:
+        with self._lock:
+            delivery = self._deliveries.get(delivery_id)
+        if delivery is None or delivery.workspace_id != workspace_id:
+            raise ProjectNotFoundError(delivery_id)
+        if delivery.status != "APPROVED":
+            raise DeliveryConflictError(
+                f"only APPROVED deliveries can be revoked, got {delivery.status}"
+            )
+        revoked = delivery.model_copy(
+            update={
+                "status": "REVOKED",
+                "state_version": delivery.state_version + 1,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            current = self._deliveries.get(delivery_id)
+            if current is None or current.state_version != delivery.state_version:
+                raise DeliveryConflictError("delivery changed during revocation")
+            self._deliveries[delivery_id] = revoked
+        return revoked
+
+    async def list_job_summaries(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[JobSummary]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            jobs = [item for item in self._jobs.values() if item.project_id == project_id]
+        now = datetime.now(UTC)
+        return [
+            JobSummary(
+                job_id=job.id,
+                kind=job.kind,
+                status=job.status,
+                total_stages=job.total_stages,
+                completed_stages=job.completed_stages,
+                failed_stages=0,
+                progress_percent=(
+                    job.completed_stages / job.total_stages * 100
+                    if job.total_stages
+                    else 0.0
+                ),
+                created_at=now,
+                updated_at=now,
+            )
+            for job in jobs
+        ]
+
+    async def get_job_progress(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID
+    ) -> JobProgress:
+        job = await self.get_job(workspace_id, job_id)
+        if job.project_id != project_id:
+            raise ProjectNotFoundError(job_id)
+        total = job.total_stages or 0
+        completed = job.completed_stages or 0
+        progress_percent = (completed / total * 100) if total else 0.0
+        return JobProgress(
+            job_id=job_id,
+            status=job.status,
+            total_stages=total,
+            completed_stages=completed,
+            failed_stages=0,
+            running_stages=0,
+            pending_stages=max(0, total - completed),
+            progress_percent=progress_percent,
+            estimated_seconds_remaining=None,
+            recent_stage_completions=[],
+        )
 
     async def list_candidate_groups(
         self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None

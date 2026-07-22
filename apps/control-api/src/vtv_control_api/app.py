@@ -23,7 +23,13 @@ from vtv_db.repository import (
     StageRunRead,
     UploadConflictError,
 )
-from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryRead
+from vtv_delivery import (
+    DeliveryApprove,
+    DeliveryCreate,
+    DeliveryPackage,
+    DeliveryRead,
+    DeliveryRevoke,
+)
 from vtv_evaluation.contracts import EvaluatorReleaseCreate, EvaluatorReleaseRead, QcEvidenceCreate
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
@@ -35,7 +41,7 @@ from vtv_schemas.candidates import (
     CandidateVariantRead,
 )
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobAccepted, JobRead, ProduceRequest
+from vtv_schemas.jobs import JobAccepted, JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import (
     ModelAutomationUpdate,
     ModelLicenseReview,
@@ -429,6 +435,37 @@ def create_app(
         except DeliveryConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get(
+        "/v1/deliveries/{delivery_id}/package",
+        response_model=DeliveryPackage,
+    )
+    async def get_delivery_package(
+        delivery_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryPackage:
+        try:
+            return await repo.get_delivery_package(workspace, delivery_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="delivery not found") from exc
+        except DeliveryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/deliveries/{delivery_id}:revoke",
+        response_model=DeliveryRead,
+    )
+    async def revoke_delivery(
+        delivery_id: UUID,
+        payload: DeliveryRevoke,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> DeliveryRead:
+        try:
+            return await repo.revoke_delivery(workspace, delivery_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="delivery not found") from exc
+        except DeliveryConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/v1/projects/{project_id}/episodes", response_model=list[EpisodeRead])
     async def list_episodes(
         project_id: UUID,
@@ -439,15 +476,29 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 
-    @app.get("/v1/projects/{project_id}/jobs", response_model=list[JobRead])
+    @app.get("/v1/projects/{project_id}/jobs", response_model=list[JobSummary])
     async def list_jobs(
         project_id: UUID,
         workspace: Annotated[UUID, Depends(workspace_id)],
-    ) -> list[JobRead]:
+    ) -> list[JobSummary]:
         try:
-            return await repo.list_jobs(workspace, project_id)
+            return await repo.list_job_summaries(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/jobs/{job_id}/progress",
+        response_model=JobProgress,
+    )
+    async def get_job_progress(
+        project_id: UUID,
+        job_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> JobProgress:
+        try:
+            return await repo.get_job_progress(workspace, project_id, job_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
 
     @app.get(
         "/v1/projects/{project_id}/candidate-groups",

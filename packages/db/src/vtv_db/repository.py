@@ -19,7 +19,10 @@ from vtv_delivery import (
     DeliveryApprove,
     DeliveryCreate,
     DeliveryManifestBuilder,
+    DeliveryPackage,
+    DeliveryPackageAsset,
     DeliveryRead,
+    DeliveryRevoke,
     EditStageEvidence,
     ModelEvidence,
     QcEvidence,
@@ -55,7 +58,7 @@ from vtv_schemas.candidates import (
 )
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
-from vtv_schemas.jobs import JobRead, ProduceRequest
+from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import (
     DubbingJobCreate,
@@ -385,6 +388,22 @@ class ProjectRepository(Protocol):
         success: bool,
         credential_uri: str | None = None,
     ) -> DeliveryRead: ...
+
+    async def get_delivery_package(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryPackage: ...
+
+    async def revoke_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryRevoke
+    ) -> DeliveryRead: ...
+
+    async def list_job_summaries(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[JobSummary]: ...
+
+    async def get_job_progress(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID
+    ) -> JobProgress: ...
 
     async def create_rights_release(
         self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
@@ -2718,6 +2737,187 @@ class SqlAlchemyProjectRepository:
             )
             await session.flush()
             return _delivery_read(delivery)
+
+    async def get_delivery_package(
+        self, workspace_id: UUID, delivery_id: UUID
+    ) -> DeliveryPackage:
+        async with self._sessions() as session:
+            delivery = await session.scalar(
+                select(Delivery).where(
+                    Delivery.id == delivery_id,
+                    Delivery.workspace_id == workspace_id,
+                )
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            if delivery.status != "APPROVED":
+                raise DeliveryConflictError(
+                    f"only APPROVED deliveries can generate a package, got {delivery.status}"
+                )
+            rows = list(
+                (
+                    await session.execute(
+                        select(DeliveryAsset, MediaAsset)
+                        .join(MediaAsset, MediaAsset.id == DeliveryAsset.asset_id)
+                        .where(DeliveryAsset.delivery_id == delivery_id)
+                    )
+                ).all()
+            )
+            expires_at = datetime.now(UTC) + timedelta(minutes=15)
+            assets = [
+                DeliveryPackageAsset(
+                    role=link.role,
+                    object_uri=asset.object_uri,
+                    sha256=asset.sha256,
+                    size_bytes=asset.size_bytes,
+                    content_type=asset.content_type,
+                    download_url=asset.object_uri,  # passthrough — no S3 presigning configured
+                )
+                for link, asset in rows
+            ]
+            return DeliveryPackage(
+                delivery_id=delivery_id,
+                manifest_fingerprint=delivery.manifest_fingerprint or "",
+                assets=assets,
+                expires_at=expires_at,
+            )
+
+    async def revoke_delivery(
+        self, workspace_id: UUID, delivery_id: UUID, payload: DeliveryRevoke
+    ) -> DeliveryRead:
+        async with self._sessions.begin() as session:
+            delivery = await session.scalar(
+                select(Delivery)
+                .where(Delivery.id == delivery_id, Delivery.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if delivery is None:
+                raise ProjectNotFoundError(delivery_id)
+            if delivery.status != "APPROVED":
+                raise DeliveryConflictError(
+                    f"only APPROVED deliveries can be revoked, got {delivery.status}"
+                )
+            delivery.status = "REVOKED"
+            delivery.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="delivery",
+                    aggregate_id=delivery.id,
+                    event_type="delivery.revoked",
+                    payload={
+                        "delivery_id": str(delivery.id),
+                        "manifest_fingerprint": delivery.manifest_fingerprint,
+                        "reason": payload.reason,
+                        "actor_id": payload.actor_id,
+                    },
+                )
+            )
+            await session.flush()
+            return _delivery_read(delivery)
+
+    async def list_job_summaries(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[JobSummary]:
+        async with self._sessions() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(project_id)
+            jobs = list(
+                await session.scalars(
+                    select(Job).where(Job.project_id == project_id).order_by(Job.created_at.desc())
+                )
+            )
+            summaries = []
+            for job in jobs:
+                completed = int(
+                    await session.scalar(
+                        select(func.count(StageRun.id)).where(
+                            StageRun.job_id == job.id,
+                            StageRun.status == "COMPLETED",
+                        )
+                    ) or 0
+                )
+                failed = int(
+                    await session.scalar(
+                        select(func.count(StageRun.id)).where(
+                            StageRun.job_id == job.id,
+                            StageRun.status == "EXECUTION_FAILED",
+                        )
+                    ) or 0
+                )
+                total = job.total_stages or 0
+                progress_percent = (completed / total * 100) if total else 0.0
+                summaries.append(
+                    JobSummary(
+                        job_id=job.id,
+                        kind=job.kind,
+                        status=job.status,
+                        total_stages=total,
+                        completed_stages=completed,
+                        failed_stages=failed,
+                        progress_percent=progress_percent,
+                        created_at=job.created_at,
+                        updated_at=job.updated_at,
+                    )
+                )
+            return summaries
+
+    async def get_job_progress(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID
+    ) -> JobProgress:
+        async with self._sessions() as session:
+            job = await session.scalar(
+                select(Job)
+                .join(Project, Project.id == Job.project_id)
+                .where(
+                    Job.id == job_id,
+                    Job.project_id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if job is None:
+                raise ProjectNotFoundError(job_id)
+            stage_rows = list(
+                await session.scalars(
+                    select(StageRun).where(StageRun.job_id == job_id)
+                )
+            )
+            status_counts: dict[str, int] = {}
+            for run in stage_rows:
+                status_counts[run.status] = status_counts.get(run.status, 0) + 1
+            completed = status_counts.get("COMPLETED", 0)
+            failed = status_counts.get("EXECUTION_FAILED", 0)
+            running = status_counts.get("RUNNING", 0)
+            pending = status_counts.get("PENDING", 0) + status_counts.get("READY", 0)
+            total = job.total_stages or 0
+            progress_percent = (completed / total * 100) if total else 0.0
+            recent_runs = sorted(
+                [run for run in stage_rows if run.status == "COMPLETED"],
+                key=lambda r: r.updated_at,
+                reverse=True,
+            )[:5]
+            recent_completions = [
+                {"stage_type": run.stage_type, "completed_at": run.updated_at.isoformat()}
+                for run in recent_runs
+            ]
+            return JobProgress(
+                job_id=job_id,
+                status=job.status,
+                total_stages=total,
+                completed_stages=completed,
+                failed_stages=failed,
+                running_stages=running,
+                pending_stages=pending,
+                progress_percent=progress_percent,
+                estimated_seconds_remaining=None,
+                recent_stage_completions=recent_completions,
+            )
 
     async def create_artifact_release(
         self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate

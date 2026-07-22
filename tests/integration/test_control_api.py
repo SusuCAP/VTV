@@ -46,7 +46,7 @@ def test_project_and_async_analysis_job_flow() -> None:
 
         jobs = client.get(f"/v1/projects/{project['id']}/jobs")
         assert jobs.status_code == 200
-        assert jobs.json()[0]["id"] == accepted.json()["job_id"]
+        assert jobs.json()[0]["job_id"] == accepted.json()["job_id"]
 
         documents = client.get(f"/v1/projects/{project['id']}/analysis-documents")
         assert documents.status_code == 200
