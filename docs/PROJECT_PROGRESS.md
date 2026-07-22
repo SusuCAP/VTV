@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 20% | 本土化/授权契约、L0–L5 路由与多候选 TTS Worker |
+| Phase 3 自动生产 | 进行中 | 25% | 权威授权门禁、本土化契约、L0–L5 路由与多候选 TTS Worker |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -170,15 +170,20 @@
 - [x] TTS 响应采用严格 JSON/Base64 WAV，校验 1–4 个候选数量、连续编号和实际媒体时长。
 - [x] 实现 `TTS_GENERATE` Production Worker，输出逐候选资产、指标及完整 release/seed provenance。
 - [x] Orchestrator 本地与 Modal 路由新增 Production Worker，继续复用 S3 物化和不可变回传边界。
+- [x] 新增 `rights_releases` 权威表与 `0008` 迁移，固化主体、操作、市场、语言、商业范围和证据 hash。
+- [x] 同一主体仅允许一条当前授权；新版本必须显式 supersede，旧版本在同一事务中撤销。
+- [x] 实现 workspace 隔离 Rights Release create/list/check/revoke API 与 state version CAS 撤销。
+- [x] 执行门禁一次返回撤销、时效、操作、市场、语言和商业范围的全部失败原因。
+- [x] VoiceRightsSnapshot/TTS 产物记录权威 rights release ID 与 state version provenance。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add episode production workflow`
+`feat: add rights release execution gates`
 
-下一步建立从已发布 Localization/Voice Release 生成逐句 TTS、口型路线、候选 selection、混音和
-逐集合成的生产 DAG/API；同时在 Modal API 网络恢复后补跑云端验收。
+本提交完成后，下一步建立从已发布 Localization/Voice Release 生成逐句 TTS、口型路线、候选
+selection、混音和逐集合成的生产 DAG/API；同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -277,3 +282,5 @@
 | 2026-07-22 | `pytest` | 114 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 多候选 TTS Worker/运行时 | 9 passed；覆盖 WAV、时长门限、准入阻断、Registry 工厂和路由 |
 | 2026-07-22 | `pytest` | 119 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Rights Release 门禁/API | 15 passed，2 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | `pytest` | 123 passed，2 个真实 PostgreSQL 用例待外部数据库执行 |

@@ -34,6 +34,7 @@ def _voice(character_id: str = "character-1") -> VoiceRelease:
         reference_asset_sha256s=("a" * 64,),
         rights=VoiceRightsSnapshot(
             rights_release_id=uuid4(),
+            state_version=1,
             subject_id=character_id,
             allowed_operations=frozenset({"voice_clone"}),
             allowed_languages=frozenset({"en-US"}),

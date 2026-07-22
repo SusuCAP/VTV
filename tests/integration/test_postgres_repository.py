@@ -1,4 +1,5 @@
 import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -6,12 +7,21 @@ import asyncpg
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from vtv_db.models import Episode, Job, MediaAsset, OutboxEvent, StageDependency, StageRun
+from vtv_db.models import (
+    Episode,
+    Job,
+    MediaAsset,
+    OutboxEvent,
+    RightsRelease,
+    StageDependency,
+    StageRun,
+)
 from vtv_db.repository import SqlAlchemyProjectRepository
 from vtv_orchestrator.mock_worker import execute
 from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
 from vtv_schemas.projects import ProjectCreate
+from vtv_schemas.rights import RightsExecutionCheck, RightsReleaseCreate
 from vtv_schemas.uploads import MultipartInit, UploadPart
 
 DATABASE_URL = os.getenv("VTV_TEST_DATABASE_URL")
@@ -121,3 +131,45 @@ async def test_project_and_analysis_dag_are_committed_atomically(
         )
     assert job_statuses == ["SUCCEEDED", "SUCCEEDED"]
     assert generated_asset_count == 16
+
+
+async def test_rights_release_is_versioned_revocable_and_workspace_scoped(
+    database: async_sessionmaker,
+) -> None:
+    repository = SqlAlchemyProjectRepository(database)
+    workspace_id = UUID(int=501)
+    project = await repository.create_project(
+        workspace_id,
+        ProjectCreate(name="Rights SQL", target_market="US", locale="en-US"),
+    )
+    actor_id = UUID(int=502)
+    release = await repository.create_rights_release(
+        workspace_id,
+        project.id,
+        RightsReleaseCreate(
+            subject_type="VOICE",
+            subject_id="character-1",
+            allowed_operations=frozenset({"voice_clone"}),
+            allowed_markets=frozenset({"US"}),
+            allowed_languages=frozenset({"en-US"}),
+            commercial_scope="COMMERCIAL",
+            valid_from=datetime.now(UTC) - timedelta(days=1),
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            evidence_uri="s3://rights/evidence.pdf",
+            evidence_sha256="e" * 64,
+            created_by=actor_id,
+        ),
+    )
+    decision = await repository.check_rights_release(
+        workspace_id,
+        release.id,
+        RightsExecutionCheck(operation="voice_clone", market="US", language="en-US"),
+    )
+    assert decision.allowed is True
+
+    revoked = await repository.revoke_rights_release(
+        workspace_id, release.id, actor_id, "withdrawn", 1
+    )
+    assert revoked.status == "REVOKED"
+    async with database() as session:
+        assert await session.scalar(select(func.count()).select_from(RightsRelease)) == 1

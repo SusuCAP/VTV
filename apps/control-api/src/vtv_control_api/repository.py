@@ -22,9 +22,11 @@ from vtv_db.repository import (
     ArtifactConflictError,
     ModelReleaseConflictError,
     ProjectNotFoundError,
+    RightsReleaseConflictError,
     UploadConflictError,
     UploadRecord,
 )
+from vtv_db.rights import evaluate_rights_release
 from vtv_evaluation import evaluate_release
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -34,6 +36,12 @@ from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
+from vtv_schemas.rights import (
+    RightsExecutionCheck,
+    RightsExecutionDecision,
+    RightsReleaseCreate,
+    RightsReleaseRead,
+)
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 
@@ -49,6 +57,7 @@ class MemoryRepository:
         self._analysis_documents: list[AnalysisDocumentRead] = []
         self._model_releases: dict[UUID, ModelReleaseRead] = {}
         self._benchmark_releases: dict[UUID, BenchmarkReleaseRead] = {}
+        self._rights_releases: dict[UUID, RightsReleaseRead] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -356,6 +365,129 @@ class MemoryRepository:
             raise ProjectNotFoundError(job_id)
         await self.get_project(workspace_id, job.project_id)
         return job
+
+    async def create_rights_release(
+        self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
+    ) -> RightsReleaseRead:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            current = next(
+                (
+                    item
+                    for item in self._rights_releases.values()
+                    if item.project_id == project_id
+                    and item.subject_type == payload.subject_type
+                    and item.subject_id == payload.subject_id
+                    and item.revoked_at is None
+                ),
+                None,
+            )
+            if current is not None and payload.supersedes_release_id != current.id:
+                raise RightsReleaseConflictError(
+                    "current rights release must be explicitly superseded"
+                )
+            if current is None and payload.supersedes_release_id is not None:
+                raise RightsReleaseConflictError("superseded rights release is not current")
+            now = datetime.now(UTC)
+            if current is not None:
+                self._rights_releases[current.id] = current.model_copy(
+                    update={
+                        "status": "REVOKED",
+                        "state_version": current.state_version + 1,
+                        "revoked_at": now,
+                        "revoked_by": payload.created_by,
+                        "revocation_reason": "SUPERSEDED",
+                        "updated_at": now,
+                    }
+                )
+            version = 1 + max(
+                (
+                    item.version
+                    for item in self._rights_releases.values()
+                    if item.project_id == project_id
+                    and item.subject_type == payload.subject_type
+                    and item.subject_id == payload.subject_id
+                ),
+                default=0,
+            )
+            release = RightsReleaseRead(
+                id=uuid4(),
+                project_id=project_id,
+                subject_type=payload.subject_type,
+                subject_id=payload.subject_id,
+                version=version,
+                status="ACTIVE",
+                state_version=1,
+                allowed_operations=payload.allowed_operations,
+                allowed_markets=payload.allowed_markets,
+                allowed_languages=payload.allowed_languages,
+                commercial_scope=payload.commercial_scope,
+                valid_from=payload.valid_from,
+                expires_at=payload.expires_at,
+                minor_guardian_consent=payload.minor_guardian_consent,
+                source_asset_ids=payload.source_asset_ids,
+                evidence_uri=payload.evidence_uri,
+                evidence_sha256=payload.evidence_sha256,
+                supersedes_release_id=payload.supersedes_release_id,
+                created_by=payload.created_by,
+                created_at=now,
+                updated_at=now,
+            )
+            self._rights_releases[release.id] = release
+            return release
+
+    async def list_rights_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[RightsReleaseRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            return [
+                item for item in self._rights_releases.values() if item.project_id == project_id
+            ]
+
+    async def revoke_rights_release(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        actor_id: UUID,
+        reason: str,
+        expected_state_version: int,
+    ) -> RightsReleaseRead:
+        release = await self._get_rights_release(workspace_id, release_id)
+        if release.state_version != expected_state_version:
+            raise RightsReleaseConflictError("rights release state version mismatch")
+        if release.status != "ACTIVE" or release.revoked_at is not None:
+            raise RightsReleaseConflictError("rights release is already revoked")
+        now = datetime.now(UTC)
+        changed = release.model_copy(
+            update={
+                "status": "REVOKED",
+                "state_version": release.state_version + 1,
+                "revoked_at": now,
+                "revoked_by": actor_id,
+                "revocation_reason": reason,
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._rights_releases[release.id] = changed
+        return changed
+
+    async def check_rights_release(
+        self, workspace_id: UUID, release_id: UUID, request: RightsExecutionCheck
+    ) -> RightsExecutionDecision:
+        release = await self._get_rights_release(workspace_id, release_id)
+        return evaluate_rights_release(release, request)
+
+    async def _get_rights_release(
+        self, workspace_id: UUID, release_id: UUID
+    ) -> RightsReleaseRead:
+        with self._lock:
+            release = self._rights_releases.get(release_id)
+        if release is None:
+            raise ProjectNotFoundError(release_id)
+        await self.get_project(workspace_id, release.project_id)
+        return release
 
     async def create_artifact_release(
         self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate

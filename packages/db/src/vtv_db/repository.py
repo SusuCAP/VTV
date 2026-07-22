@@ -18,6 +18,12 @@ from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
+from vtv_schemas.rights import (
+    RightsExecutionCheck,
+    RightsExecutionDecision,
+    RightsReleaseCreate,
+    RightsReleaseRead,
+)
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_BASELINE_DAG, build_project_analysis_dag
@@ -44,6 +50,7 @@ from .models import (
     OrphanAsset,
     OutboxEvent,
     Project,
+    RightsRelease,
     StageDependency,
     StageRun,
     UploadSession,
@@ -56,6 +63,7 @@ from .releases import (
     confirm_release,
     publish_release,
 )
+from .rights import evaluate_rights_release
 
 
 class ProjectNotFoundError(KeyError):
@@ -78,6 +86,10 @@ class ModelReleaseConflictError(ValueError):
     pass
 
 
+class RightsReleaseConflictError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
     upload: UploadRead
@@ -90,6 +102,27 @@ class UploadRecord:
 
 
 class ProjectRepository(Protocol):
+    async def create_rights_release(
+        self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
+    ) -> RightsReleaseRead: ...
+
+    async def list_rights_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[RightsReleaseRead]: ...
+
+    async def revoke_rights_release(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        actor_id: UUID,
+        reason: str,
+        expected_state_version: int,
+    ) -> RightsReleaseRead: ...
+
+    async def check_rights_release(
+        self, workspace_id: UUID, release_id: UUID, request: RightsExecutionCheck
+    ) -> RightsExecutionDecision: ...
+
     async def create_benchmark_release(
         self, workspace_id: UUID, model_release_id: UUID, payload: BenchmarkReleaseCreate
     ) -> BenchmarkReleaseRead: ...
@@ -848,6 +881,171 @@ class SqlAlchemyProjectRepository:
             await session.flush()
             return await _artifact_read(session, release)
 
+    async def create_rights_release(
+        self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
+    ) -> RightsReleaseRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                ).with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            current = await session.scalar(
+                select(RightsRelease)
+                .where(
+                    RightsRelease.project_id == project_id,
+                    RightsRelease.subject_type == payload.subject_type,
+                    RightsRelease.subject_id == payload.subject_id,
+                    RightsRelease.revoked_at.is_(None),
+                )
+                .with_for_update()
+            )
+            if current is not None and payload.supersedes_release_id != current.id:
+                raise RightsReleaseConflictError(
+                    "current rights release must be explicitly superseded"
+                )
+            if current is None and payload.supersedes_release_id is not None:
+                raise RightsReleaseConflictError("superseded rights release is not current")
+            source_ids = set(payload.source_asset_ids)
+            if source_ids:
+                found = set(
+                    await session.scalars(
+                        select(MediaAsset.id).where(
+                            MediaAsset.id.in_(source_ids),
+                            MediaAsset.workspace_id == workspace_id,
+                            MediaAsset.project_id == project_id,
+                        )
+                    )
+                )
+                if found != source_ids:
+                    raise ProjectNotFoundError("rights source asset")
+            now = datetime.now(UTC)
+            if current is not None:
+                current.status = "REVOKED"
+                current.state_version += 1
+                current.revoked_at = now
+                current.revoked_by = payload.created_by
+                current.revocation_reason = "SUPERSEDED"
+                await session.flush()
+            version = int(
+                await session.scalar(
+                    select(func.coalesce(func.max(RightsRelease.version), 0) + 1).where(
+                        RightsRelease.project_id == project_id,
+                        RightsRelease.subject_type == payload.subject_type,
+                        RightsRelease.subject_id == payload.subject_id,
+                    )
+                )
+            )
+            release = RightsRelease(
+                id=self._id_factory(),
+                project_id=project_id,
+                subject_type=payload.subject_type,
+                subject_id=payload.subject_id,
+                version=version,
+                allowed_operations=sorted(payload.allowed_operations),
+                allowed_markets=sorted(payload.allowed_markets),
+                allowed_languages=sorted(payload.allowed_languages),
+                commercial_scope=payload.commercial_scope,
+                valid_from=payload.valid_from,
+                expires_at=payload.expires_at,
+                minor_guardian_consent=payload.minor_guardian_consent,
+                source_asset_ids=[str(value) for value in payload.source_asset_ids],
+                evidence_uri=payload.evidence_uri,
+                evidence_sha256=payload.evidence_sha256,
+                supersedes_release_id=payload.supersedes_release_id,
+                created_by=payload.created_by,
+            )
+            session.add(release)
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="rights_release",
+                    aggregate_id=release.id,
+                    event_type="rights_release.created",
+                    payload={
+                        "release_id": str(release.id),
+                        "project_id": str(project_id),
+                        "subject_type": release.subject_type,
+                        "subject_id": release.subject_id,
+                    },
+                )
+            )
+            await session.flush()
+            return _rights_release_read(release)
+
+    async def list_rights_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[RightsReleaseRead]:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            releases = list(
+                await session.scalars(
+                    select(RightsRelease)
+                    .where(RightsRelease.project_id == project_id)
+                    .order_by(
+                        RightsRelease.subject_type,
+                        RightsRelease.subject_id,
+                        RightsRelease.version.desc(),
+                    )
+                )
+            )
+            return [_rights_release_read(item) for item in releases]
+
+    async def revoke_rights_release(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        actor_id: UUID,
+        reason: str,
+        expected_state_version: int,
+    ) -> RightsReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_rights_release(session, workspace_id, release_id)
+            if release.state_version != expected_state_version:
+                raise RightsReleaseConflictError("rights release state version mismatch")
+            if release.status != "ACTIVE" or release.revoked_at is not None:
+                raise RightsReleaseConflictError("rights release is already revoked")
+            release.status = "REVOKED"
+            release.state_version += 1
+            release.revoked_at = datetime.now(UTC)
+            release.revoked_by = actor_id
+            release.revocation_reason = reason
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="rights_release",
+                    aggregate_id=release.id,
+                    event_type="rights_release.revoked",
+                    payload={"release_id": str(release.id), "reason": reason},
+                )
+            )
+            await session.flush()
+            return _rights_release_read(release)
+
+    async def check_rights_release(
+        self, workspace_id: UUID, release_id: UUID, request: RightsExecutionCheck
+    ) -> RightsExecutionDecision:
+        async with self._sessions() as session:
+            release = await session.scalar(
+                select(RightsRelease)
+                .join(Project, Project.id == RightsRelease.project_id)
+                .where(
+                    RightsRelease.id == release_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if release is None:
+                raise ProjectNotFoundError(release_id)
+            return evaluate_rights_release(_rights_release_read(release), request)
+
     async def list_artifact_releases(
         self, workspace_id: UUID, project_id: UUID
     ) -> list[ArtifactReleaseRead]:
@@ -1316,6 +1514,49 @@ def _analysis_document_read(document: AnalysisDocument) -> AnalysisDocumentRead:
         payload=document.payload,
         created_at=document.created_at,
         updated_at=document.updated_at,
+    )
+
+
+async def _locked_rights_release(
+    session: AsyncSession, workspace_id: UUID, release_id: UUID
+) -> RightsRelease:
+    release = await session.scalar(
+        select(RightsRelease)
+        .join(Project, Project.id == RightsRelease.project_id)
+        .where(RightsRelease.id == release_id, Project.workspace_id == workspace_id)
+        .with_for_update()
+    )
+    if release is None:
+        raise ProjectNotFoundError(release_id)
+    return release
+
+
+def _rights_release_read(release: RightsRelease) -> RightsReleaseRead:
+    return RightsReleaseRead(
+        id=release.id,
+        project_id=release.project_id,
+        subject_type=release.subject_type,
+        subject_id=release.subject_id,
+        version=release.version,
+        status=release.status,
+        state_version=release.state_version,
+        allowed_operations=frozenset(release.allowed_operations),
+        allowed_markets=frozenset(release.allowed_markets),
+        allowed_languages=frozenset(release.allowed_languages),
+        commercial_scope=release.commercial_scope,
+        valid_from=release.valid_from,
+        expires_at=release.expires_at,
+        revoked_at=release.revoked_at,
+        revoked_by=release.revoked_by,
+        revocation_reason=release.revocation_reason,
+        minor_guardian_consent=release.minor_guardian_consent,
+        source_asset_ids=tuple(UUID(value) for value in release.source_asset_ids),
+        evidence_uri=release.evidence_uri,
+        evidence_sha256=release.evidence_sha256,
+        supersedes_release_id=release.supersedes_release_id,
+        created_by=release.created_by,
+        created_at=release.created_at,
+        updated_at=release.updated_at,
     )
 
 

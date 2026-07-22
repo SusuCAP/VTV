@@ -33,3 +33,6 @@ Adapter 接入后仍须输出同一契约，并由目标市场母语复核与 Go
 实际媒体时长、文件 SHA-256 和镜头路由时长门限，再输出独立 `VariantResult` 与
 `TTS_CANDIDATES` Domain Artifact。每个候选保留 seed、速度、情绪、voice/localization/rights/model
 release provenance，可供后续 QC 和 selection stage 采用。
+
+授权快照携带权威 rights release ID 与 state version；创建生产 Stage 前由控制平面通过
+`rights_releases` 实时范围检查生成，不接受终端直接声明授权有效。

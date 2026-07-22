@@ -10,6 +10,7 @@ from vtv_db.repository import (
     ModelReleaseConflictError,
     ProjectNotFoundError,
     ProjectRepository,
+    RightsReleaseConflictError,
     UploadConflictError,
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
@@ -28,6 +29,13 @@ from vtv_schemas.releases import (
     ArtifactReleaseCreate,
     ArtifactReleaseRead,
     ArtifactTransition,
+)
+from vtv_schemas.rights import (
+    RightsExecutionCheck,
+    RightsExecutionDecision,
+    RightsReleaseCreate,
+    RightsReleaseRead,
+    RightsRevoke,
 )
 from vtv_schemas.uploads import (
     MultipartComplete,
@@ -261,6 +269,74 @@ def create_app(
             return await repo.list_artifact_releases(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/rights-releases",
+        response_model=RightsReleaseRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_rights_release(
+        project_id: UUID,
+        payload: RightsReleaseCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> RightsReleaseRead:
+        try:
+            return await repo.create_rights_release(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project or rights source asset not found"
+            ) from exc
+        except RightsReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/rights-releases",
+        response_model=list[RightsReleaseRead],
+    )
+    async def list_rights_releases(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[RightsReleaseRead]:
+        try:
+            return await repo.list_rights_releases(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/rights-releases/{release_id}/revoke",
+        response_model=RightsReleaseRead,
+    )
+    async def revoke_rights_release(
+        release_id: UUID,
+        payload: RightsRevoke,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> RightsReleaseRead:
+        try:
+            return await repo.revoke_rights_release(
+                workspace,
+                release_id,
+                payload.actor_id,
+                payload.reason,
+                payload.expected_state_version,
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="rights release not found") from exc
+        except RightsReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/rights-releases/{release_id}/check",
+        response_model=RightsExecutionDecision,
+    )
+    async def check_rights_release(
+        release_id: UUID,
+        payload: RightsExecutionCheck,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> RightsExecutionDecision:
+        try:
+            return await repo.check_rights_release(workspace, release_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="rights release not found") from exc
 
     @app.get(
         "/v1/projects/{project_id}/analysis-documents",

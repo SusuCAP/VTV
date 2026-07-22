@@ -64,6 +64,7 @@ class TranslationAdapter(Protocol):
 
 class VoiceRightsSnapshot(FrozenModel):
     rights_release_id: UUID
+    state_version: int = Field(ge=1)
     subject_id: str = Field(min_length=1, max_length=128)
     allowed_operations: frozenset[str] = Field(min_length=1)
     allowed_languages: frozenset[str] = Field(min_length=1)

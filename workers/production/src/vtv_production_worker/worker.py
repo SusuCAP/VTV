@@ -74,6 +74,7 @@ class ProductionWorker:
                         "rights_release_id": str(
                             request.voice_release.rights.rights_release_id
                         ),
+                        "rights_state_version": request.voice_release.rights.state_version,
                         "model_release": self.tts.model_release,
                         "candidate_count": len(candidates),
                         "target_duration_seconds": request.target_duration_seconds,

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -313,6 +314,61 @@ class ArtifactReleaseDependency(Base):
         ForeignKey("artifact_releases.id", ondelete="CASCADE"), primary_key=True
     )
 
+
+class RightsRelease(TimestampMixin, Base):
+    __tablename__ = "rights_releases"
+    __table_args__ = (
+        UniqueConstraint("project_id", "subject_type", "subject_id", "version"),
+        CheckConstraint("version >= 1", name="ck_rights_releases_version"),
+        CheckConstraint("state_version >= 1", name="ck_rights_releases_state_version"),
+        CheckConstraint(
+            "status IN ('ACTIVE', 'REVOKED')", name="ck_rights_releases_status"
+        ),
+        CheckConstraint(
+            "commercial_scope IN ('RESEARCH_ONLY', 'COMMERCIAL')",
+            name="ck_rights_releases_commercial_scope",
+        ),
+        CheckConstraint(
+            "expires_at IS NULL OR expires_at > valid_from",
+            name="ck_rights_releases_valid_window",
+        ),
+        Index(
+            "uq_rights_releases_current_subject",
+            "project_id",
+            "subject_type",
+            "subject_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index("ix_rights_releases_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    subject_type: Mapped[str] = mapped_column(String(32))
+    subject_id: Mapped[str] = mapped_column(String(128))
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE")
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+    allowed_operations: Mapped[list] = mapped_column(JSONB)
+    allowed_markets: Mapped[list] = mapped_column(JSONB)
+    allowed_languages: Mapped[list] = mapped_column(JSONB)
+    commercial_scope: Mapped[str] = mapped_column(String(32))
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    revocation_reason: Mapped[str | None] = mapped_column(Text)
+    minor_guardian_consent: Mapped[bool] = mapped_column(Boolean, default=False)
+    source_asset_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    evidence_uri: Mapped[str] = mapped_column(Text)
+    evidence_sha256: Mapped[str] = mapped_column(String(64))
+    supersedes_release_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("rights_releases.id", ondelete="SET NULL")
+    )
+    created_by: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
 
 class AnalysisDocument(TimestampMixin, Base):
     __tablename__ = "analysis_documents"

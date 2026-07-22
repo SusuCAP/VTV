@@ -14,6 +14,13 @@ from .releases import (
     ArtifactReleaseRead,
     ArtifactTransition,
 )
+from .rights import (
+    RightsExecutionCheck,
+    RightsExecutionDecision,
+    RightsReleaseCreate,
+    RightsReleaseRead,
+    RightsRevoke,
+)
 from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPart
 
 __all__ = [
@@ -34,6 +41,11 @@ __all__ = [
     "ProjectCreate",
     "ProjectRead",
     "ProjectStatus",
+    "RightsExecutionCheck",
+    "RightsExecutionDecision",
+    "RightsReleaseCreate",
+    "RightsReleaseRead",
+    "RightsRevoke",
     "StageJob",
     "StageResult",
     "StageStatus",
