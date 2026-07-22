@@ -1530,6 +1530,7 @@ source = { editable = "packages/db" }
 dependencies = [
     { name = "asyncpg" },
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "vtv-production" },
     { name = "vtv-schemas" },
 ]
 
@@ -1537,6 +1538,7 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-production", editable = "packages/production" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
 

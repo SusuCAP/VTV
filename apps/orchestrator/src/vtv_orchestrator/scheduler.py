@@ -14,6 +14,7 @@ from vtv_db.models import (
     OrphanAsset,
     OutboxEvent,
     Project,
+    RightsRelease,
     StageAttempt,
     StageDependency,
     StageRun,
@@ -151,6 +152,35 @@ class Scheduler:
             return False
 
         async with self._sessions.begin() as session:
+            rights_failure = await _rights_commit_failure(session, claim)
+            if rights_failure is not None:
+                await session.execute(
+                    update(StageRun)
+                    .where(
+                        StageRun.id == claim.stage_run_id,
+                        StageRun.status == "RUNNING",
+                        StageRun.state_version == claim.state_version,
+                    )
+                    .values(
+                        status="EXECUTION_FAILED",
+                        state_version=StageRun.state_version + 1,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                    )
+                )
+                await session.execute(
+                    update(StageAttempt)
+                    .where(StageAttempt.id == claim.stage_attempt_id)
+                    .values(
+                        status="EXECUTION_FAILED",
+                        error_class="RIGHTS_BLOCKED",
+                        error_detail={"reason": rights_failure, "retryable": False},
+                        usage=result.attempt_usage,
+                        finished_at=func.now(),
+                    )
+                )
+                _record_orphan_outputs(session, claim, result, "RIGHTS_BLOCKED")
+                return False
             committed = (
                 await session.execute(
                     COMMIT_OUTPUT_READY,
@@ -164,17 +194,9 @@ class Scheduler:
                 )
             ).first()
             if committed is None:
-                for variant in result.variants:
-                    for asset in variant.output_assets:
-                        session.add(
-                            OrphanAsset(
-                                project_id=claim.project_id,
-                                stage_attempt_id=claim.stage_attempt_id,
-                                object_uri=asset.uri,
-                                reason="CONDITIONAL_COMMIT_REJECTED",
-                                delete_after=func.now() + func.make_interval(0, 0, 0, 1),
-                            )
-                        )
+                _record_orphan_outputs(
+                    session, claim, result, "CONDITIONAL_COMMIT_REJECTED"
+                )
                 return False
             for variant in result.variants:
                 for asset in variant.output_assets:
@@ -382,6 +404,70 @@ class Scheduler:
                     error_detail=result.error_detail,
                     usage=result.attempt_usage,
                     finished_at=func.now(),
+                )
+            )
+
+
+async def _rights_commit_failure(
+    session: AsyncSession, claim: ClaimedStage
+) -> str | None:
+    if claim.stage_type != "TTS_GENERATE":
+        return None
+    try:
+        request = claim.params["tts_request"]
+        snapshot = request["voice_release"]["rights"]
+        localized = request["localized"]
+        rights_id = UUID(snapshot["rights_release_id"])
+        expected_version = int(claim.params["rights_state_version"])
+        if int(snapshot["state_version"]) != expected_version:
+            return "RIGHTS_SNAPSHOT_VERSION_MISMATCH"
+    except (KeyError, TypeError, ValueError):
+        return "RIGHTS_SNAPSHOT_INVALID"
+    release = await session.scalar(
+        select(RightsRelease)
+        .where(
+            RightsRelease.id == rights_id,
+            RightsRelease.project_id == claim.project_id,
+        )
+        .with_for_update()
+    )
+    if release is None:
+        return "RIGHTS_RELEASE_MISSING"
+    if release.state_version != expected_version:
+        return "RIGHTS_STATE_CHANGED"
+    if release.status != "ACTIVE" or release.revoked_at is not None:
+        return "RIGHTS_REVOKED"
+    now = datetime.now(UTC)
+    if now < release.valid_from:
+        return "RIGHTS_NOT_YET_VALID"
+    if release.expires_at is not None and now >= release.expires_at:
+        return "RIGHTS_EXPIRED"
+    if "voice_clone" not in release.allowed_operations:
+        return "OPERATION_NOT_ALLOWED"
+    if localized.get("target_market") not in release.allowed_markets:
+        return "MARKET_NOT_ALLOWED"
+    if localized.get("target_language") not in release.allowed_languages:
+        return "LANGUAGE_NOT_ALLOWED"
+    if request.get("commercial_use", True) and release.commercial_scope != "COMMERCIAL":
+        return "COMMERCIAL_USE_NOT_ALLOWED"
+    return None
+
+
+def _record_orphan_outputs(
+    session: AsyncSession,
+    claim: ClaimedStage,
+    result: StageResult,
+    reason: str,
+) -> None:
+    for variant in result.variants:
+        for asset in variant.output_assets:
+            session.add(
+                OrphanAsset(
+                    project_id=claim.project_id,
+                    stage_attempt_id=claim.stage_attempt_id,
+                    object_uri=asset.uri,
+                    reason=reason,
+                    delete_after=func.now() + func.make_interval(0, 0, 0, 1),
                 )
             )
 

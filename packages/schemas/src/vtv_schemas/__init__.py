@@ -7,6 +7,7 @@ from .model_releases import (
     ModelReleaseCreate,
     ModelReleaseRead,
 )
+from .production import DubbingJobCreate, DubbingUtteranceCreate
 from .projects import Budget, OutputSpec, ProjectCreate, ProjectRead
 from .releases import (
     ArtifactConfirm,
@@ -34,6 +35,8 @@ __all__ = [
     "ArtifactTransition",
     "Budget",
     "DomainArtifact",
+    "DubbingJobCreate",
+    "DubbingUtteranceCreate",
     "EpisodeRead",
     "JobAccepted",
     "JobStatus",

@@ -21,10 +21,12 @@ from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
     ModelReleaseConflictError,
+    ProductionNotReadyError,
     ProjectNotFoundError,
     RightsReleaseConflictError,
     UploadConflictError,
     UploadRecord,
+    _build_tts_request,
 )
 from vtv_db.rights import evaluate_rights_release
 from vtv_evaluation import evaluate_release
@@ -34,6 +36,7 @@ from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
+from vtv_schemas.production import DubbingJobCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -58,6 +61,9 @@ class MemoryRepository:
         self._model_releases: dict[UUID, ModelReleaseRead] = {}
         self._benchmark_releases: dict[UUID, BenchmarkReleaseRead] = {}
         self._rights_releases: dict[UUID, RightsReleaseRead] = {}
+        self._asset_sha256s: dict[UUID, str] = {}
+        self._job_idempotency: dict[tuple[UUID, str], UUID] = {}
+        self._production_stage_params: dict[UUID, list[dict]] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -352,6 +358,140 @@ class MemoryRepository:
             self._projects[project.id] = project.model_copy(
                 update={
                     "status": ProjectStatus.ANALYZING,
+                    "state_version": project.state_version + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+        return job
+
+    async def create_dubbing_job(
+        self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
+    ) -> JobRead:
+        project = await self.get_project(workspace_id, project_id)
+        idempotency_key = f"episode-dubbing:{payload.fingerprint}"
+        with self._lock:
+            existing_id = self._job_idempotency.get((project_id, idempotency_key))
+            if existing_id is not None:
+                return self._jobs[existing_id]
+            episode = next(
+                (
+                    item
+                    for item in self._episodes.get(project_id, [])
+                    if item.id == payload.episode_id and item.source_asset_id is not None
+                ),
+                None,
+            )
+            localization = self._releases.get(payload.localization_release_id)
+            selected = next(
+                (
+                    item
+                    for item in self._model_releases.values()
+                    if item.workspace_id == workspace_id
+                    and item.model_key == "TTS"
+                    and item.license_status == "APPROVED"
+                    and item.automation_status == "ACTIVE"
+                    and item.config.get("adapter_mode") == "remote_tts"
+                ),
+                None,
+            )
+        if episode is None:
+            raise ProjectNotFoundError(payload.episode_id)
+        if (
+            localization is None
+            or localization.project_id != project_id
+            or localization.status != "RELEASED"
+            or localization.artifact_type
+            not in {"LOCALIZATION_BIBLE", "LOCALIZATION_UTTERANCES"}
+        ):
+            raise ProductionNotReadyError(
+                "dubbing requires a released localization artifact"
+            )
+        if selected is None:
+            raise ProductionNotReadyError("no ACTIVE TTS model release is available")
+        stage_params: list[dict] = []
+        now = datetime.now(UTC)
+        for item in payload.utterances:
+            if item.target_language != project.locale:
+                raise ProductionNotReadyError(
+                    "utterance target language must match project locale"
+                )
+            with self._lock:
+                voice = self._releases.get(item.voice_release_id)
+                voice_hash = self._asset_sha256s.get(
+                    voice.content_asset_id if voice is not None else UUID(int=0)
+                )
+                rights = self._rights_releases.get(item.rights_release_id)
+            if (
+                voice is None
+                or voice.project_id != project_id
+                or voice.artifact_type != "VOICE_RELEASE"
+                or voice.status != "RELEASED"
+                or voice_hash is None
+            ):
+                raise ProductionNotReadyError(
+                    "dubbing requires released voice artifacts with valid content assets"
+                )
+            if rights is None or rights.project_id != project_id:
+                raise ProjectNotFoundError(item.rights_release_id)
+            if rights.subject_type != "VOICE" or rights.subject_id != item.character_id:
+                raise ProductionNotReadyError(
+                    "voice rights subject must match utterance character"
+                )
+            decision = evaluate_rights_release(
+                rights,
+                RightsExecutionCheck(
+                    operation="voice_clone",
+                    market=project.target_market,
+                    language=project.locale,
+                    commercial_use=payload.commercial_use,
+                    at=now,
+                ),
+            )
+            if not decision.allowed:
+                raise ProductionNotReadyError(
+                    f"RIGHTS_BLOCKED: {','.join(decision.reason_codes)}"
+                )
+            request = _build_tts_request(
+                item,
+                target_market=project.target_market,
+                localization_release_id=localization.id,
+                voice_release_id=voice.id,
+                voice_reference_sha256=voice_hash,
+                rights=rights,
+                selected_model_release=selected.release_name,
+                commercial_use=payload.commercial_use,
+            )
+            stage_params.append(
+                {
+                    "tts_request": request.model_dump(mode="json"),
+                    "maximum_duration_deviation": item.maximum_duration_deviation,
+                    "rights_state_version": rights.state_version,
+                    "model_runtime": {
+                        "model_key": selected.model_key,
+                        "endpoint": selected.endpoint,
+                        "release": selected.release_name,
+                        "license_id": selected.license_id,
+                        "approved_for_automation": True,
+                        "config": selected.config,
+                    },
+                }
+            )
+        job = JobRead(
+            id=uuid4(),
+            project_id=project_id,
+            kind="EPISODE_DUBBING_CANDIDATES",
+            status=JobStatus.QUEUED,
+            progress=0,
+            total_stages=len(stage_params),
+            completed_stages=0,
+        )
+        with self._lock:
+            self._jobs[job.id] = job
+            self._job_idempotency[(project_id, idempotency_key)] = job.id
+            self._production_stage_params[job.id] = stage_params
+            self._projects[project.id] = project.model_copy(
+                update={
+                    "status": ProjectStatus.PRODUCING,
                     "state_version": project.state_version + 1,
                     "updated_at": datetime.now(UTC),
                 }

@@ -8,9 +8,12 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from vtv_db.models import (
+    ArtifactRelease,
     Episode,
     Job,
     MediaAsset,
+    ModelRelease,
+    OrphanAsset,
     OutboxEvent,
     RightsRelease,
     StageDependency,
@@ -20,6 +23,8 @@ from vtv_db.repository import SqlAlchemyProjectRepository
 from vtv_orchestrator.mock_worker import execute
 from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
+from vtv_schemas.jobs import AssetRef, StageResult, VariantResult
+from vtv_schemas.production import DubbingJobCreate, DubbingUtteranceCreate
 from vtv_schemas.projects import ProjectCreate
 from vtv_schemas.rights import RightsExecutionCheck, RightsReleaseCreate
 from vtv_schemas.uploads import MultipartInit, UploadPart
@@ -173,3 +178,166 @@ async def test_rights_release_is_versioned_revocable_and_workspace_scoped(
     assert revoked.status == "REVOKED"
     async with database() as session:
         assert await session.scalar(select(func.count()).select_from(RightsRelease)) == 1
+
+
+async def test_dubbing_job_persists_registry_and_rights_bound_stages(
+    database: async_sessionmaker,
+) -> None:
+    repository = SqlAlchemyProjectRepository(database)
+    workspace_id = UUID(int=601)
+    project = await repository.create_project(
+        workspace_id,
+        ProjectCreate(name="Dubbing SQL", target_market="US", locale="en-US"),
+    )
+    source_asset_id = UUID(int=602)
+    episode_id = UUID(int=603)
+    localization_id = UUID(int=604)
+    voice_id = UUID(int=605)
+    model_id = UUID(int=606)
+    async with database.begin() as session:
+        session.add(
+            MediaAsset(
+                id=source_asset_id,
+                workspace_id=workspace_id,
+                project_id=project.id,
+                object_uri="s3://bucket/source.mp4",
+                sha256="f" * 64,
+                size_bytes=100,
+                content_type="video/mp4",
+            )
+        )
+        session.add(
+            Episode(
+                id=episode_id,
+                project_id=project.id,
+                episode_no=1,
+                source_asset_id=source_asset_id,
+            )
+        )
+        session.add_all(
+            (
+                ArtifactRelease(
+                    id=localization_id,
+                    project_id=project.id,
+                    artifact_type="LOCALIZATION_UTTERANCES",
+                    version=1,
+                    status="RELEASED",
+                    state_version=3,
+                    content_asset_id=source_asset_id,
+                ),
+                ArtifactRelease(
+                    id=voice_id,
+                    project_id=project.id,
+                    artifact_type="VOICE_RELEASE",
+                    version=1,
+                    status="RELEASED",
+                    state_version=3,
+                    content_asset_id=source_asset_id,
+                ),
+            )
+        )
+        session.add(
+            ModelRelease(
+                id=model_id,
+                workspace_id=workspace_id,
+                model_key="TTS",
+                release_name="voxcpm2@approved-sql",
+                provider="self-hosted",
+                endpoint="https://tts.example.invalid/v1/synthesize",
+                license_id="license-sql",
+                license_status="APPROVED",
+                automation_status="ACTIVE",
+                traffic_percent=100,
+                model_card_uri="https://models.example.invalid/voxcpm2",
+                config_json={"adapter_mode": "remote_tts"},
+            )
+        )
+    rights = await repository.create_rights_release(
+        workspace_id,
+        project.id,
+        RightsReleaseCreate(
+            subject_type="VOICE",
+            subject_id="character-1",
+            allowed_operations=frozenset({"voice_clone"}),
+            allowed_markets=frozenset({"US"}),
+            allowed_languages=frozenset({"en-US"}),
+            commercial_scope="COMMERCIAL",
+            valid_from=datetime.now(UTC) - timedelta(days=1),
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+            evidence_uri="s3://rights/voice.pdf",
+            evidence_sha256="e" * 64,
+            created_by=UUID(int=607),
+        ),
+    )
+    job = await repository.create_dubbing_job(
+        workspace_id,
+        project.id,
+        DubbingJobCreate(
+            episode_id=episode_id,
+            localization_release_id=localization_id,
+            utterances=(
+                DubbingUtteranceCreate(
+                    utterance_id="utterance-1",
+                    character_id="character-1",
+                    source_text="你好",
+                    source_language="zh-CN",
+                    target_text="Hello",
+                    target_language="en-US",
+                    start_seconds=0,
+                    end_seconds=1.5,
+                    voice_release_id=voice_id,
+                    rights_release_id=rights.id,
+                    seed=42,
+                ),
+            ),
+        ),
+    )
+
+    async with database() as session:
+        run = await session.scalar(select(StageRun).where(StageRun.job_id == job.id))
+        event_count = await session.scalar(
+            select(func.count())
+            .select_from(OutboxEvent)
+            .where(OutboxEvent.event_type == "dubbing.requested")
+        )
+    assert run and run.stage_type == "TTS_GENERATE"
+    assert run.model_release_id == model_id
+    assert run.params["rights_state_version"] == 1
+    assert run.params["tts_request"]["voice_release"]["rights"]["rights_release_id"] == str(
+        rights.id
+    )
+    assert event_count == 1
+
+    scheduler = Scheduler(database)
+    claim = await scheduler.claim_one("tts-test-worker")
+    assert claim and claim.stage_run_id == run.id
+    await repository.revoke_rights_release(
+        workspace_id, rights.id, UUID(int=608), "withdrawn during inference", 1
+    )
+    committed = await scheduler.commit_result(
+        claim,
+        StageResult(
+            stage_run_id=claim.stage_run_id,
+            stage_attempt_id=claim.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=1,
+                    output_assets=[
+                        AssetRef(
+                            uri="s3://bucket/late.wav",
+                            sha256="a" * 64,
+                            media_type="audio/wav",
+                            size_bytes=10,
+                        )
+                    ],
+                )
+            ],
+        ),
+    )
+    assert committed is False
+    async with database() as session:
+        failed_run = await session.get(StageRun, run.id)
+        orphan_count = await session.scalar(select(func.count()).select_from(OrphanAsset))
+    assert failed_run and failed_run.status == "EXECUTION_FAILED"
+    assert orphan_count == 1

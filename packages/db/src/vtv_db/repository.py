@@ -10,12 +10,21 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_evaluation import evaluate_release
+from vtv_production import (
+    LocalizedUtterance,
+    ReviewState,
+    TtsRequest,
+    Utterance,
+    VoiceRelease,
+    VoiceRightsSnapshot,
+)
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
+from vtv_schemas.production import DubbingJobCreate, DubbingUtteranceCreate
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -42,6 +51,7 @@ from .models import (
     ArtifactReleaseDependency,
     BenchmarkRelease,
     BenchmarkSampleResult,
+    CandidateGroup,
     Episode,
     ExecutionControl,
     Job,
@@ -90,6 +100,10 @@ class RightsReleaseConflictError(ValueError):
     pass
 
 
+class ProductionNotReadyError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
     upload: UploadRead
@@ -102,6 +116,10 @@ class UploadRecord:
 
 
 class ProjectRepository(Protocol):
+    async def create_dubbing_job(
+        self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
+    ) -> JobRead: ...
+
     async def create_rights_release(
         self, workspace_id: UUID, project_id: UUID, payload: RightsReleaseCreate
     ) -> RightsReleaseRead: ...
@@ -778,6 +796,198 @@ class SqlAlchemyProjectRepository:
             )
             if job is None:
                 raise ProjectNotFoundError(job_id)
+            return _job_read(job)
+
+    async def create_dubbing_job(
+        self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
+    ) -> JobRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project)
+                .where(Project.id == project_id, Project.workspace_id == workspace_id)
+                .with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            idempotency_key = f"episode-dubbing:{payload.fingerprint}"
+            existing = await session.scalar(
+                select(Job).where(
+                    Job.project_id == project_id,
+                    Job.idempotency_key == idempotency_key,
+                )
+            )
+            if existing is not None:
+                return _job_read(existing)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise RuntimeError("project execution control is missing")
+            if control.cancel_requested or control.hard_budget_blocked:
+                raise ProductionNotReadyError("project execution control blocks production")
+            episode = await session.scalar(
+                select(Episode).where(
+                    Episode.id == payload.episode_id,
+                    Episode.project_id == project_id,
+                    Episode.source_asset_id.is_not(None),
+                )
+            )
+            if episode is None:
+                raise ProjectNotFoundError(payload.episode_id)
+            localization = await session.scalar(
+                select(ArtifactRelease).where(
+                    ArtifactRelease.id == payload.localization_release_id,
+                    ArtifactRelease.project_id == project_id,
+                    ArtifactRelease.artifact_type.in_(
+                        ("LOCALIZATION_BIBLE", "LOCALIZATION_UTTERANCES")
+                    ),
+                    ArtifactRelease.status == "RELEASED",
+                )
+            )
+            if localization is None:
+                raise ProductionNotReadyError(
+                    "dubbing requires a released localization artifact"
+                )
+            job_id = self._id_factory()
+            selected = await _select_model_release(session, workspace_id, "TTS", job_id)
+            if selected is None:
+                raise ProductionNotReadyError("no ACTIVE TTS model release is available")
+            if selected.config_json.get("adapter_mode") != "remote_tts":
+                raise ProductionNotReadyError("ACTIVE TTS release must select remote_tts")
+            voice_ids = {item.voice_release_id for item in payload.utterances}
+            voice_rows = list(
+                await session.execute(
+                    select(ArtifactRelease, MediaAsset)
+                    .join(MediaAsset, MediaAsset.id == ArtifactRelease.content_asset_id)
+                    .where(
+                        ArtifactRelease.id.in_(voice_ids),
+                        ArtifactRelease.project_id == project_id,
+                        ArtifactRelease.artifact_type == "VOICE_RELEASE",
+                        ArtifactRelease.status == "RELEASED",
+                        MediaAsset.workspace_id == workspace_id,
+                        MediaAsset.project_id == project_id,
+                    )
+                )
+            )
+            voices = {release.id: (release, asset) for release, asset in voice_rows}
+            if set(voices) != voice_ids:
+                raise ProductionNotReadyError(
+                    "dubbing requires released voice artifacts with valid content assets"
+                )
+            rights_ids = {item.rights_release_id for item in payload.utterances}
+            rights_rows = list(
+                await session.scalars(
+                    select(RightsRelease)
+                    .where(
+                        RightsRelease.id.in_(rights_ids),
+                        RightsRelease.project_id == project_id,
+                    )
+                    .with_for_update()
+                )
+            )
+            rights_by_id = {item.id: item for item in rights_rows}
+            if set(rights_by_id) != rights_ids:
+                raise ProjectNotFoundError("rights release")
+            now = datetime.now(UTC)
+            requests: list[tuple[DubbingUtteranceCreate, TtsRequest]] = []
+            for item in payload.utterances:
+                if item.target_language != project.locale:
+                    raise ProductionNotReadyError(
+                        "utterance target language must match project locale"
+                    )
+                rights = _rights_release_read(rights_by_id[item.rights_release_id])
+                if rights.subject_type != "VOICE" or rights.subject_id != item.character_id:
+                    raise ProductionNotReadyError(
+                        "voice rights subject must match utterance character"
+                    )
+                check = RightsExecutionCheck(
+                    operation="voice_clone",
+                    market=project.target_market,
+                    language=project.locale,
+                    commercial_use=payload.commercial_use,
+                    at=now,
+                )
+                decision = evaluate_rights_release(rights, check)
+                if not decision.allowed:
+                    raise ProductionNotReadyError(
+                        f"RIGHTS_BLOCKED: {','.join(decision.reason_codes)}"
+                    )
+                _, voice_asset = voices[item.voice_release_id]
+                requests.append(
+                    (
+                        item,
+                        _build_tts_request(
+                            item,
+                            target_market=project.target_market,
+                            localization_release_id=localization.id,
+                            voice_release_id=item.voice_release_id,
+                            voice_reference_sha256=voice_asset.sha256,
+                            rights=rights,
+                            selected_model_release=selected.release_name,
+                            commercial_use=payload.commercial_use,
+                        ),
+                    )
+                )
+            job = Job(
+                id=job_id,
+                project_id=project_id,
+                kind="EPISODE_DUBBING_CANDIDATES",
+                status=JobStatus.QUEUED,
+                idempotency_key=idempotency_key,
+                total_stages=len(requests),
+            )
+            session.add(job)
+            for item, request in requests:
+                group = CandidateGroup(
+                    id=self._id_factory(),
+                    project_id=project_id,
+                    purpose=f"TTS:{item.utterance_id}",
+                )
+                session.add(group)
+                session.add(
+                    StageRun(
+                        id=self._id_factory(),
+                        job_id=job.id,
+                        project_id=project_id,
+                        episode_id=episode.id,
+                        candidate_group_id=group.id,
+                        stage_type="TTS_GENERATE",
+                        status="READY",
+                        idempotency_key=f"{job.id}:tts:{item.utterance_id}",
+                        model_release_id=selected.id,
+                        runtime_profile_id="gpu-audio",
+                        observed_control_version=control.control_version,
+                        params={
+                            "tts_request": request.model_dump(mode="json"),
+                            "maximum_duration_deviation": item.maximum_duration_deviation,
+                            "rights_state_version": request.voice_release.rights.state_version,
+                            "model_runtime": {
+                                "model_key": selected.model_key,
+                                "endpoint": selected.endpoint,
+                                "release": selected.release_name,
+                                "license_id": selected.license_id,
+                                "approved_for_automation": True,
+                                "config": selected.config_json,
+                            },
+                        },
+                    )
+                )
+            project.status = ProjectStatus.PRODUCING
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="job",
+                    aggregate_id=job.id,
+                    event_type="dubbing.requested",
+                    payload={
+                        "job_id": str(job.id),
+                        "project_id": str(project_id),
+                        "episode_id": str(episode.id),
+                        "utterance_count": len(requests),
+                        "localization_release_id": str(localization.id),
+                    },
+                )
+            )
+            await session.flush()
             return _job_read(job)
 
     async def create_artifact_release(
@@ -1557,6 +1767,63 @@ def _rights_release_read(release: RightsRelease) -> RightsReleaseRead:
         created_by=release.created_by,
         created_at=release.created_at,
         updated_at=release.updated_at,
+    )
+
+
+def _build_tts_request(
+    item: DubbingUtteranceCreate,
+    *,
+    target_market: str,
+    localization_release_id: UUID,
+    voice_release_id: UUID,
+    voice_reference_sha256: str,
+    rights: RightsReleaseRead,
+    selected_model_release: str,
+    commercial_use: bool,
+) -> TtsRequest:
+    utterance = Utterance(
+        utterance_id=item.utterance_id,
+        character_id=item.character_id,
+        source_text=item.source_text,
+        source_language=item.source_language,
+        start_seconds=item.start_seconds,
+        end_seconds=item.end_seconds,
+        emotion=item.emotion,
+        protected_terms=item.protected_terms,
+    )
+    localized = LocalizedUtterance(
+        utterance=utterance,
+        target_text=item.target_text,
+        target_language=item.target_language,
+        target_market=target_market,
+        localization_release=str(localization_release_id),
+        review_state=ReviewState.HUMAN_APPROVED,
+        semantic_entity_ids=item.semantic_entity_ids,
+    )
+    snapshot = VoiceRightsSnapshot(
+        rights_release_id=rights.id,
+        state_version=rights.state_version,
+        subject_id=rights.subject_id,
+        allowed_operations=rights.allowed_operations,
+        allowed_languages=rights.allowed_languages,
+        allowed_markets=rights.allowed_markets,
+        commercial_allowed=rights.commercial_scope == "COMMERCIAL",
+        valid_at_execution=True,
+    )
+    voice = VoiceRelease(
+        voice_release_id=voice_release_id,
+        character_id=item.character_id,
+        model_release=selected_model_release,
+        reference_asset_sha256s=(voice_reference_sha256,),
+        rights=snapshot,
+    )
+    return TtsRequest(
+        localized=localized,
+        voice_release=voice,
+        seed=item.seed,
+        speed=item.speed,
+        candidate_count=item.candidate_count,
+        commercial_use=commercial_use,
     )
 
 
