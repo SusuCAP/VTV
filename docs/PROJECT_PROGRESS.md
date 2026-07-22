@@ -138,15 +138,20 @@
 - [x] 实现 benchmark 提交/查询 API，服务端重算报告并原子持久化逐样本证据与 Outbox。
 - [x] 通过报告自动采用并递增 Model Release state version；失败报告保留审计但不改变准入状态。
 - [x] CANARY/ACTIVE 同时验证报告归属 workspace/model release 且 approved，阻止伪造引用绕过。
+- [x] 实现 faster-whisper VAD/Whisper 词级 ASR 与 pyannote community-1 生产 Adapter。
+- [x] 模型依赖惰性加载，本地合同测试不下载权重；gated pyannote 权重强制从环境读取 token。
+- [x] Registry `local_models` bundle 可注入三个不可变子 release，并继续受 Golden 报告门禁。
+- [x] Modal 分析镜像升级为 L4/4 CPU/16 GiB，锁定 faster-whisper 1.2.1 与 pyannote.audio 4.0.7。
+- [x] 新增多语言 transcript accuracy 与匿名 speaker cluster 最优映射重叠指标。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add production audio model adapters`
+`feat: add audio golden benchmark runner`
 
-下一步接入首组真实 VAD/ASR/diarization 权重与惰性加载 Adapter，并用同一 Golden 门禁生成
-候选报告。同时在 Modal API 网络恢复后补跑云端验收。
+下一步实现音频 Golden Dataset 批处理 runner、结果产物与 benchmark API 提交；随后接入
+Dialogue/Stem 分离阶段。同时在 Modal API 网络恢复后补跑权重下载和云端验收。
 
 ## 决策日志
 
@@ -229,3 +234,5 @@
 | 2026-07-22 | SQLAlchemy metadata | 21 tables loaded；Model Release approved benchmark 外键可解析 |
 | 2026-07-22 | Benchmark/Registry 准入闭环 | 12 passed；覆盖服务端重算、采用、失败审计与自动化拒绝 |
 | 2026-07-22 | `pytest` | 74 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 生产音频 Adapter/Golden 指标 | 14 passed；覆盖惰性 bundle、时间边界、token 门禁与说话人映射 |
+| 2026-07-22 | `pytest` | 83 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

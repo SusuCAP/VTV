@@ -105,6 +105,21 @@ def test_remote_factory_rejects_incomplete_configuration() -> None:
         create_analysis_worker(Settings(analysis_adapter_mode="remote"))
 
 
+def test_local_model_factory_is_lazy_and_preserves_release_provenance() -> None:
+    worker = create_analysis_worker(
+        Settings(
+            analysis_adapter_mode="local_models",
+            vad_release="silero-vad@sha256:vad",
+            whisper_release="whisper-large-v3@sha256:asr",
+            pyannote_release="community-1@sha256:diar",
+        )
+    )
+
+    assert worker.pipeline.vad.model_release == "silero-vad@sha256:vad"
+    assert worker.pipeline.asr.model_release == "whisper-large-v3@sha256:asr"
+    assert worker.pipeline.diarization.model_release == "community-1@sha256:diar"
+
+
 def test_stage_job_database_runtime_overrides_deterministic_default() -> None:
     job = StageJob(
         stage_run_id=uuid4(),
@@ -130,3 +145,34 @@ def test_stage_job_database_runtime_overrides_deterministic_default() -> None:
     worker = create_analysis_worker_for_job(job, Settings())
 
     assert worker.pipeline.asr.model_release == "audio-db@3:asr-align"
+
+
+def test_registry_can_select_lazy_local_model_bundle() -> None:
+    job = StageJob(
+        stage_run_id=uuid4(),
+        stage_attempt_id=uuid4(),
+        project_id=uuid4(),
+        idempotency_key="runtime-local-models",
+        stage_type="ASR_ALIGN",
+        output_prefix="file:///tmp/output",
+        runtime_profile_id="modal-l4",
+        observed_control_version=1,
+        params={
+            "model_runtime": {
+                "release": "audio-bundle@7",
+                "config": {
+                    "adapter_mode": "local_models",
+                    "vad_release": "silero@7",
+                    "whisper_release": "whisper@7",
+                    "pyannote_release": "pyannote@7",
+                },
+            }
+        },
+        trace_id="runtime-local-models-test",
+    )
+
+    worker = create_analysis_worker_for_job(job, Settings())
+
+    assert worker.pipeline.vad.model_release == "silero@7"
+    assert worker.pipeline.asr.model_release == "whisper@7"
+    assert worker.pipeline.diarization.model_release == "pyannote@7"

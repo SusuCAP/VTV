@@ -21,4 +21,21 @@ GPU 执行后端在不改变编排协议的情况下替换。
 `vtv-analysis-worker` 已实现 `ASR_ALIGN` Stage：它接受纯音频或含音轨视频，本地模式下
 把非 WAV 输入规范化为 48 kHz 双声道 PCM，再写出 `audio-analysis.json`。JSON 和
 Stage Result 同时记录 VAD、ASR/对齐、diarization 的 release，避免结果与实际模型版本
-脱钩。生产对象存储传输仍由后续 Worker I/O 边界接入。
+脱钩。生产对象存储输入物化与输出回传由 Stage Router/Modal Worker I/O 边界处理。
+
+## 首组生产 Adapter
+
+`local_models` 模式提供惰性加载的首组可执行候选：faster-whisper 1.2.1 内置 Silero VAD 与
+Whisper large-v3 词级时间戳，pyannote.audio 4.0.7 community-1 负责说话人分离。Adapter 只
+接受 Worker 已物化的 file URI，输出继续经过统一 Pydantic 时间边界校验。pyannote 权重属于
+gated download，必须接受模型条件并由 Modal Secret 注入 `HF_TOKEN`；community-1 不提供校准
+turn confidence，当前以保守的 0.5 明确标记，不伪造高置信度。
+
+依赖和权重只存在 Modal GPU 镜像/缓存，不安装到本地长期 `.venv`。Registry 可通过非敏感
+config 的 `adapter_mode=local_models` 选择该 bundle，并分别记录 VAD、ASR、diarization 的
+不可变 release。默认 release 带 `unapproved`，只有权重 hash、许可和 Golden report 完成后
+才能进入 CANARY/ACTIVE。
+
+方案列出的 Nemotron-3.5 ASR 当前没有可验证的官方公开模型卡与稳定加载接口，因此只保留
+NeMo/Nemotron backend 替换边界，不创建虚假的可运行 release。兼容稳定路先使用 Whisper；
+未来官方权重可访问后，以新 Model Release 和同一 Golden Dataset 与 Whisper 双路比较。

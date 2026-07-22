@@ -25,9 +25,11 @@ image = (
     .apt_install("ffmpeg")
     .uv_pip_install(
         "boto3==1.40.61",
+        "faster-whisper==1.2.1",
         "httpx==0.28.1",
         "pydantic==2.12.3",
         "pydantic-settings==2.11.0",
+        "pyannote.audio==4.0.7",
     )
     .env({"PYTHONPATH": ":".join(f"{REMOTE_ROOT}/{path}" for path in SOURCE_PATHS)})
 )
@@ -45,8 +47,9 @@ app = modal.App(APP_NAME)
 
 @app.function(
     image=image,
-    cpu=2.0,
-    memory=4096,
+    gpu="L4",
+    cpu=4.0,
+    memory=16384,
     timeout=3600,
     retries=2,
     secrets=runtime_secrets,

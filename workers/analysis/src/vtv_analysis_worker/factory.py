@@ -1,3 +1,11 @@
+from vtv_analysis import (
+    AudioAnalysisPipeline,
+    FasterWhisperAsrAdapter,
+    FasterWhisperVadAdapter,
+    LazyFasterWhisperBackend,
+    LazyPyannoteBackend,
+    PyannoteDiarizationAdapter,
+)
 from vtv_schemas.jobs import StageJob
 
 from .config import Settings, get_settings
@@ -17,6 +25,8 @@ def create_analysis_worker(settings: Settings | None = None) -> AnalysisWorker:
     deterministic = AnalysisWorker()
     if settings.analysis_adapter_mode == "deterministic":
         return deterministic
+    if settings.analysis_adapter_mode == "local_models":
+        return _local_model_worker(settings, {})
     transport = HttpxInferenceTransport()
     audio = RemoteAudioAnalysisPipeline(
         _endpoint(
@@ -64,6 +74,9 @@ def create_analysis_worker_for_job(
     if not isinstance(runtime, dict):
         return create_analysis_worker(settings)
     deterministic = AnalysisWorker()
+    config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
+    if job.stage_type == "ASR_ALIGN" and config.get("adapter_mode") == "local_models":
+        return _local_model_worker(settings, config)
     endpoint = ModelEndpoint(
         endpoint=str(runtime.get("endpoint") or ""),
         release=str(runtime.get("release") or ""),
@@ -79,7 +92,6 @@ def create_analysis_worker_for_job(
         timeout_seconds=settings.model_timeout_seconds,
     )
     transport = HttpxInferenceTransport()
-    config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
     allow_fallback = settings.allow_model_fallback and config.get("allow_fallback") is True
     if job.stage_type == "ASR_ALIGN":
         audio = RemoteAudioAnalysisPipeline(endpoint, transport)
@@ -100,6 +112,38 @@ def create_analysis_worker_for_job(
             synthesizer=deterministic.synthesizer,
         )
     raise ValueError(f"model runtime cannot be assigned to stage {job.stage_type}")
+
+
+def _local_model_worker(settings: Settings, config: dict) -> AnalysisWorker:
+    deterministic = AnalysisWorker()
+    whisper = LazyFasterWhisperBackend(
+        model_name=str(config.get("whisper_model_name") or settings.whisper_model_name),
+        device=settings.whisper_device,
+        compute_type=settings.whisper_compute_type,
+    )
+    audio = AudioAnalysisPipeline(
+        vad=FasterWhisperVadAdapter(
+            whisper, str(config.get("vad_release") or settings.vad_release)
+        ),
+        asr=FasterWhisperAsrAdapter(
+            whisper, str(config.get("whisper_release") or settings.whisper_release)
+        ),
+        diarization=PyannoteDiarizationAdapter(
+            LazyPyannoteBackend(
+                model_name=str(
+                    config.get("pyannote_model_name") or settings.pyannote_model_name
+                ),
+                token_env=settings.pyannote_token_env,
+                device=settings.pyannote_device,
+            ),
+            str(config.get("pyannote_release") or settings.pyannote_release),
+        ),
+    )
+    return AnalysisWorker(
+        pipeline=audio,
+        vision_pipeline=deterministic.vision_pipeline,
+        synthesizer=deterministic.synthesizer,
+    )
 
 
 def _endpoint(

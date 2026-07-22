@@ -17,5 +17,9 @@ __all__ = [
     "GoldenSample",
     "MetricAggregate",
     "SampleResult",
+    "TimedSpeakerLabel",
+    "diarization_overlap_accuracy",
     "evaluate_release",
+    "transcript_accuracy",
 ]
+from .audio_metrics import TimedSpeakerLabel, diarization_overlap_accuracy, transcript_accuracy

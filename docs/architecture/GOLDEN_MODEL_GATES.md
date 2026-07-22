@@ -17,6 +17,10 @@
 全部失败原因，便于修复、复测和审批审计。没有合格输出时成本门禁必然失败；指标缺失不会
 被当作零分静默处理，而会生成独立的 `METRIC_MISSING` 原因。
 
+音频候选提供 Unicode NFKC/大小写/标点归一化后的多语言字符准确率，以及对匿名 cluster ID
+做最优置换后的说话人时间重叠准确率。两项均输出 `[0,1]` 分数，可直接作为 Policy 的关键
+指标；最多八名说话人的精确置换限制会显式报错，避免大场景评测悄悄退化为近似结果。
+
 迁移 `0007_benchmark_releases.sql` 新增不可变 `benchmark_releases` 与逐样本
 `benchmark_sample_results`。报告唯一身份由 model release、dataset 指纹、policy 指纹与权重
 hash 组成；`model_releases.approved_benchmark_release_id` 只允许引用已落库报告。事务 API 在
