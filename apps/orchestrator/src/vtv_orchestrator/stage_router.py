@@ -39,6 +39,7 @@ VISUAL_STAGES = frozenset(
         "VISUAL_FULL_REGEN",
         "VISUAL_SUBTITLE_CLEAN",
         "VISUAL_KEYFRAME_PREVIEW",
+        "VISUAL_QC",
     }
 )
 

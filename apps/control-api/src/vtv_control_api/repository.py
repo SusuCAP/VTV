@@ -2075,6 +2075,20 @@ class MemoryRepository:
         # MemoryRepository stub — full QC logic lives in SqlAlchemyProjectRepository
         await self.get_project(workspace_id, project_id)
 
+    async def get_project_qc_stats(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> dict:
+        await self.get_project(workspace_id, project_id)
+        return {
+            "total_visual_stages": 0,
+            "qc_passed": 0,
+            "qc_failed": 0,
+            "qc_review": 0,
+            "pending": 0,
+            "failure_rate": 0.0,
+            "circuit_breaker_active": False,
+        }
+
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:
     return ArtifactReleaseState(

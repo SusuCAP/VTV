@@ -339,6 +339,19 @@ def create_app(
         response.headers["Location"] = f"/v1/jobs/{job.id}"
         return job
 
+    @app.get(
+        "/v1/projects/{project_id}/qc-stats",
+        response_model=dict,
+    )
+    async def get_project_qc_stats(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> dict:
+        try:
+            return await repo.get_project_qc_stats(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
     @app.post(
         "/v1/projects/{project_id}/deliveries",
         response_model=DeliveryRead,

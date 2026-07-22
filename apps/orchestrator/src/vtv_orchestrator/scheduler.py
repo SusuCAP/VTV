@@ -323,7 +323,17 @@ class Scheduler:
                 .where(StageAttempt.id == claim.stage_attempt_id)
                 .values(status="OUTPUT_READY", usage=result.attempt_usage, finished_at=func.now())
             )
-            return True
+        # After a successful visual stage commit, check the project-level circuit breaker.
+        _VISUAL_ROUTE_STAGES = frozenset({
+            "VISUAL_CHARACTER_REPLACE",
+            "VISUAL_BACKGROUND_REPLACE",
+            "VISUAL_JOINT_REPLACE",
+            "VISUAL_FULL_REGEN",
+            "VISUAL_SUBTITLE_CLEAN",
+        })
+        if claim.stage_type in _VISUAL_ROUTE_STAGES:
+            await self._run_visual_circuit_breaker(claim)
+        return True
 
     async def _persist_domain_artifacts(
         self,
@@ -337,6 +347,20 @@ class Scheduler:
             )
         )
         assets_by_sha = {asset.sha256: asset for asset in assets}
+        # Stages that produce no output assets (e.g. VISUAL_QC) need to reference
+        # input assets from their dependency stages for the document link.
+        if not assets_by_sha:
+            dep_run_ids = select(StageDependency.depends_on_stage_run_id).where(
+                StageDependency.stage_run_id == claim.stage_run_id
+            )
+            dep_assets = list(
+                await session.scalars(
+                    select(MediaAsset).where(
+                        MediaAsset.source_stage_run_id.in_(dep_run_ids)
+                    )
+                )
+            )
+            assets_by_sha = {asset.sha256: asset for asset in dep_assets}
         release_specs: list[tuple[str, int, MediaAsset, tuple[str, ...]]] = []
         for artifact in result.domain_artifacts:
             asset = assets_by_sha.get(artifact.source_asset_sha256)
@@ -515,6 +539,83 @@ class Scheduler:
                     },
                 )
             )
+
+    async def _run_visual_circuit_breaker(self, claim: ClaimedStage) -> None:
+        """Check project-level visual failure rate and trip the circuit if threshold exceeded."""
+        tripped = await self._check_visual_circuit_breaker(claim)
+        if not tripped:
+            return
+        async with self._sessions.begin() as session:
+            _VISUAL_ALL_STAGES = frozenset({
+                "VISUAL_CHARACTER_REPLACE",
+                "VISUAL_BACKGROUND_REPLACE",
+                "VISUAL_JOINT_REPLACE",
+                "VISUAL_FULL_REGEN",
+                "VISUAL_SUBTITLE_CLEAN",
+                "VISUAL_KEYFRAME_PREVIEW",
+                "VISUAL_QC",
+            })
+            await session.execute(
+                update(StageRun)
+                .where(
+                    StageRun.project_id == claim.project_id,
+                    StageRun.stage_type.in_(_VISUAL_ALL_STAGES),
+                    StageRun.status.in_(["READY", "PENDING"]),
+                )
+                .values(
+                    status="EXECUTION_FAILED",
+                    state_version=StageRun.state_version + 1,
+                    error_detail={"reason": "CIRCUIT_BREAKER", "retryable": False},
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    workspace_id=claim.workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=claim.project_id,
+                    event_type="visual_production.circuit_breaker_tripped",
+                    payload={
+                        "project_id": str(claim.project_id),
+                        "triggered_by_stage_run_id": str(claim.stage_run_id),
+                    },
+                )
+            )
+
+    async def _check_visual_circuit_breaker(
+        self,
+        claim: ClaimedStage,
+        max_failure_rate: float = 0.5,
+    ) -> bool:
+        """Return True if visual production should be suspended for this project.
+
+        Checks: if >= 10 visual route stages completed AND failure rate > max_failure_rate,
+        return True (circuit open).
+        """
+        _VISUAL_ROUTE_STAGES = frozenset({
+            "VISUAL_CHARACTER_REPLACE",
+            "VISUAL_BACKGROUND_REPLACE",
+            "VISUAL_JOINT_REPLACE",
+            "VISUAL_FULL_REGEN",
+            "VISUAL_SUBTITLE_CLEAN",
+        })
+        async with self._sessions() as session:
+            total = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == claim.project_id,
+                    StageRun.stage_type.in_(_VISUAL_ROUTE_STAGES),
+                    StageRun.status.in_(["COMPLETED", "EXECUTION_FAILED"]),
+                )
+            )
+            if (total or 0) < 10:
+                return False
+            failed = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == claim.project_id,
+                    StageRun.stage_type.in_(_VISUAL_ROUTE_STAGES),
+                    StageRun.status == "EXECUTION_FAILED",
+                )
+            )
+            return (failed or 0) / total > max_failure_rate
 
     async def finalize_stage(self, claim: ClaimedStage) -> None:
         async with self._sessions.begin() as session:

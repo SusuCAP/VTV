@@ -582,6 +582,10 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, project_id: UUID, payload: QcEvidenceCreate
     ) -> None: ...
 
+    async def get_project_qc_stats(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> dict: ...
+
 
 class SqlAlchemyProjectRepository:
     def __init__(
@@ -1195,6 +1199,19 @@ class SqlAlchemyProjectRepository:
                         f"exceeds max_full_regen_ratio {payload.max_full_regen_ratio}"
                     )
 
+            # Batch-load shots to get expected_duration_seconds for VISUAL_QC params
+            all_shot_ids = [
+                d.shot_id
+                for ep in episodes
+                for d in (episode_plans[ep.id].decisions if episode_plans[ep.id] else [])
+            ]
+            shots_by_id: dict[UUID, Shot] = {}
+            if all_shot_ids:
+                shot_rows = list(
+                    await session.scalars(select(Shot).where(Shot.id.in_(all_shot_ids)))
+                )
+                shots_by_id = {s.id: s for s in shot_rows}
+
             # Pre-compute total_stages
             total_stages = 0
             for episode in episodes:
@@ -1207,7 +1224,7 @@ class SqlAlchemyProjectRepository:
                             str(decision.shot_id), str(decision.route)
                         )
                         if route != "A" and route in include_routes:
-                            total_stages += 2  # VISUAL_KEYFRAME_PREVIEW + route stage
+                            total_stages += 3  # VISUAL_KEYFRAME_PREVIEW + route stage + VISUAL_QC
 
             job = Job(
                 id=self._id_factory(),
@@ -1219,8 +1236,8 @@ class SqlAlchemyProjectRepository:
             )
             session.add(job)
 
-            # Build stage runs; track (keyframe_run_id, route_run) pairs for dependency wiring
-            dep_pairs: list[tuple[UUID, StageRun]] = []
+            # Build stage runs; track triplets (kf_id, rt_run, qc_run) for dependency wiring
+            dep_triplets: list[tuple[UUID, StageRun, StageRun]] = []
 
             for episode in episodes:
                 plan = episode_plans[episode.id]
@@ -1250,6 +1267,12 @@ class SqlAlchemyProjectRepository:
                         if route == "A" or route not in include_routes:
                             continue
                         stage_type = _ROUTE_TO_STAGE[route]
+                        shot_rec = shots_by_id.get(decision.shot_id)
+                        expected_duration = (
+                            (shot_rec.end_ms - shot_rec.start_ms) / 1000.0
+                            if shot_rec is not None
+                            else None
+                        )
                         kf_run = StageRun(
                             id=self._id_factory(),
                             job_id=job.id,
@@ -1285,15 +1308,54 @@ class SqlAlchemyProjectRepository:
                             },
                         )
                         session.add(rt_run)
-                        dep_pairs.append((kf_run.id, rt_run))
+                        qc_run = StageRun(
+                            id=self._id_factory(),
+                            job_id=job.id,
+                            project_id=project_id,
+                            episode_id=episode.id,
+                            shot_id=decision.shot_id,
+                            stage_type="VISUAL_QC",
+                            status="PENDING",
+                            idempotency_key=f"{job.id}:visual_qc:{decision.shot_id}",
+                            runtime_profile_id="cpu-standard",
+                            observed_control_version=control.control_version,
+                            params={
+                                "shot_id": str(decision.shot_id),
+                                "episode_id": str(episode.id),
+                                "route": route,
+                                "visual_qc_request": {
+                                    "evaluator_key": "visual_technical",
+                                    "route": route,
+                                    "expected_duration_seconds": expected_duration,
+                                    "hard_failure_below": {
+                                        "frame_integrity": 0.5,
+                                        "duration_deviation": 0.0,
+                                        "audio_stream_present": 0.5,
+                                    },
+                                    "thresholds": {
+                                        "frame_integrity": 0.8,
+                                        "duration_deviation": 0.9,
+                                        "resolution_match": 0.8,
+                                    },
+                                },
+                            },
+                        )
+                        session.add(qc_run)
+                        dep_triplets.append((kf_run.id, rt_run, qc_run))
 
             await session.flush()
 
-            for kf_id, rt_run in dep_pairs:
+            for kf_id, rt_run, qc_run in dep_triplets:
                 session.add(
                     StageDependency(
                         stage_run_id=rt_run.id,
                         depends_on_stage_run_id=kf_id,
+                    )
+                )
+                session.add(
+                    StageDependency(
+                        stage_run_id=qc_run.id,
+                        depends_on_stage_run_id=rt_run.id,
                     )
                 )
 
@@ -3717,6 +3779,111 @@ class SqlAlchemyProjectRepository:
                 )
             )
             await session.flush()
+
+    async def get_project_qc_stats(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> dict:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            _VISUAL_ROUTE_STAGES = frozenset({
+                "VISUAL_CHARACTER_REPLACE",
+                "VISUAL_BACKGROUND_REPLACE",
+                "VISUAL_JOINT_REPLACE",
+                "VISUAL_FULL_REGEN",
+                "VISUAL_SUBTITLE_CLEAN",
+            })
+            # Total VISUAL_QC stages
+            total_visual_stages = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == project_id,
+                    StageRun.stage_type == "VISUAL_QC",
+                )
+            ) or 0
+            # Completed VISUAL_QC stages (OUTPUT_READY or COMPLETED)
+            completed_stages = list(
+                await session.scalars(
+                    select(StageRun).where(
+                        StageRun.project_id == project_id,
+                        StageRun.stage_type == "VISUAL_QC",
+                        StageRun.status.in_(["COMPLETED", "OUTPUT_READY"]),
+                    )
+                )
+            )
+            completed_run_ids = [r.id for r in completed_stages]
+            # Load domain artifacts for VISUAL_QC_REPORT to determine pass/fail/review
+            qc_docs = list(
+                await session.scalars(
+                    select(AnalysisDocument).where(
+                        AnalysisDocument.project_id == project_id,
+                        AnalysisDocument.source_stage_run_id.in_(completed_run_ids),
+                        AnalysisDocument.document_type == "VISUAL_QC_REPORT",
+                    )
+                )
+            )
+            qc_passed = 0
+            qc_failed = 0
+            qc_review = 0
+            for doc in qc_docs:
+                payload = doc.payload or {}
+                if payload.get("has_hard_failure"):
+                    qc_failed += 1
+                else:
+                    verdicts = payload.get("verdicts", {})
+                    if any(v == "FAIL" for v in verdicts.values()):
+                        qc_review += 1
+                    else:
+                        qc_passed += 1
+            # Also count EXECUTION_FAILED VISUAL_QC stages as failed
+            exec_failed = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == project_id,
+                    StageRun.stage_type == "VISUAL_QC",
+                    StageRun.status == "EXECUTION_FAILED",
+                )
+            ) or 0
+            qc_failed += exec_failed
+            pending = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == project_id,
+                    StageRun.stage_type == "VISUAL_QC",
+                    StageRun.status.in_(["READY", "PENDING", "RUNNING"]),
+                )
+            ) or 0
+            denominator = qc_passed + qc_failed
+            failure_rate = qc_failed / denominator if denominator > 0 else 0.0
+            # Circuit breaker: check visual route stages
+            total_route = await session.scalar(
+                select(func.count(StageRun.id)).where(
+                    StageRun.project_id == project_id,
+                    StageRun.stage_type.in_(_VISUAL_ROUTE_STAGES),
+                    StageRun.status.in_(["COMPLETED", "EXECUTION_FAILED"]),
+                )
+            ) or 0
+            circuit_breaker_active = False
+            if total_route >= 10:
+                failed_route = await session.scalar(
+                    select(func.count(StageRun.id)).where(
+                        StageRun.project_id == project_id,
+                        StageRun.stage_type.in_(_VISUAL_ROUTE_STAGES),
+                        StageRun.status == "EXECUTION_FAILED",
+                    )
+                ) or 0
+                circuit_breaker_active = failed_route / total_route > 0.5
+            return {
+                "total_visual_stages": total_visual_stages,
+                "qc_passed": qc_passed,
+                "qc_failed": qc_failed,
+                "qc_review": qc_review,
+                "pending": pending,
+                "failure_rate": failure_rate,
+                "circuit_breaker_active": circuit_breaker_active,
+            }
 
 
 def _stage_run_read(run: StageRun) -> StageRunRead:

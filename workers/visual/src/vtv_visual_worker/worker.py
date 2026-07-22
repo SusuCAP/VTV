@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from vtv_media import probe_media
 from vtv_production.contracts import (
     SegmentationAdapter,
     SegmentationRequest,
@@ -58,6 +59,8 @@ class VisualProductionWorker:
             return self._subtitle_clean(job)
         if stage == "VISUAL_KEYFRAME_PREVIEW":
             return self._keyframe_preview(job)
+        if stage == "VISUAL_QC":
+            return self._visual_qc(job)
         raise ValueError(f"unsupported visual stage: {job.stage_type}")
 
     # ------------------------------------------------------------------
@@ -194,6 +197,111 @@ class VisualProductionWorker:
                         "model_release": result.model_release,
                         "candidate_count": 1,
                     },
+                )
+            ],
+            attempt_usage={"worker": "visual", "local": True},
+        )
+
+    def _visual_qc(self, job: StageJob) -> StageResult:
+        request = job.params.get("visual_qc_request", {})
+        candidate_sha = request.get("candidate_video_sha256", "")
+        expected_duration = request.get("expected_duration_seconds")
+        evaluator_key = request.get("evaluator_key", "visual_technical")
+        route = request.get("route", "")
+        hard_failure_below: dict[str, float] = request.get("hard_failure_below", {})
+        thresholds: dict[str, float] = request.get("thresholds", {})
+
+        # Find the candidate video asset: prefer matched sha256, else first video
+        video_assets = [a for a in job.input_assets if a.media_type.startswith("video/")]
+        if not video_assets:
+            raise ValueError("VISUAL_QC requires at least one video input asset")
+        candidate_asset = next(
+            (a for a in video_assets if a.sha256 == candidate_sha),
+            video_assets[0],
+        )
+        candidate_path = _local_path(candidate_asset.uri)
+
+        probe = probe_media(candidate_path, require_video=False)
+        video_streams = probe.video_streams
+        audio_streams = probe.audio_streams
+
+        actual_duration = probe.duration_seconds
+        if expected_duration is not None and expected_duration > 0:
+            deviation_ratio = abs(actual_duration - expected_duration) / expected_duration
+        else:
+            deviation_ratio = 0.0
+
+        # Hard gate: duration deviation > 8% is an immediate hard failure
+        duration_ok = deviation_ratio <= 0.08
+
+        # Compute 4 technical metrics
+        first_video = video_streams[0] if video_streams else None
+        nb_frames = first_video.frame_rate * actual_duration if (
+            first_video and first_video.frame_rate
+        ) else 0
+
+        frame_integrity = 1.0 if nb_frames > 0 else 0.0
+        duration_deviation_score = 1.0 - min(deviation_ratio, 1.0)
+        resolution_match = (
+            1.0
+            if (first_video and first_video.width and first_video.height and
+                first_video.width > 0 and first_video.height > 0)
+            else 0.0
+        )
+        audio_stream_present = 1.0 if audio_streams else 0.0
+
+        metrics = {
+            "frame_integrity": frame_integrity,
+            "duration_deviation": duration_deviation_score,
+            "resolution_match": resolution_match,
+            "audio_stream_present": audio_stream_present,
+        }
+
+        # Determine per-metric verdict (PASS/FAIL) against thresholds
+        verdicts: dict[str, str] = {}
+        for metric_name, score in metrics.items():
+            threshold = thresholds.get(metric_name)
+            if threshold is not None:
+                verdicts[metric_name] = "PASS" if score >= threshold else "FAIL"
+            else:
+                verdicts[metric_name] = "PASS"
+
+        # Check hard failures
+        has_hard_failure = False
+        if not duration_ok:
+            has_hard_failure = True
+        else:
+            for metric_name, score in metrics.items():
+                hfb = hard_failure_below.get(metric_name)
+                if hfb is not None and score < hfb:
+                    has_hard_failure = True
+                    break
+
+        qc_payload = {
+            "evaluator_key": evaluator_key,
+            "route": route,
+            "actual_duration_seconds": actual_duration,
+            "expected_duration_seconds": expected_duration,
+            "duration_deviation_ratio": deviation_ratio,
+            "has_video_stream": bool(video_streams),
+            "has_audio_stream": bool(audio_streams),
+            "metrics": metrics,
+            "verdicts": verdicts,
+            "has_hard_failure": has_hard_failure,
+            "candidate_video_sha256": candidate_asset.sha256,
+        }
+
+        return StageResult(
+            stage_run_id=job.stage_run_id,
+            stage_attempt_id=job.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[VariantResult(variant_no=1, output_assets=[])],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="VISUAL_QC_REPORT",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=candidate_asset.sha256,
+                    payload=qc_payload,
                 )
             ],
             attempt_usage={"worker": "visual", "local": True},
