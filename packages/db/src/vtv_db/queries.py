@@ -61,3 +61,21 @@ COMMIT_OUTPUT_READY = text(
     RETURNING sr.id, sr.state_version
     """
 )
+
+
+PROMOTE_READY_DEPENDENTS = text(
+    """
+    UPDATE stage_runs sr
+    SET status = 'READY', state_version = state_version + 1, updated_at = now()
+    WHERE sr.job_id = :job_id
+      AND sr.status = 'PENDING'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM stage_dependencies sd
+        JOIN stage_runs upstream ON upstream.id = sd.depends_on_stage_run_id
+        WHERE sd.stage_run_id = sr.id
+          AND upstream.status NOT IN ('COMPLETED', 'ADOPTED')
+      )
+    RETURNING sr.id
+    """
+)

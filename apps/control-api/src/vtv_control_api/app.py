@@ -2,6 +2,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
+from vtv_db.repository import ProjectNotFoundError, ProjectRepository
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadRead
@@ -9,7 +10,7 @@ from vtv_storage import MemoryObjectStore, UploadIntegrityError
 from vtv_storage.adapter import UploadNotFoundError
 
 from .config import get_settings
-from .repository import MemoryRepository, ProjectNotFoundError
+from .database import create_repository
 
 DEFAULT_LOCAL_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -19,12 +20,12 @@ def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUI
 
 
 def create_app(
-    repository: MemoryRepository | None = None,
+    repository: ProjectRepository | None = None,
     object_store: MemoryObjectStore | None = None,
 ) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.api_title, version=settings.api_version)
-    repo = repository or MemoryRepository()
+    repo = repository or create_repository(settings)
     storage = object_store or MemoryObjectStore()
     app.state.repository = repo
     app.state.object_store = storage
@@ -34,19 +35,19 @@ def create_app(
         return {"status": "ok", "environment": settings.environment}
 
     @app.post("/v1/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
-    def create_project(
+    async def create_project(
         payload: ProjectCreate,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> ProjectRead:
-        return repo.create_project(workspace, payload)
+        return await repo.create_project(workspace, payload)
 
     @app.get("/v1/projects/{project_id}", response_model=ProjectRead)
-    def get_project(
+    async def get_project(
         project_id: UUID,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> ProjectRead:
         try:
-            return repo.get_project(workspace, project_id)
+            return await repo.get_project(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 
@@ -55,13 +56,13 @@ def create_app(
         response_model=JobAccepted,
         status_code=status.HTTP_202_ACCEPTED,
     )
-    def create_analysis_job(
+    async def create_analysis_job(
         project_id: UUID,
         response: Response,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> JobAccepted:
         try:
-            job = repo.create_analysis_job(workspace, project_id)
+            job = await repo.create_analysis_job(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
         status_url = f"/v1/jobs/{job.id}"
@@ -69,12 +70,12 @@ def create_app(
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
 
     @app.get("/v1/jobs/{job_id}", response_model=JobRead)
-    def get_job(
+    async def get_job(
         job_id: UUID,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> JobRead:
         try:
-            return repo.get_job(workspace, job_id)
+            return await repo.get_job(workspace, job_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
 
@@ -83,12 +84,12 @@ def create_app(
         response_model=MultipartUpload,
         status_code=status.HTTP_201_CREATED,
     )
-    def multipart_init(
+    async def multipart_init(
         payload: MultipartInit,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> MultipartUpload:
         try:
-            repo.get_project(workspace, payload.project_id)
+            await repo.get_project(workspace, payload.project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
         return storage.multipart_init(workspace, payload)

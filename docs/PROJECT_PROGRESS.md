@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 58% | 控制 API、数据库/存储核心、React/Tauri Mac 控制端 |
+| Phase 1 基础平台 | 进行中 | 76% | PostgreSQL 驱动 API/DAG/调度器、存储契约、Mac 控制端 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -36,14 +36,19 @@
 - [x] 建立 npm workspace、React/Vite 控制端和 Tauri 2 macOS 壳。
 - [x] 实现项目头、生产阶段轨、指标、剧集列表、异常队列及审核详情。
 - [x] 验证开始分析、异常切换和标记处理交互；完成概念稿对照检查。
-- [ ] 用 PostgreSQL Repository 替换开发期内存 Repository。
-- [ ] 建立 Node workspace 与 React/Tauri 控制端骨架。
+- [x] 实现异步 Repository 接口；配置 `VTV_DATABASE_URL` 时使用 PostgreSQL。
+- [x] 项目创建事务写入 workspace、project、execution control 和 Outbox。
+- [x] 分析请求事务写入 Job、六阶段 DAG、六条依赖边和 Outbox。
+- [x] 实现调度领取、attempt lease、条件提交、失败记录、orphan 与下游解锁。
+- [x] 建立 PostgreSQL/MinIO Compose 环境、迁移工具和 GitHub Actions CI。
+- [ ] 将真实 S3 兼容存储实现接入控制 API。
+- [ ] 完成 episode/media asset 持久化及上传完成后的 ingest 自动入队。
 
 ## 下一提交目标
 
-`feat: build React and Tauri macOS control workspace`
+`feat: add database-backed analysis orchestration`
 
-完成后继续 Phase 1 的“PostgreSQL 核心模型 + 数据库驱动状态机”。
+完成后继续 Phase 1 的“真实对象存储 + episode 接入 + Mock 合成端到端”。
 
 ## 决策日志
 
@@ -68,3 +73,6 @@
 | 2026-07-22 | `npm run build:mac` | 通过，Vite production bundle 已生成 |
 | 2026-07-22 | `cargo check --offline` | 通过，Tauri 壳可编译 |
 | 2026-07-22 | Playwright Chrome 1600×1000 | 主屏渲染及 3 条核心交互通过 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 21 passed，1 个 PostgreSQL 测试因本机 Docker daemon 未启动而跳过 |
+| 2026-07-22 | `npm run lint:mac && npm run build:mac` | 通过 |

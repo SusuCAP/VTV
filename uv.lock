@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 members = [
     "vtv-control-api",
     "vtv-db",
+    "vtv-orchestrator",
     "vtv-schemas",
     "vtv-storage",
     "vtv-workspace",
@@ -740,6 +741,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "vtv-db" },
     { name = "vtv-schemas" },
     { name = "vtv-storage" },
 ]
@@ -749,6 +751,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115.11" },
     { name = "pydantic-settings", specifier = ">=2.8.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
+    { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
 ]
@@ -767,6 +770,23 @@ dependencies = [
 requires-dist = [
     { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-schemas", editable = "packages/schemas" },
+]
+
+[[package]]
+name = "vtv-orchestrator"
+version = "0.1.0"
+source = { editable = "apps/orchestrator" }
+dependencies = [
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "vtv-db" },
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
 

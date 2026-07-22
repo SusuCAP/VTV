@@ -60,3 +60,5 @@ class JobRead(BaseModel):
     kind: str
     status: JobStatus
     progress: float = Field(ge=0, le=1)
+    total_stages: int = Field(default=0, ge=0)
+    completed_stages: int = Field(default=0, ge=0)

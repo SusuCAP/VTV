@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     environment: str = "local"
     api_title: str = "VTV Control API"
     api_version: str = "0.1.0"
+    database_url: str | None = None
 
 
 @lru_cache

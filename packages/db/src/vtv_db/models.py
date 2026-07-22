@@ -111,6 +111,25 @@ class ExecutionControl(TimestampMixin, Base):
     hard_budget_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class Job(TimestampMixin, Base):
+    __tablename__ = "jobs"
+    __table_args__ = (
+        UniqueConstraint("project_id", "idempotency_key"),
+        Index("ix_jobs_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(32), default="QUEUED")
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    total_stages: Mapped[int] = mapped_column(Integer, default=0)
+    completed_stages: Mapped[int] = mapped_column(Integer, default=0)
+    error_detail: Mapped[dict | None] = mapped_column(JSONB)
+
+
 class CandidateGroup(TimestampMixin, Base):
     __tablename__ = "candidate_groups"
 
@@ -134,6 +153,7 @@ class StageRun(TimestampMixin, Base):
     project_id: Mapped[UUID] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
     )
+    job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
     episode_id: Mapped[UUID | None] = mapped_column(ForeignKey("episodes.id", ondelete="CASCADE"))
     shot_id: Mapped[UUID | None] = mapped_column(ForeignKey("shots.id", ondelete="CASCADE"))
     candidate_group_id: Mapped[UUID | None] = mapped_column(
