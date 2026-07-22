@@ -103,6 +103,10 @@ __all__ = [
     "ModelReleaseRead",
     "UploadPart",
     "VariantResult",
+    "DEFAULT_RETENTION_POLICY",
+    "RetentionPolicy",
+    "RetentionRule",
 ]
 from .analysis import AnalysisDocumentRead
 from .benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from .retention import DEFAULT_RETENTION_POLICY, RetentionPolicy, RetentionRule

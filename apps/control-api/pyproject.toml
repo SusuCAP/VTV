@@ -8,6 +8,7 @@ dependencies = [
   "pydantic-settings>=2.8.1",
   "uvicorn[standard]>=0.34.0",
   "vtv-db",
+  "vtv-markets",
   "vtv-schemas",
   "vtv-storage",
   "vtv-delivery",
@@ -15,6 +16,7 @@ dependencies = [
 
 [tool.uv.sources]
 vtv-db = { workspace = true }
+vtv-markets = { workspace = true }
 vtv-schemas = { workspace = true }
 vtv-storage = { workspace = true }
 vtv-delivery = { workspace = true }

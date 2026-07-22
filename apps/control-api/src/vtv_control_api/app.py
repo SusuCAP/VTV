@@ -31,6 +31,7 @@ from vtv_delivery import (
     DeliveryRevoke,
 )
 from vtv_evaluation.contracts import EvaluatorReleaseCreate, EvaluatorReleaseRead, QcEvidenceCreate
+from vtv_markets import MarketConfig, get_market_config, list_markets
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -56,6 +57,7 @@ from vtv_schemas.releases import (
     ArtifactReleaseRead,
     ArtifactTransition,
 )
+from vtv_schemas.retention import DEFAULT_RETENTION_POLICY
 from vtv_schemas.rights import (
     RightsExecutionCheck,
     RightsExecutionDecision,
@@ -1003,6 +1005,47 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="project, variant, or evaluator not found"
             ) from exc
+
+    @app.get("/v1/markets", response_model=list[str])
+    async def get_markets() -> list[str]:
+        return list_markets()
+
+    @app.get("/v1/markets/{code}", response_model=MarketConfig)
+    async def get_market(code: str) -> MarketConfig:
+        try:
+            return get_market_config(code)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"market {code!r} not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/assets:list-expired",
+        response_model=list[dict],
+    )
+    async def list_expired_assets(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[dict]:
+        try:
+            return await repo.list_expired_assets(
+                workspace, project_id, DEFAULT_RETENTION_POLICY
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/assets:cleanup",
+        response_model=dict,
+        status_code=status.HTTP_200_OK,
+    )
+    async def cleanup_expired_assets(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> dict:
+        try:
+            deleted = await repo.cleanup_expired_orphans(workspace, project_id)
+            return {"deleted": deleted}
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     return app
 

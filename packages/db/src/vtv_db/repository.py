@@ -605,6 +605,14 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, project_id: UUID
     ) -> dict: ...
 
+    async def list_expired_assets(
+        self, workspace_id: UUID, project_id: UUID, policy: object
+    ) -> list[dict]: ...
+
+    async def cleanup_expired_orphans(
+        self, workspace_id: UUID, project_id: UUID | None = None
+    ) -> int: ...
+
 
 class SqlAlchemyProjectRepository:
     def __init__(
@@ -4084,6 +4092,81 @@ class SqlAlchemyProjectRepository:
                 "failure_rate": failure_rate,
                 "circuit_breaker_active": circuit_breaker_active,
             }
+
+    async def list_expired_assets(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        policy: object,
+    ) -> list[dict]:
+        """List orphan assets eligible for deletion based on retention policy.
+
+        Returns a list of dicts with keys:
+          asset_id, object_uri, reason, age_days, delete_after
+        """
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            now = datetime.now(UTC)
+            rows = await session.scalars(
+                select(OrphanAsset).where(
+                    OrphanAsset.project_id == project_id,
+                    OrphanAsset.delete_after <= now,
+                )
+            )
+            result: list[dict] = []
+            for asset in rows:
+                age_days = max(0, (now - asset.created_at.replace(tzinfo=UTC)).days)
+                result.append(
+                    {
+                        "asset_id": asset.id,
+                        "object_uri": asset.object_uri,
+                        "reason": asset.reason,
+                        "age_days": age_days,
+                        "delete_after": asset.delete_after,
+                    }
+                )
+            return result
+
+    async def cleanup_expired_orphans(
+        self,
+        workspace_id: UUID,
+        project_id: UUID | None = None,
+    ) -> int:
+        """Delete orphan_assets past their delete_after date. Returns count deleted."""
+        async with self._sessions.begin() as session:
+            now = datetime.now(UTC)
+            where_clauses = [OrphanAsset.delete_after <= now]
+            if project_id is not None:
+                exists = await session.scalar(
+                    select(Project.id).where(
+                        Project.id == project_id,
+                        Project.workspace_id == workspace_id,
+                    )
+                )
+                if exists is None:
+                    raise ProjectNotFoundError(project_id)
+                where_clauses.append(OrphanAsset.project_id == project_id)
+            else:
+                # Restrict to workspace projects
+                project_ids_sq = select(Project.id).where(
+                    Project.workspace_id == workspace_id
+                )
+                where_clauses.append(OrphanAsset.project_id.in_(project_ids_sq))
+
+            rows = await session.scalars(
+                select(OrphanAsset).where(*where_clauses)
+            )
+            assets = list(rows)
+            for asset in assets:
+                await session.delete(asset)
+            return len(assets)
 
 
 def _stage_run_read(run: StageRun) -> StageRunRead:

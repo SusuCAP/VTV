@@ -19,6 +19,7 @@ members = [
     "vtv-db",
     "vtv-delivery",
     "vtv-evaluation",
+    "vtv-markets",
     "vtv-media",
     "vtv-media-worker",
     "vtv-orchestrator",
@@ -1565,6 +1566,7 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
     { name = "vtv-db" },
     { name = "vtv-delivery" },
+    { name = "vtv-markets" },
     { name = "vtv-schemas" },
     { name = "vtv-storage" },
 ]
@@ -1576,6 +1578,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "vtv-db", editable = "packages/db" },
     { name = "vtv-delivery", editable = "packages/delivery" },
+    { name = "vtv-markets", editable = "packages/markets" },
     { name = "vtv-schemas", editable = "packages/schemas" },
     { name = "vtv-storage", editable = "packages/storage" },
 ]
@@ -1622,6 +1625,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+
+[[package]]
+name = "vtv-markets"
+version = "0.1.0"
+source = { editable = "packages/markets" }
 
 [[package]]
 name = "vtv-media"
