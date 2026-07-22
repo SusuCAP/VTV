@@ -27,3 +27,10 @@ Job 创建时通过授权不代表结果可永久提交。Scheduler 在 `COMMIT_
 rights release，并核对 state version、撤销状态、有效期、操作、市场、语言和商业范围。若推理期间
 授权发生变化，Stage 变为 `EXECUTION_FAILED/RIGHTS_BLOCKED`，已生成对象登记到 orphan queue，
 不会成为 Media Asset 或分析文档。
+
+## 候选提交与采用
+
+TTS Worker 成功回传后，Scheduler 为每个候选登记独立 Media Asset 和 Render Variant，不自动选中任何
+结果。候选必须提交完整的五项 TTS 质检证据，只有 `QC_PASSED` 候选可通过 state version CAS 被唯一
+采用；采纳事务还会再次执行授权门禁。详细不变量见
+[`CANDIDATE_SELECTION.md`](./CANDIDATE_SELECTION.md)。

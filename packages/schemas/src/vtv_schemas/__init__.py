@@ -1,3 +1,11 @@
+from .candidates import (
+    CandidateAdopt,
+    CandidateGroupRead,
+    CandidateQcCreate,
+    CandidateVariantRead,
+    QcMetricCreate,
+    QcMetricRead,
+)
 from .enums import JobStatus, ProjectStatus, StageStatus
 from .episodes import EpisodeRead
 from .jobs import AssetRef, DomainArtifact, JobAccepted, StageJob, StageResult, VariantResult
@@ -34,6 +42,10 @@ __all__ = [
     "ArtifactReleaseRead",
     "ArtifactTransition",
     "Budget",
+    "CandidateAdopt",
+    "CandidateGroupRead",
+    "CandidateQcCreate",
+    "CandidateVariantRead",
     "DomainArtifact",
     "DubbingJobCreate",
     "DubbingUtteranceCreate",
@@ -44,6 +56,8 @@ __all__ = [
     "ProjectCreate",
     "ProjectRead",
     "ProjectStatus",
+    "QcMetricCreate",
+    "QcMetricRead",
     "RightsExecutionCheck",
     "RightsExecutionDecision",
     "RightsReleaseCreate",

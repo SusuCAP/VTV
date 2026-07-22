@@ -7,6 +7,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -167,6 +168,12 @@ class Job(TimestampMixin, Base):
 
 class CandidateGroup(TimestampMixin, Base):
     __tablename__ = "candidate_groups"
+    __table_args__ = (
+        CheckConstraint("state_version >= 1", name="ck_candidate_groups_state_version"),
+        CheckConstraint(
+            "status IN ('OPEN', 'ADOPTED')", name="ck_candidate_groups_status"
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     project_id: Mapped[UUID] = mapped_column(
@@ -174,7 +181,17 @@ class CandidateGroup(TimestampMixin, Base):
     )
     shot_id: Mapped[UUID | None] = mapped_column(ForeignKey("shots.id", ondelete="CASCADE"))
     purpose: Mapped[str] = mapped_column(String(64))
-    adopted_variant_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), unique=True)
+    status: Mapped[str] = mapped_column(String(16), default="OPEN")
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+    adopted_variant_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "render_variants.id",
+            ondelete="SET NULL",
+            use_alter=True,
+            name="fk_candidate_groups_adopted_variant",
+        ),
+        unique=True,
+    )
 
 
 class StageRun(TimestampMixin, Base):
@@ -263,6 +280,63 @@ class MediaAsset(TimestampMixin, Base):
     size_bytes: Mapped[int] = mapped_column(BigInteger)
     content_type: Mapped[str] = mapped_column(String(200))
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
+
+
+class RenderVariant(TimestampMixin, Base):
+    __tablename__ = "render_variants"
+    __table_args__ = (
+        UniqueConstraint("stage_run_id", "variant_no"),
+        CheckConstraint("variant_no >= 1", name="ck_render_variants_variant_no"),
+        CheckConstraint(
+            "status IN ('GENERATED', 'QC_PASSED', 'QC_FAILED', 'REVIEW', "
+            "'ADOPTED', 'REJECTED')",
+            name="ck_render_variants_status",
+        ),
+        Index("ix_render_variants_group_status", "candidate_group_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    candidate_group_id: Mapped[UUID] = mapped_column(
+        ForeignKey("candidate_groups.id", ondelete="CASCADE"), nullable=False
+    )
+    stage_run_id: Mapped[UUID] = mapped_column(
+        ForeignKey("stage_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    variant_no: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="GENERATED")
+    seed: Mapped[int | None] = mapped_column(BigInteger)
+    output_asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT"), nullable=False
+    )
+    raw_metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    allocated_cost: Mapped[dict] = mapped_column(JSONB, default=dict)
+
+
+class QcResult(Base):
+    __tablename__ = "qc_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "render_variant_id", "metric_name", "metric_version", "evaluator_release"
+        ),
+        CheckConstraint("score BETWEEN 0 AND 1", name="ck_qc_results_score"),
+        CheckConstraint(
+            "verdict IN ('PASS', 'FAIL', 'REVIEW')", name="ck_qc_results_verdict"
+        ),
+        Index("ix_qc_results_variant_verdict", "render_variant_id", "verdict"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    render_variant_id: Mapped[UUID] = mapped_column(
+        ForeignKey("render_variants.id", ondelete="CASCADE"), nullable=False
+    )
+    metric_name: Mapped[str] = mapped_column(String(100))
+    metric_version: Mapped[str] = mapped_column(String(100))
+    evaluator_release: Mapped[str] = mapped_column(String(200))
+    score: Mapped[float] = mapped_column(Float)
+    verdict: Mapped[str] = mapped_column(String(16))
+    hard_failure: Mapped[bool] = mapped_column(Boolean, default=False)
+    details: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ArtifactRelease(TimestampMixin, Base):

@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -20,6 +20,13 @@ from vtv_production import (
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from vtv_schemas.candidates import (
+    CandidateAdopt,
+    CandidateGroupRead,
+    CandidateQcCreate,
+    CandidateVariantRead,
+    QcMetricRead,
+)
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -60,6 +67,8 @@ from .models import (
     OrphanAsset,
     OutboxEvent,
     Project,
+    QcResult,
+    RenderVariant,
     RightsRelease,
     StageDependency,
     StageRun,
@@ -104,6 +113,21 @@ class ProductionNotReadyError(ValueError):
     pass
 
 
+class CandidateConflictError(ValueError):
+    pass
+
+
+TTS_REQUIRED_QC_METRICS = frozenset(
+    {
+        "tts_intelligibility",
+        "speaker_similarity",
+        "emotion_fidelity",
+        "duration_fit",
+        "audio_artifact_control",
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
     upload: UploadRead
@@ -116,6 +140,18 @@ class UploadRecord:
 
 
 class ProjectRepository(Protocol):
+    async def list_candidate_groups(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None
+    ) -> list[CandidateGroupRead]: ...
+
+    async def submit_candidate_qc(
+        self, workspace_id: UUID, variant_id: UUID, payload: CandidateQcCreate
+    ) -> CandidateVariantRead: ...
+
+    async def adopt_candidate(
+        self, workspace_id: UUID, group_id: UUID, payload: CandidateAdopt
+    ) -> CandidateGroupRead: ...
+
     async def create_dubbing_job(
         self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
     ) -> JobRead: ...
@@ -787,6 +823,169 @@ class SqlAlchemyProjectRepository:
             await session.flush()
             return _job_read(job)
 
+    async def list_candidate_groups(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None
+    ) -> list[CandidateGroupRead]:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            query = select(CandidateGroup).where(CandidateGroup.project_id == project_id)
+            if job_id is not None:
+                job = await session.scalar(
+                    select(Job.id).where(Job.id == job_id, Job.project_id == project_id)
+                )
+                if job is None:
+                    raise ProjectNotFoundError(job_id)
+                query = query.join(
+                    StageRun, StageRun.candidate_group_id == CandidateGroup.id
+                ).where(StageRun.job_id == job_id)
+            groups = list(
+                await session.scalars(query.distinct().order_by(CandidateGroup.created_at))
+            )
+            return [await _candidate_group_read(session, item) for item in groups]
+
+    async def submit_candidate_qc(
+        self, workspace_id: UUID, variant_id: UUID, payload: CandidateQcCreate
+    ) -> CandidateVariantRead:
+        async with self._sessions.begin() as session:
+            variant = await session.scalar(
+                select(RenderVariant)
+                .join(
+                    CandidateGroup,
+                    CandidateGroup.id == RenderVariant.candidate_group_id,
+                )
+                .join(Project, Project.id == CandidateGroup.project_id)
+                .where(
+                    RenderVariant.id == variant_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if variant is None:
+                raise ProjectNotFoundError(variant_id)
+            if variant.status != "GENERATED":
+                raise CandidateConflictError(
+                    "QC can only be submitted once for a generated variant"
+                )
+            group = await session.get(
+                CandidateGroup, variant.candidate_group_id, with_for_update=True
+            )
+            if group is None or group.status != "OPEN":
+                raise CandidateConflictError("candidate group is no longer open")
+            metric_names = {item.metric_name for item in payload.metrics}
+            if group.purpose == "TTS" and not TTS_REQUIRED_QC_METRICS.issubset(metric_names):
+                missing = sorted(TTS_REQUIRED_QC_METRICS - metric_names)
+                raise CandidateConflictError(f"TTS QC evidence is incomplete: {missing}")
+            for metric in payload.metrics:
+                session.add(
+                    QcResult(
+                        id=self._id_factory(),
+                        render_variant_id=variant.id,
+                        metric_name=metric.metric_name,
+                        metric_version=metric.metric_version,
+                        evaluator_release=metric.evaluator_release,
+                        score=metric.score,
+                        verdict=metric.verdict,
+                        hard_failure=metric.hard_failure,
+                        details=metric.details,
+                    )
+                )
+            if any(item.hard_failure or item.verdict == "FAIL" for item in payload.metrics):
+                variant.status = "QC_FAILED"
+            elif any(item.verdict == "REVIEW" for item in payload.metrics):
+                variant.status = "REVIEW"
+            else:
+                variant.status = "QC_PASSED"
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="render_variant",
+                    aggregate_id=variant.id,
+                    event_type="candidate.qc_recorded",
+                    payload={
+                        "variant_id": str(variant.id),
+                        "candidate_group_id": str(group.id),
+                        "status": variant.status,
+                    },
+                )
+            )
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                raise CandidateConflictError("QC metric evidence already exists") from exc
+            return await _candidate_variant_read(session, variant)
+
+    async def adopt_candidate(
+        self, workspace_id: UUID, group_id: UUID, payload: CandidateAdopt
+    ) -> CandidateGroupRead:
+        async with self._sessions.begin() as session:
+            group = await session.scalar(
+                select(CandidateGroup)
+                .join(Project, Project.id == CandidateGroup.project_id)
+                .where(
+                    CandidateGroup.id == group_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if group is None:
+                raise ProjectNotFoundError(group_id)
+            if group.state_version != payload.expected_state_version:
+                raise CandidateConflictError("candidate group state version mismatch")
+            if group.status != "OPEN" or group.adopted_variant_id is not None:
+                raise CandidateConflictError("candidate group already has an adopted variant")
+            variant = await session.scalar(
+                select(RenderVariant)
+                .where(
+                    RenderVariant.id == payload.variant_id,
+                    RenderVariant.candidate_group_id == group.id,
+                )
+                .with_for_update()
+            )
+            if variant is None:
+                raise ProjectNotFoundError(payload.variant_id)
+            if variant.status != "QC_PASSED":
+                raise CandidateConflictError("only a QC_PASSED variant can be adopted")
+            run = await session.get(StageRun, variant.stage_run_id, with_for_update=True)
+            if run is None:
+                raise ProjectNotFoundError(variant.stage_run_id)
+            rights_failure = await _stage_rights_failure(session, run)
+            if rights_failure is not None:
+                raise CandidateConflictError(f"RIGHTS_BLOCKED: {rights_failure}")
+            group.status = "ADOPTED"
+            group.state_version += 1
+            group.adopted_variant_id = variant.id
+            variant.status = "ADOPTED"
+            run.status = "ADOPTED"
+            await session.execute(
+                update(RenderVariant)
+                .where(
+                    RenderVariant.candidate_group_id == group.id,
+                    RenderVariant.id != variant.id,
+                )
+                .values(status="REJECTED")
+            )
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="candidate_group",
+                    aggregate_id=group.id,
+                    event_type="candidate.adopted",
+                    payload={
+                        "candidate_group_id": str(group.id),
+                        "variant_id": str(variant.id),
+                        "actor_id": str(payload.actor_id),
+                    },
+                )
+            )
+            await session.flush()
+            return await _candidate_group_read(session, group)
+
     async def get_job(self, workspace_id: UUID, job_id: UUID) -> JobRead:
         async with self._sessions() as session:
             job = await session.scalar(
@@ -939,7 +1138,7 @@ class SqlAlchemyProjectRepository:
                 group = CandidateGroup(
                     id=self._id_factory(),
                     project_id=project_id,
-                    purpose=f"TTS:{item.utterance_id}",
+                    purpose="TTS",
                 )
                 session.add(group)
                 session.add(
@@ -1825,6 +2024,110 @@ def _build_tts_request(
         candidate_count=item.candidate_count,
         commercial_use=commercial_use,
     )
+
+
+async def _candidate_variant_read(
+    session: AsyncSession, variant: RenderVariant
+) -> CandidateVariantRead:
+    metrics = list(
+        await session.scalars(
+            select(QcResult)
+            .where(QcResult.render_variant_id == variant.id)
+            .order_by(QcResult.metric_name, QcResult.metric_version)
+        )
+    )
+    return CandidateVariantRead(
+        id=variant.id,
+        candidate_group_id=variant.candidate_group_id,
+        stage_run_id=variant.stage_run_id,
+        variant_no=variant.variant_no,
+        status=variant.status,
+        seed=variant.seed,
+        output_asset_id=variant.output_asset_id,
+        raw_metrics=variant.raw_metrics,
+        allocated_cost=variant.allocated_cost,
+        qc_results=tuple(
+            QcMetricRead(
+                id=item.id,
+                metric_name=item.metric_name,
+                metric_version=item.metric_version,
+                evaluator_release=item.evaluator_release,
+                score=item.score,
+                verdict=item.verdict,
+                hard_failure=item.hard_failure,
+                details=item.details,
+                created_at=item.created_at,
+            )
+            for item in metrics
+        ),
+        created_at=variant.created_at,
+        updated_at=variant.updated_at,
+    )
+
+
+async def _candidate_group_read(
+    session: AsyncSession, group: CandidateGroup
+) -> CandidateGroupRead:
+    variants = list(
+        await session.scalars(
+            select(RenderVariant)
+            .where(RenderVariant.candidate_group_id == group.id)
+            .order_by(RenderVariant.stage_run_id, RenderVariant.variant_no)
+        )
+    )
+    return CandidateGroupRead(
+        id=group.id,
+        project_id=group.project_id,
+        shot_id=group.shot_id,
+        purpose=group.purpose,
+        status=group.status,
+        state_version=group.state_version,
+        adopted_variant_id=group.adopted_variant_id,
+        variants=tuple(
+            [await _candidate_variant_read(session, item) for item in variants]
+        ),
+        created_at=group.created_at,
+        updated_at=group.updated_at,
+    )
+
+
+async def _stage_rights_failure(
+    session: AsyncSession, run: StageRun
+) -> str | None:
+    if run.stage_type != "TTS_GENERATE":
+        return None
+    try:
+        request = run.params["tts_request"]
+        snapshot = request["voice_release"]["rights"]
+        localized = request["localized"]
+        rights_id = UUID(snapshot["rights_release_id"])
+        expected_version = int(run.params["rights_state_version"])
+        if int(snapshot["state_version"]) != expected_version:
+            return "RIGHTS_SNAPSHOT_VERSION_MISMATCH"
+    except (KeyError, TypeError, ValueError):
+        return "RIGHTS_SNAPSHOT_INVALID"
+    release = await session.scalar(
+        select(RightsRelease)
+        .where(
+            RightsRelease.id == rights_id,
+            RightsRelease.project_id == run.project_id,
+        )
+        .with_for_update()
+    )
+    if release is None:
+        return "RIGHTS_RELEASE_MISSING"
+    if release.state_version != expected_version:
+        return "RIGHTS_STATE_CHANGED"
+    decision = evaluate_rights_release(
+        _rights_release_read(release),
+        RightsExecutionCheck(
+            operation="voice_clone",
+            market=str(localized.get("target_market") or ""),
+            language=str(localized.get("target_language") or ""),
+            commercial_use=bool(request.get("commercial_use", True)),
+        ),
+    )
+    return None if decision.allowed else ",".join(decision.reason_codes)
 
 
 async def _locked_model_release(

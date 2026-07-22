@@ -18,8 +18,10 @@ from vtv_db.releases import (
     publish_release,
 )
 from vtv_db.repository import (
+    TTS_REQUIRED_QC_METRICS,
     AnalysisNotReadyError,
     ArtifactConflictError,
+    CandidateConflictError,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
@@ -32,6 +34,13 @@ from vtv_db.rights import evaluate_rights_release
 from vtv_evaluation import evaluate_release
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from vtv_schemas.candidates import (
+    CandidateAdopt,
+    CandidateGroupRead,
+    CandidateQcCreate,
+    CandidateVariantRead,
+    QcMetricRead,
+)
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -64,6 +73,8 @@ class MemoryRepository:
         self._asset_sha256s: dict[UUID, str] = {}
         self._job_idempotency: dict[tuple[UUID, str], UUID] = {}
         self._production_stage_params: dict[UUID, list[dict]] = {}
+        self._candidate_groups: dict[UUID, CandidateGroupRead] = {}
+        self._variant_stage_params: dict[UUID, dict] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -497,6 +508,149 @@ class MemoryRepository:
                 }
             )
         return job
+
+    async def list_candidate_groups(
+        self, workspace_id: UUID, project_id: UUID, job_id: UUID | None = None
+    ) -> list[CandidateGroupRead]:
+        await self.get_project(workspace_id, project_id)
+        if job_id is not None:
+            await self.get_job(workspace_id, job_id)
+        with self._lock:
+            groups = [
+                item for item in self._candidate_groups.values() if item.project_id == project_id
+            ]
+            if job_id is None:
+                return groups
+            stage_ids = {
+                variant.stage_run_id
+                for group in groups
+                for variant in group.variants
+                if self._variant_stage_params.get(variant.id, {}).get("job_id") == str(job_id)
+            }
+            return [
+                group
+                for group in groups
+                if any(item.stage_run_id in stage_ids for item in group.variants)
+            ]
+
+    async def submit_candidate_qc(
+        self, workspace_id: UUID, variant_id: UUID, payload: CandidateQcCreate
+    ) -> CandidateVariantRead:
+        group, variant = await self._get_candidate_variant(workspace_id, variant_id)
+        if variant.status != "GENERATED":
+            raise CandidateConflictError("QC can only be submitted once for a generated variant")
+        metric_names = {item.metric_name for item in payload.metrics}
+        if group.purpose == "TTS" and not TTS_REQUIRED_QC_METRICS.issubset(metric_names):
+            missing = sorted(TTS_REQUIRED_QC_METRICS - metric_names)
+            raise CandidateConflictError(f"TTS QC evidence is incomplete: {missing}")
+        now = datetime.now(UTC)
+        metrics = tuple(
+            QcMetricRead(id=uuid4(), created_at=now, **item.model_dump())
+            for item in payload.metrics
+        )
+        if any(item.hard_failure or item.verdict == "FAIL" for item in payload.metrics):
+            status = "QC_FAILED"
+        elif any(item.verdict == "REVIEW" for item in payload.metrics):
+            status = "REVIEW"
+        else:
+            status = "QC_PASSED"
+        changed = variant.model_copy(
+            update={"status": status, "qc_results": metrics, "updated_at": now}
+        )
+        self._replace_memory_variant(group, changed)
+        return changed
+
+    async def adopt_candidate(
+        self, workspace_id: UUID, group_id: UUID, payload: CandidateAdopt
+    ) -> CandidateGroupRead:
+        with self._lock:
+            group = self._candidate_groups.get(group_id)
+        if group is None:
+            raise ProjectNotFoundError(group_id)
+        await self.get_project(workspace_id, group.project_id)
+        if group.state_version != payload.expected_state_version:
+            raise CandidateConflictError("candidate group state version mismatch")
+        if group.status != "OPEN" or group.adopted_variant_id is not None:
+            raise CandidateConflictError("candidate group already has an adopted variant")
+        selected = next((item for item in group.variants if item.id == payload.variant_id), None)
+        if selected is None:
+            raise ProjectNotFoundError(payload.variant_id)
+        if selected.status != "QC_PASSED":
+            raise CandidateConflictError("only a QC_PASSED variant can be adopted")
+        params = self._variant_stage_params.get(selected.id)
+        if params:
+            snapshot = params["tts_request"]["voice_release"]["rights"]
+            rights = await self._get_rights_release(
+                workspace_id, UUID(snapshot["rights_release_id"])
+            )
+            if rights.state_version != int(snapshot["state_version"]):
+                raise CandidateConflictError("RIGHTS_BLOCKED: RIGHTS_STATE_CHANGED")
+            decision = evaluate_rights_release(
+                rights,
+                RightsExecutionCheck(
+                    operation="voice_clone",
+                    market=params["tts_request"]["localized"]["target_market"],
+                    language=params["tts_request"]["localized"]["target_language"],
+                    commercial_use=params["tts_request"].get("commercial_use", True),
+                ),
+            )
+            if not decision.allowed:
+                raise CandidateConflictError(
+                    f"RIGHTS_BLOCKED: {','.join(decision.reason_codes)}"
+                )
+        now = datetime.now(UTC)
+        changed = group.model_copy(
+            update={
+                "status": "ADOPTED",
+                "state_version": group.state_version + 1,
+                "adopted_variant_id": selected.id,
+                "variants": tuple(
+                    item.model_copy(
+                        update={
+                            "status": "ADOPTED" if item.id == selected.id else "REJECTED",
+                            "updated_at": now,
+                        }
+                    )
+                    for item in group.variants
+                ),
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._candidate_groups[group.id] = changed
+        return changed
+
+    async def _get_candidate_variant(
+        self, workspace_id: UUID, variant_id: UUID
+    ) -> tuple[CandidateGroupRead, CandidateVariantRead]:
+        with self._lock:
+            found = next(
+                (
+                    (group, variant)
+                    for group in self._candidate_groups.values()
+                    for variant in group.variants
+                    if variant.id == variant_id
+                ),
+                None,
+            )
+        if found is None:
+            raise ProjectNotFoundError(variant_id)
+        await self.get_project(workspace_id, found[0].project_id)
+        return found
+
+    def _replace_memory_variant(
+        self, group: CandidateGroupRead, changed: CandidateVariantRead
+    ) -> None:
+        updated = group.model_copy(
+            update={
+                "variants": tuple(
+                    changed if item.id == changed.id else item for item in group.variants
+                ),
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            self._candidate_groups[group.id] = updated
 
     async def get_job(self, workspace_id: UUID, job_id: UUID) -> JobRead:
         with self._lock:

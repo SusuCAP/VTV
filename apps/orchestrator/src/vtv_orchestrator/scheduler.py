@@ -14,6 +14,7 @@ from vtv_db.models import (
     OrphanAsset,
     OutboxEvent,
     Project,
+    RenderVariant,
     RightsRelease,
     StageAttempt,
     StageDependency,
@@ -34,6 +35,8 @@ class ClaimedStage:
     project_id: UUID
     workspace_id: UUID
     episode_id: UUID | None
+    shot_id: UUID | None
+    candidate_group_id: UUID | None
     job_id: UUID | None
     idempotency_key: str
     runtime_profile_id: str
@@ -92,6 +95,8 @@ class Scheduler:
                 project_id=row["project_id"],
                 workspace_id=workspace_id,
                 episode_id=row["episode_id"],
+                shot_id=row["shot_id"],
+                candidate_group_id=row["candidate_group_id"],
                 job_id=row["job_id"],
                 idempotency_key=row["idempotency_key"],
                 runtime_profile_id=row["runtime_profile_id"],
@@ -119,6 +124,8 @@ class Scheduler:
             stage_attempt_id=claim.stage_attempt_id,
             project_id=claim.project_id,
             episode_id=claim.episode_id,
+            shot_id=claim.shot_id,
+            candidate_group_id=claim.candidate_group_id,
             idempotency_key=claim.idempotency_key,
             stage_type=claim.stage_type,
             input_assets=[
@@ -198,12 +205,14 @@ class Scheduler:
                     session, claim, result, "CONDITIONAL_COMMIT_REJECTED"
                 )
                 return False
+            variant_asset_ids: dict[int, list[UUID]] = {}
             for variant in result.variants:
                 for asset in variant.output_assets:
-                    await session.execute(
+                    asset_id = uuid4()
+                    inserted_asset_id = await session.scalar(
                         insert(MediaAsset)
                         .values(
-                            id=uuid4(),
+                            id=asset_id,
                             workspace_id=claim.workspace_id,
                             project_id=claim.project_id,
                             source_stage_run_id=claim.stage_run_id,
@@ -225,6 +234,39 @@ class Scheduler:
                                 MediaAsset.sha256,
                                 MediaAsset.object_uri,
                             ]
+                        )
+                        .returning(MediaAsset.id)
+                    )
+                    if inserted_asset_id is None:
+                        inserted_asset_id = await session.scalar(
+                            select(MediaAsset.id).where(
+                                MediaAsset.workspace_id == claim.workspace_id,
+                                MediaAsset.sha256 == asset.sha256,
+                                MediaAsset.object_uri == asset.uri,
+                            )
+                        )
+                    if inserted_asset_id is None:
+                        raise RuntimeError("committed output asset could not be resolved")
+                    variant_asset_ids.setdefault(variant.variant_no, []).append(
+                        inserted_asset_id
+                    )
+            if claim.candidate_group_id is not None:
+                for variant in result.variants:
+                    output_ids = variant_asset_ids.get(variant.variant_no, [])
+                    if len(output_ids) != 1:
+                        raise ValueError(
+                            "candidate variant must contain exactly one primary output asset"
+                        )
+                    session.add(
+                        RenderVariant(
+                            id=uuid4(),
+                            candidate_group_id=claim.candidate_group_id,
+                            stage_run_id=claim.stage_run_id,
+                            variant_no=variant.variant_no,
+                            seed=variant.seed,
+                            output_asset_id=output_ids[0],
+                            raw_metrics=variant.raw_metrics,
+                            allocated_cost=variant.allocated_cost,
                         )
                     )
             if result.domain_artifacts:

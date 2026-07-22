@@ -15,6 +15,7 @@ from vtv_db.models import (
     ModelRelease,
     OrphanAsset,
     OutboxEvent,
+    RenderVariant,
     RightsRelease,
     StageDependency,
     StageRun,
@@ -23,6 +24,7 @@ from vtv_db.repository import SqlAlchemyProjectRepository
 from vtv_orchestrator.mock_worker import execute
 from vtv_orchestrator.runner import OrchestratorLoop
 from vtv_orchestrator.scheduler import Scheduler
+from vtv_schemas.candidates import CandidateAdopt, CandidateQcCreate, QcMetricCreate
 from vtv_schemas.jobs import AssetRef, StageResult, VariantResult
 from vtv_schemas.production import DubbingJobCreate, DubbingUtteranceCreate
 from vtv_schemas.projects import ProjectCreate
@@ -289,28 +291,106 @@ async def test_dubbing_job_persists_registry_and_rights_bound_stages(
                     rights_release_id=rights.id,
                     seed=42,
                 ),
+                DubbingUtteranceCreate(
+                    utterance_id="utterance-2",
+                    character_id="character-1",
+                    source_text="再见",
+                    source_language="zh-CN",
+                    target_text="Goodbye",
+                    target_language="en-US",
+                    start_seconds=2,
+                    end_seconds=3.5,
+                    voice_release_id=voice_id,
+                    rights_release_id=rights.id,
+                    seed=84,
+                ),
             ),
         ),
     )
 
     async with database() as session:
-        run = await session.scalar(select(StageRun).where(StageRun.job_id == job.id))
+        runs = list(await session.scalars(select(StageRun).where(StageRun.job_id == job.id)))
         event_count = await session.scalar(
             select(func.count())
             .select_from(OutboxEvent)
             .where(OutboxEvent.event_type == "dubbing.requested")
         )
-    assert run and run.stage_type == "TTS_GENERATE"
-    assert run.model_release_id == model_id
-    assert run.params["rights_state_version"] == 1
-    assert run.params["tts_request"]["voice_release"]["rights"]["rights_release_id"] == str(
-        rights.id
+    assert len(runs) == 2
+    assert all(run.stage_type == "TTS_GENERATE" for run in runs)
+    assert all(run.model_release_id == model_id for run in runs)
+    assert all(run.params["rights_state_version"] == 1 for run in runs)
+    assert all(
+        run.params["tts_request"]["voice_release"]["rights"]["rights_release_id"]
+        == str(rights.id)
+        for run in runs
     )
     assert event_count == 1
 
     scheduler = Scheduler(database)
+    first_claim = await scheduler.claim_one("tts-test-worker")
+    assert first_claim
+    first_committed = await scheduler.commit_result(
+        first_claim,
+        StageResult(
+            stage_run_id=first_claim.stage_run_id,
+            stage_attempt_id=first_claim.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[
+                VariantResult(
+                    variant_no=index,
+                    seed=40 + index,
+                    output_assets=[
+                        AssetRef(
+                            uri=f"s3://bucket/candidate-{index}.wav",
+                            sha256=str(index) * 64,
+                            media_type="audio/wav",
+                            size_bytes=10,
+                        )
+                    ],
+                )
+                for index in (1, 2)
+            ],
+        ),
+    )
+    assert first_committed is True
+    await scheduler.finalize_stage(first_claim)
+    groups = await repository.list_candidate_groups(workspace_id, project.id, job.id)
+    completed_group = next(item for item in groups if item.variants)
+    passed = await repository.submit_candidate_qc(
+        workspace_id,
+        completed_group.variants[0].id,
+        CandidateQcCreate(
+            metrics=tuple(
+                QcMetricCreate(
+                    metric_name=name,
+                    metric_version="metric@1",
+                    evaluator_release="evaluator@1",
+                    score=0.95,
+                    verdict="PASS",
+                )
+                for name in (
+                    "tts_intelligibility",
+                    "speaker_similarity",
+                    "emotion_fidelity",
+                    "duration_fit",
+                    "audio_artifact_control",
+                )
+            )
+        ),
+    )
+    adopted = await repository.adopt_candidate(
+        workspace_id,
+        completed_group.id,
+        CandidateAdopt(
+            variant_id=passed.id,
+            expected_state_version=1,
+            actor_id=UUID(int=609),
+        ),
+    )
+    assert adopted.adopted_variant_id == passed.id
+
     claim = await scheduler.claim_one("tts-test-worker")
-    assert claim and claim.stage_run_id == run.id
+    assert claim and claim.stage_run_id != first_claim.stage_run_id
     await repository.revoke_rights_release(
         workspace_id, rights.id, UUID(int=608), "withdrawn during inference", 1
     )
@@ -337,7 +417,9 @@ async def test_dubbing_job_persists_registry_and_rights_bound_stages(
     )
     assert committed is False
     async with database() as session:
-        failed_run = await session.get(StageRun, run.id)
+        failed_run = await session.get(StageRun, claim.stage_run_id)
         orphan_count = await session.scalar(select(func.count()).select_from(OrphanAsset))
+        variant_count = await session.scalar(select(func.count()).select_from(RenderVariant))
     assert failed_run and failed_run.status == "EXECUTION_FAILED"
     assert orphan_count == 1
+    assert variant_count == 2

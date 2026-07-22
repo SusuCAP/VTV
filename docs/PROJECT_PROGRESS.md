@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 35% | 权威授权、逐集 Dubbing Job、多候选 TTS 与 L0–L5 路由 |
+| Phase 3 自动生产 | 进行中 | 45% | 权威授权、逐集 Dubbing Job、多候选 TTS、质检证据与唯一采纳 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -180,14 +180,18 @@
 - [x] Registry 稳定选择已批准 TTS release，每句创建独立 Candidate Group 与 READY Stage Run。
 - [x] Dubbing Stage 固定 voice/localization/rights/model release、seed、候选数和时长容差。
 - [x] Scheduler 条件提交重新锁定 rights release；运行中撤销会拒绝结果并登记 orphan。
+- [x] Scheduler 将每个 TTS 输出登记为不可变 Media Asset 与 Render Variant，保留 seed、指标和成本。
+- [x] 新增版本化 QC Result 证据表与 API，TTS 强制 intelligibility、speaker similarity、emotion、duration、artifact 五项齐备。
+- [x] Candidate Group 通过 state version CAS 唯一采纳 `QC_PASSED` 候选，自动拒绝同组其余候选。
+- [x] 候选采纳事务重新验证权威授权，阻止质检后撤销或版本变化的声音继续进入生产。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add episode dubbing workflow`
+`feat: add governed candidate selection`
 
-本提交完成后，下一步实现 TTS candidate selection、L0–L5 口型路由 Stage 与对应候选生产 DAG；
+本提交完成后，下一步实现 L0–L5 口型路由 Stage 与对应候选生产 DAG；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -291,3 +295,7 @@
 | 2026-07-22 | `pytest` | 123 passed，2 个真实 PostgreSQL 用例待外部数据库执行 |
 | 2026-07-22 | 逐集 Dubbing Job/API | 9 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
 | 2026-07-22 | `pytest` | 125 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | TTS 候选质检与唯一采纳 | 5 passed；覆盖五项证据、QC 状态、CAS、唯一赢家与采纳前授权复核 |
+| 2026-07-22 | SQLAlchemy metadata | 24 tables loaded；`render_variants`、`qc_results` 及循环外键可解析 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 128 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |

@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
+    CandidateConflictError,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
@@ -16,6 +17,12 @@ from vtv_db.repository import (
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from vtv_schemas.candidates import (
+    CandidateAdopt,
+    CandidateGroupRead,
+    CandidateQcCreate,
+    CandidateVariantRead,
+)
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.model_releases import (
@@ -262,6 +269,54 @@ def create_app(
             return await repo.list_jobs(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/candidate-groups",
+        response_model=list[CandidateGroupRead],
+    )
+    async def list_candidate_groups(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        job_id: Annotated[UUID | None, Query()] = None,
+    ) -> list[CandidateGroupRead]:
+        try:
+            return await repo.list_candidate_groups(workspace, project_id, job_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project or job not found") from exc
+
+    @app.post(
+        "/v1/candidate-variants/{variant_id}/qc",
+        response_model=CandidateVariantRead,
+    )
+    async def submit_candidate_qc(
+        variant_id: UUID,
+        payload: CandidateQcCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> CandidateVariantRead:
+        try:
+            return await repo.submit_candidate_qc(workspace, variant_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="candidate variant not found") from exc
+        except CandidateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/candidate-groups/{group_id}/adopt",
+        response_model=CandidateGroupRead,
+    )
+    async def adopt_candidate(
+        group_id: UUID,
+        payload: CandidateAdopt,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> CandidateGroupRead:
+        try:
+            return await repo.adopt_candidate(workspace, group_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="candidate group or variant not found"
+            ) from exc
+        except CandidateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/v1/projects/{project_id}/artifact-releases",
