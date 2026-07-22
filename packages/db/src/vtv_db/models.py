@@ -262,6 +262,56 @@ class MediaAsset(TimestampMixin, Base):
     metadata_json: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
 
 
+class ArtifactRelease(TimestampMixin, Base):
+    __tablename__ = "artifact_releases"
+    __table_args__ = (
+        UniqueConstraint("project_id", "artifact_type", "version"),
+        CheckConstraint("version >= 1", name="ck_artifact_releases_version"),
+        CheckConstraint("state_version >= 1", name="ck_artifact_releases_state_version"),
+        CheckConstraint(
+            "status IN ('DRAFT', 'CONFIRMED', 'RELEASED', 'STALE')",
+            name="ck_artifact_releases_status",
+        ),
+        Index("ix_artifact_releases_project_type_status", "project_id", "artifact_type", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    artifact_type: Mapped[str] = mapped_column(String(64))
+    version: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(32), default="DRAFT")
+    state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+    content_asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="RESTRICT"), nullable=False
+    )
+    supersedes_release_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("artifact_releases.id", ondelete="SET NULL")
+    )
+    confirmed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    stale_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ArtifactReleaseDependency(Base):
+    __tablename__ = "artifact_release_dependencies"
+    __table_args__ = (
+        CheckConstraint(
+            "upstream_release_id <> downstream_release_id",
+            name="ck_artifact_release_dependencies_not_self",
+        ),
+    )
+
+    upstream_release_id: Mapped[UUID] = mapped_column(
+        ForeignKey("artifact_releases.id", ondelete="CASCADE"), primary_key=True
+    )
+    downstream_release_id: Mapped[UUID] = mapped_column(
+        ForeignKey("artifact_releases.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
 class OrphanAsset(TimestampMixin, Base):
     __tablename__ = "orphan_assets"
 

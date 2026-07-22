@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 45% | 可执行项目合成 Worker 与版本化本土化资产草稿 |
+| Phase 2 全剧分析 | 进行中 | 51% | 项目合成与资产确认/release/传递失效基础层 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -79,13 +79,17 @@
 - [x] 实现 `PROJECT_SYNTHESIS` Worker，强类型识别音频/视觉分析并拒绝缺失或重复输入。
 - [x] 合并音频、视觉模型 release，并追加项目合成器 release 形成完整 provenance。
 - [x] 输出版本关联的 Bible、Anchor Pack、Continuity Snapshot 可审核草稿。
+- [x] 新增 Artifact Release 与 Release Dependency 数据库模型及 `0004` 迁移。
+- [x] 实现 `DRAFT→CONFIRMED→RELEASED` 状态机与 state version CAS 校验。
+- [x] 发布门禁要求全部直接依赖已发布，阻止未确认或 stale 上游进入生产。
+- [x] 实现沿依赖图传递 stale，支持分叉、汇合及异常依赖环。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add asset release and invalidation rules`
+`feat: persist artifact release transitions`
 
-下一步实现资产确认、release 锁定，以及 Bible/Anchor 变更触发的下游 stale 传播规则。
+下一步实现事务 Repository 与控制 API，把确认、发布及 stale 传播真正写入 PostgreSQL 和 Outbox。
 
 ## 决策日志
 
@@ -139,3 +143,5 @@
 | 2026-07-22 | `pytest` | 38 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | PROJECT_SYNTHESIS Worker 测试 | 1 passed；校验强类型输入、草稿输出与跨阶段 provenance 合并 |
 | 2026-07-22 | `pytest` | 39 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Artifact Release 状态机测试 | 3 passed；覆盖 CAS 确认/发布、依赖门禁和循环图传递失效 |
+| 2026-07-22 | `pytest` | 42 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
