@@ -1,19 +1,25 @@
+from __future__ import annotations
+
 from math import ceil
 from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
     CandidateConflictError,
     DeliveryConflictError,
+    FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
     ProjectRepository,
     RightsReleaseConflictError,
+    StageNotReadyError,
+    StageRunRead,
     UploadConflictError,
 )
 from vtv_delivery import DeliveryApprove, DeliveryCreate, DeliveryRead
@@ -63,6 +69,16 @@ from .database import create_repository
 from .storage import create_object_store
 
 DEFAULT_LOCAL_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000001")
+
+
+class StageRetryRequest(BaseModel):
+    reason: str = Field(default="manual-retry", min_length=1, max_length=200)
+
+
+class ShotRouteOverride(BaseModel):
+    route: str = Field(pattern=r"^[ABCDEF]$")
+    reason: str = Field(default="manual-override", min_length=1, max_length=200)
+    force_rerun: bool = False
 
 
 def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUID:
@@ -784,6 +800,73 @@ def create_app(
             return (await repo.get_upload(workspace, upload_id)).upload
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="upload not found") from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/stages/{stage_run_id}:retry",
+        response_model=StageRunRead,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_stage(
+        project_id: UUID,
+        stage_run_id: UUID,
+        payload: StageRetryRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> StageRunRead:
+        try:
+            return await repo.retry_stage(workspace, project_id, stage_run_id, payload.reason)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="stage run not found") from exc
+        except StageNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/shots/{shot_id}:override",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def override_shot_route(
+        project_id: UUID,
+        shot_id: UUID,
+        payload: ShotRouteOverride,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> dict:
+        try:
+            result = await repo.override_shot_route(
+                workspace,
+                project_id,
+                shot_id,
+                payload.route,
+                payload.reason,
+                payload.force_rerun,
+            )
+            return {
+                "shot_id": str(result["shot_id"]),
+                "route": result["route"],
+                "pending_stage_run_id": (
+                    str(result["pending_stage_run_id"])
+                    if result["pending_stage_run_id"] is not None
+                    else None
+                ),
+            }
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="shot not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/exceptions",
+        response_model=list[FailedStageRead],
+    )
+    async def list_exceptions(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        stage_type: Annotated[str | None, Query(max_length=64)] = None,
+        episode_id: Annotated[UUID | None, Query()] = None,
+        status: Annotated[str, Query(max_length=64)] = "EXECUTION_FAILED",
+    ) -> list[FailedStageRead]:
+        try:
+            return await repo.list_failed_stages(
+                workspace, project_id, stage_type, episode_id, status
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     return app
 

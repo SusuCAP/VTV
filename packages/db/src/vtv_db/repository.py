@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -5,6 +7,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from pydantic import BaseModel
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -95,6 +98,7 @@ from .models import (
     RenderVariant,
     RightsRelease,
     Shot,
+    StageAttempt,
     StageDependency,
     StageRun,
     UploadSession,
@@ -144,6 +148,36 @@ class CandidateConflictError(ValueError):
 
 class DeliveryConflictError(ValueError):
     pass
+
+
+class StageNotReadyError(ValueError):
+    pass
+
+
+class StageRunRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    job_id: UUID | None
+    episode_id: UUID | None
+    shot_id: UUID | None
+    stage_type: str
+    status: str
+    state_version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class FailedStageRead(BaseModel):
+    stage_run_id: UUID
+    stage_type: str
+    episode_id: UUID | None
+    shot_id: UUID | None
+    status: str
+    error_class: str | None
+    error_detail: dict | None
+    attempt_count: int
+    last_attempt_at: datetime | None
+    created_at: datetime
 
 
 TTS_REQUIRED_QC_METRICS = frozenset(
@@ -486,6 +520,33 @@ class ProjectRepository(Protocol):
         object_uri: str,
         reason: str,
     ) -> None: ...
+
+    async def retry_stage(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_run_id: UUID,
+        reason: str,
+    ) -> StageRunRead: ...
+
+    async def override_shot_route(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        shot_id: UUID,
+        route: str,
+        reason: str,
+        force_rerun: bool,
+    ) -> dict: ...
+
+    async def list_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_type: str | None = None,
+        episode_id: UUID | None = None,
+        status: str = "EXECUTION_FAILED",
+    ) -> list[FailedStageRead]: ...
 
 
 class SqlAlchemyProjectRepository:
@@ -3178,6 +3239,234 @@ class SqlAlchemyProjectRepository:
                     delete_after=datetime.now(UTC) + timedelta(days=1),
                 )
             )
+
+    async def retry_stage(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_run_id: UUID,
+        reason: str,
+    ) -> StageRunRead:
+        async with self._sessions.begin() as session:
+            run = await session.scalar(
+                select(StageRun)
+                .join(Project, Project.id == StageRun.project_id)
+                .where(
+                    StageRun.id == stage_run_id,
+                    StageRun.project_id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if run is None:
+                raise ProjectNotFoundError(stage_run_id)
+            if run.status != "EXECUTION_FAILED":
+                raise StageNotReadyError(
+                    f"stage_run {stage_run_id} has status {run.status!r}; "
+                    "only EXECUTION_FAILED stages can be retried"
+                )
+            run.status = "READY"
+            run.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="stage_run",
+                    aggregate_id=run.id,
+                    event_type="stage_run.retry_requested",
+                    payload={
+                        "stage_run_id": str(run.id),
+                        "project_id": str(project_id),
+                        "stage_type": run.stage_type,
+                        "reason": reason,
+                    },
+                )
+            )
+            await session.flush()
+            return _stage_run_read(run)
+
+    async def override_shot_route(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        shot_id: UUID,
+        route: str,
+        reason: str,
+        force_rerun: bool,
+    ) -> dict:
+        _ROUTE_TO_STAGE: dict[str, str] = {
+            "B": "VISUAL_SUBTITLE_CLEAN",
+            "C": "VISUAL_CHARACTER_REPLACE",
+            "D": "VISUAL_BACKGROUND_REPLACE",
+            "E": "VISUAL_JOINT_REPLACE",
+            "F": "VISUAL_FULL_REGEN",
+        }
+        async with self._sessions.begin() as session:
+            shot = await session.scalar(
+                select(Shot)
+                .join(Episode, Episode.id == Shot.episode_id)
+                .join(Project, Project.id == Episode.project_id)
+                .where(
+                    Shot.id == shot_id,
+                    Episode.project_id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if shot is None:
+                raise ProjectNotFoundError(shot_id)
+            control = await session.get(ExecutionControl, project_id)
+            pending_stage_run_id: UUID | None = None
+            if force_rerun and route != "A":
+                stage_type = _ROUTE_TO_STAGE[route]
+                existing = await session.scalar(
+                    select(StageRun)
+                    .where(
+                        StageRun.project_id == project_id,
+                        StageRun.shot_id == shot_id,
+                        StageRun.stage_type == stage_type,
+                        StageRun.status.in_(("READY", "RUNNING", "PENDING")),
+                    )
+                    .with_for_update()
+                )
+                if existing is not None:
+                    existing.status = "EXECUTION_FAILED"
+                    existing.state_version += 1
+                control_version = control.control_version if control is not None else 1
+                new_run = StageRun(
+                    id=self._id_factory(),
+                    project_id=project_id,
+                    episode_id=shot.episode_id,
+                    shot_id=shot_id,
+                    stage_type=stage_type,
+                    status="READY",
+                    idempotency_key=f"override:{shot_id}:{route}:{self._id_factory()}",
+                    runtime_profile_id="gpu-visual",
+                    observed_control_version=control_version,
+                    params={"shot_id": str(shot_id), "route": route, "override_reason": reason},
+                )
+                session.add(new_run)
+                await session.flush()
+                pending_stage_run_id = new_run.id
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="shot",
+                    aggregate_id=shot_id,
+                    event_type="stage_run.route_override_requested",
+                    payload={
+                        "shot_id": str(shot_id),
+                        "project_id": str(project_id),
+                        "route": route,
+                        "reason": reason,
+                        "force_rerun": force_rerun,
+                        "pending_stage_run_id": (
+                            str(pending_stage_run_id) if pending_stage_run_id else None
+                        ),
+                    },
+                )
+            )
+            await session.flush()
+            return {
+                "shot_id": shot_id,
+                "route": route,
+                "pending_stage_run_id": pending_stage_run_id,
+            }
+
+    async def list_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_type: str | None = None,
+        episode_id: UUID | None = None,
+        status: str = "EXECUTION_FAILED",
+    ) -> list[FailedStageRead]:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            attempt_ranked = (
+                select(
+                    StageAttempt.stage_run_id,
+                    StageAttempt.error_class,
+                    StageAttempt.error_detail,
+                    func.row_number()
+                    .over(
+                        partition_by=StageAttempt.stage_run_id,
+                        order_by=StageAttempt.attempt_no.desc(),
+                    )
+                    .label("rn"),
+                )
+                .subquery("attempt_ranked")
+            )
+            latest_attempt = (
+                select(attempt_ranked).where(attempt_ranked.c.rn == 1).subquery("latest_attempt")
+            )
+            counts_subq = (
+                select(
+                    StageAttempt.stage_run_id,
+                    func.count().label("attempt_count"),
+                    func.max(StageAttempt.started_at).label("last_attempt_at"),
+                )
+                .group_by(StageAttempt.stage_run_id)
+                .subquery("attempt_counts")
+            )
+            query = (
+                select(
+                    StageRun,
+                    latest_attempt.c.error_class,
+                    latest_attempt.c.error_detail,
+                    counts_subq.c.attempt_count,
+                    counts_subq.c.last_attempt_at,
+                )
+                .outerjoin(latest_attempt, latest_attempt.c.stage_run_id == StageRun.id)
+                .outerjoin(counts_subq, counts_subq.c.stage_run_id == StageRun.id)
+                .where(
+                    StageRun.project_id == project_id,
+                    StageRun.status == status,
+                )
+            )
+            if stage_type is not None:
+                query = query.where(StageRun.stage_type == stage_type)
+            if episode_id is not None:
+                query = query.where(StageRun.episode_id == episode_id)
+            rows = list(
+                await session.execute(query.order_by(StageRun.created_at.desc()))
+            )
+            return [
+                FailedStageRead(
+                    stage_run_id=row.StageRun.id,
+                    stage_type=row.StageRun.stage_type,
+                    episode_id=row.StageRun.episode_id,
+                    shot_id=row.StageRun.shot_id,
+                    status=row.StageRun.status,
+                    error_class=row.error_class,
+                    error_detail=row.error_detail,
+                    attempt_count=row.attempt_count or 0,
+                    last_attempt_at=row.last_attempt_at,
+                    created_at=row.StageRun.created_at,
+                )
+                for row in rows
+            ]
+
+
+def _stage_run_read(run: StageRun) -> StageRunRead:
+    return StageRunRead(
+        id=run.id,
+        project_id=run.project_id,
+        job_id=run.job_id,
+        episode_id=run.episode_id,
+        shot_id=run.shot_id,
+        stage_type=run.stage_type,
+        status=run.status,
+        state_version=run.state_version,
+        created_at=run.created_at or datetime.now(UTC),
+        updated_at=run.updated_at or datetime.now(UTC),
+    )
 
 
 def _project_read(project: Project) -> ProjectRead:

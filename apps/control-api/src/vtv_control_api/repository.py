@@ -25,10 +25,12 @@ from vtv_db.repository import (
     ArtifactConflictError,
     CandidateConflictError,
     DeliveryConflictError,
+    FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectNotFoundError,
     RightsReleaseConflictError,
+    StageRunRead,
     UploadConflictError,
     UploadRecord,
     _build_delivery_manifest,
@@ -1930,6 +1932,42 @@ class MemoryRepository:
         reason: str,
     ) -> None:
         await self.get_project(workspace_id, project_id)
+
+    async def retry_stage(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_run_id: UUID,
+        reason: str,
+    ) -> StageRunRead:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        raise ProjectNotFoundError(stage_run_id)
+
+    async def override_shot_route(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        shot_id: UUID,
+        route: str,
+        reason: str,
+        force_rerun: bool,
+    ) -> dict:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        raise ProjectNotFoundError(shot_id)
+
+    async def list_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        stage_type: str | None = None,
+        episode_id: UUID | None = None,
+        status: str = "EXECUTION_FAILED",
+    ) -> list[FailedStageRead]:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return []
 
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:
