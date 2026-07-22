@@ -11,8 +11,9 @@ class MultipartInit(BaseModel):
     filename: str = Field(min_length=1, max_length=255)
     content_type: str = Field(min_length=1, max_length=200)
     size_bytes: int = Field(gt=0)
+    episode_no: int | None = Field(default=None, ge=1)
     part_size_bytes: int = Field(default=64 * 1024 * 1024, ge=MIN_PART_SIZE, le=MAX_PART_SIZE)
-    sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class UploadPart(BaseModel):
@@ -46,3 +47,6 @@ class UploadRead(BaseModel):
     size_bytes: int
     status: str
     completed_parts: list[UploadPart] = Field(default_factory=list)
+    episode_id: UUID | None = None
+    media_asset_id: UUID | None = None
+    ingest_job_id: UUID | None = None

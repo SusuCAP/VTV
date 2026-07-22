@@ -77,8 +77,42 @@ class Episode(TimestampMixin, Base):
     )
     episode_no: Mapped[int] = mapped_column(Integer)
     title: Mapped[str | None] = mapped_column(String(200))
-    source_asset_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+    source_asset_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="SET NULL")
+    )
     duration_ms: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class UploadSession(TimestampMixin, Base):
+    __tablename__ = "upload_sessions"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "provider_upload_id"),
+        Index("ix_upload_sessions_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    episode_no: Mapped[int | None] = mapped_column(Integer)
+    filename: Mapped[str] = mapped_column(String(255))
+    content_type: Mapped[str] = mapped_column(String(200))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    part_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    declared_sha256: Mapped[str] = mapped_column(String(64))
+    object_key: Mapped[str] = mapped_column(Text, unique=True)
+    provider_upload_id: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(32), default="UPLOADING")
+    completed_parts: Mapped[list] = mapped_column(JSONB, default=list)
+    object_checksum_sha256: Mapped[str | None] = mapped_column(String(64))
+    episode_id: Mapped[UUID | None] = mapped_column(ForeignKey("episodes.id", ondelete="SET NULL"))
+    media_asset_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("media_assets.id", ondelete="SET NULL")
+    )
+    ingest_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
 
 
 class Shot(TimestampMixin, Base):

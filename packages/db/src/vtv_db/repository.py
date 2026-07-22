@@ -1,30 +1,49 @@
 from collections.abc import Callable
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
+from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import PROJECT_ANALYSIS_DAG, validate_dag
 from .models import (
+    Episode,
     ExecutionControl,
     Job,
+    MediaAsset,
+    OrphanAsset,
     OutboxEvent,
     Project,
     StageDependency,
     StageRun,
+    UploadSession,
     Workspace,
 )
 
 
 class ProjectNotFoundError(KeyError):
     pass
+
+
+class UploadConflictError(ValueError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class UploadRecord:
+    upload: UploadRead
+    provider_upload_id: str
+    declared_sha256: str
+    content_type: str
+    part_size_bytes: int
 
 
 class ProjectRepository(Protocol):
@@ -35,6 +54,36 @@ class ProjectRepository(Protocol):
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead: ...
 
     async def get_job(self, workspace_id: UUID, job_id: UUID) -> JobRead: ...
+
+    async def create_upload_session(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        payload: MultipartInit,
+        object_key: str,
+        provider_upload_id: str,
+    ) -> UploadRead: ...
+
+    async def get_upload(self, workspace_id: UUID, upload_id: UUID) -> UploadRecord: ...
+
+    async def complete_upload(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        parts: list[UploadPart],
+        object_checksum_sha256: str,
+        object_uri: str,
+        content_type: str,
+        size_bytes: int,
+    ) -> UploadRead: ...
+
+    async def register_orphan_asset(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        object_uri: str,
+        reason: str,
+    ) -> None: ...
 
 
 class SqlAlchemyProjectRepository:
@@ -167,6 +216,180 @@ class SqlAlchemyProjectRepository:
                 raise ProjectNotFoundError(job_id)
             return _job_read(job)
 
+    async def create_upload_session(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        payload: MultipartInit,
+        object_key: str,
+        provider_upload_id: str,
+    ) -> UploadRead:
+        async with self._sessions.begin() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == payload.project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(payload.project_id)
+            upload = UploadSession(
+                id=upload_id,
+                workspace_id=workspace_id,
+                project_id=payload.project_id,
+                episode_no=payload.episode_no,
+                filename=payload.filename,
+                content_type=payload.content_type,
+                size_bytes=payload.size_bytes,
+                part_size_bytes=payload.part_size_bytes,
+                declared_sha256=payload.sha256,
+                object_key=object_key,
+                provider_upload_id=provider_upload_id,
+                status="UPLOADING",
+                completed_parts=[],
+            )
+            session.add(upload)
+            await session.flush()
+            return _upload_read(upload)
+
+    async def get_upload(self, workspace_id: UUID, upload_id: UUID) -> UploadRecord:
+        async with self._sessions() as session:
+            upload = await session.scalar(
+                select(UploadSession).where(
+                    UploadSession.id == upload_id,
+                    UploadSession.workspace_id == workspace_id,
+                )
+            )
+            if upload is None:
+                raise ProjectNotFoundError(upload_id)
+            return _upload_record(upload)
+
+    async def complete_upload(
+        self,
+        workspace_id: UUID,
+        upload_id: UUID,
+        parts: list[UploadPart],
+        object_checksum_sha256: str,
+        object_uri: str,
+        content_type: str,
+        size_bytes: int,
+    ) -> UploadRead:
+        async with self._sessions.begin() as session:
+            upload = await session.scalar(
+                select(UploadSession)
+                .where(
+                    UploadSession.id == upload_id,
+                    UploadSession.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if upload is None:
+                raise ProjectNotFoundError(upload_id)
+            if upload.status != "UPLOADING":
+                raise UploadConflictError(f"upload is already {upload.status}")
+            if upload.declared_sha256 != object_checksum_sha256:
+                raise UploadConflictError("object SHA-256 does not match upload declaration")
+            if upload.size_bytes != size_bytes:
+                raise UploadConflictError("stored object size does not match upload declaration")
+
+            episode_no = upload.episode_no
+            if episode_no is None:
+                episode_no = (
+                    await session.scalar(
+                        select(func.coalesce(func.max(Episode.episode_no), 0) + 1).where(
+                            Episode.project_id == upload.project_id
+                        )
+                    )
+                )
+            episode = Episode(
+                id=self._id_factory(),
+                project_id=upload.project_id,
+                episode_no=episode_no,
+                title=upload.filename,
+            )
+            asset = MediaAsset(
+                id=self._id_factory(),
+                workspace_id=workspace_id,
+                project_id=upload.project_id,
+                object_uri=object_uri,
+                sha256=object_checksum_sha256,
+                size_bytes=size_bytes,
+                content_type=content_type,
+                metadata_json={"upload_id": str(upload.id), "filename": upload.filename},
+            )
+            job = Job(
+                id=self._id_factory(),
+                project_id=upload.project_id,
+                kind="EPISODE_INGEST",
+                status=JobStatus.QUEUED,
+                idempotency_key=f"episode-ingest:{upload.id}",
+                total_stages=1,
+            )
+            session.add_all([episode, asset, job])
+            await session.flush()
+            episode.source_asset_id = asset.id
+            stage = StageRun(
+                id=self._id_factory(),
+                job_id=job.id,
+                project_id=upload.project_id,
+                episode_id=episode.id,
+                stage_type="INGEST_VALIDATE",
+                status="READY",
+                idempotency_key=f"{job.id}:ingest",
+                runtime_profile_id="cpu-media",
+                observed_control_version=1,
+                params={"source_asset_id": str(asset.id)},
+            )
+            session.add(stage)
+            upload.status = "COMPLETED"
+            upload.completed_parts = [part.model_dump(mode="json") for part in parts]
+            upload.object_checksum_sha256 = object_checksum_sha256
+            upload.episode_id = episode.id
+            upload.media_asset_id = asset.id
+            upload.ingest_job_id = job.id
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="upload",
+                    aggregate_id=upload.id,
+                    event_type="upload.completed",
+                    payload={
+                        "upload_id": str(upload.id),
+                        "episode_id": str(episode.id),
+                        "media_asset_id": str(asset.id),
+                        "ingest_job_id": str(job.id),
+                    },
+                )
+            )
+            await session.flush()
+            return _upload_read(upload)
+
+    async def register_orphan_asset(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        object_uri: str,
+        reason: str,
+    ) -> None:
+        async with self._sessions.begin() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            session.add(
+                OrphanAsset(
+                    id=self._id_factory(),
+                    project_id=project_id,
+                    object_uri=object_uri,
+                    reason=reason,
+                    delete_after=datetime.now(UTC) + timedelta(days=1),
+                )
+            )
+
 
 def _project_read(project: Project) -> ProjectRead:
     return ProjectRead(
@@ -200,4 +423,28 @@ def _job_read(job: Job) -> JobRead:
         progress=progress,
         total_stages=job.total_stages,
         completed_stages=job.completed_stages,
+    )
+
+
+def _upload_read(upload: UploadSession) -> UploadRead:
+    return UploadRead(
+        upload_id=upload.id,
+        project_id=upload.project_id,
+        object_key=upload.object_key,
+        size_bytes=upload.size_bytes,
+        status=upload.status,
+        completed_parts=[UploadPart.model_validate(part) for part in upload.completed_parts],
+        episode_id=upload.episode_id,
+        media_asset_id=upload.media_asset_id,
+        ingest_job_id=upload.ingest_job_id,
+    )
+
+
+def _upload_record(upload: UploadSession) -> UploadRecord:
+    return UploadRecord(
+        upload=_upload_read(upload),
+        provider_upload_id=upload.provider_upload_id,
+        declared_sha256=upload.declared_sha256,
+        content_type=upload.content_type,
+        part_size_bytes=upload.part_size_bytes,
     )

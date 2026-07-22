@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     api_title: str = "VTV Control API"
     api_version: str = "0.1.0"
     database_url: str | None = None
+    s3_endpoint: str | None = None
+    s3_region: str = "us-east-1"
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_bucket: str = "vtv-local"
 
 
 @lru_cache

@@ -1,7 +1,7 @@
+from dataclasses import dataclass
 from typing import Protocol
-from uuid import UUID
 
-from vtv_schemas.uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadRead
+from vtv_schemas.uploads import PresignedPart, UploadPart
 
 
 class UploadIntegrityError(ValueError):
@@ -12,11 +12,36 @@ class UploadNotFoundError(KeyError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class BackendMultipart:
+    provider_upload_id: str
+    parts: list[PresignedPart]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredObject:
+    size_bytes: int
+    content_type: str
+    checksum_sha256: str | None
+
+
 class ObjectStoreAdapter(Protocol):
-    def multipart_init(self, workspace_id: UUID, request: MultipartInit) -> MultipartUpload: ...
+    def uri_for(self, object_key: str) -> str: ...
 
-    def multipart_complete(
-        self, workspace_id: UUID, upload_id: UUID, request: MultipartComplete
-    ) -> UploadRead: ...
+    def create_multipart(
+        self,
+        *,
+        object_key: str,
+        content_type: str,
+        part_count: int,
+    ) -> BackendMultipart: ...
 
-    def get_upload(self, workspace_id: UUID, upload_id: UUID) -> UploadRead: ...
+    def complete_multipart(
+        self,
+        *,
+        object_key: str,
+        provider_upload_id: str,
+        parts: list[UploadPart],
+    ) -> StoredObject: ...
+
+    def abort_multipart(self, *, object_key: str, provider_upload_id: str) -> None: ...

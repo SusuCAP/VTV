@@ -3,7 +3,7 @@ name = "vtv-storage"
 version = "0.1.0"
 description = "Object storage adapter contracts for VTV"
 requires-python = ">=3.12"
-dependencies = ["vtv-schemas"]
+dependencies = ["boto3>=1.37.0", "vtv-schemas"]
 
 [tool.uv.sources]
 vtv-schemas = { workspace = true }

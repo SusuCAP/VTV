@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 76% | PostgreSQL 驱动 API/DAG/调度器、存储契约、Mac 控制端 |
+| Phase 1 基础平台 | 进行中 | 90% | PostgreSQL 编排、S3 媒体接入、Mac 控制端与验证基线 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -41,14 +41,18 @@
 - [x] 分析请求事务写入 Job、六阶段 DAG、六条依赖边和 Outbox。
 - [x] 实现调度领取、attempt lease、条件提交、失败记录、orphan 与下游解锁。
 - [x] 建立 PostgreSQL/MinIO Compose 环境、迁移工具和 GitHub Actions CI。
-- [ ] 将真实 S3 兼容存储实现接入控制 API。
-- [ ] 完成 episode/media asset 持久化及上传完成后的 ingest 自动入队。
+- [x] 接入真实 S3/MinIO multipart Adapter、短期预签名 URL 和分片 SHA-256。
+- [x] 将 upload session 持久化到 PostgreSQL，支持服务重启后的完成/查询。
+- [x] 上传完成事务创建 Episode、Media Asset、ingest Job/Stage 和 Outbox。
+- [x] 数据库提交失败时登记已完成对象为 orphan，等待生命周期清理。
+- [ ] 完成 Mock Worker 从 ingest 到 assemble 的端到端执行与交付清单。
+- [ ] 将 Mac 客户端从演示数据切换到真实控制 API。
 
 ## 下一提交目标
 
-`feat: add database-backed analysis orchestration`
+`feat: persist multipart media ingest with S3 adapter`
 
-完成后继续 Phase 1 的“真实对象存储 + episode 接入 + Mock 合成端到端”。
+完成后完成 Phase 1 的“Mock 合成端到端 + Mac 控制端真实 API 接入”。
 
 ## 决策日志
 
@@ -76,3 +80,6 @@
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 21 passed，1 个 PostgreSQL 测试因本机 Docker daemon 未启动而跳过 |
 | 2026-07-22 | `npm run lint:mac && npm run build:mac` | 通过 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 23 passed，1 个 PostgreSQL 测试因 Docker Hub 镜像拉取无响应而跳过 |
+| 2026-07-22 | S3 Adapter 合约测试 | 预签名、multipart complete、逐分片 SHA-256 与 head 校验通过 |

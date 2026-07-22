@@ -6,9 +6,10 @@ import asyncpg
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
-from vtv_db.models import Job, OutboxEvent, StageDependency, StageRun
+from vtv_db.models import Episode, Job, MediaAsset, OutboxEvent, StageDependency, StageRun
 from vtv_db.repository import SqlAlchemyProjectRepository
 from vtv_schemas.projects import ProjectCreate
+from vtv_schemas.uploads import MultipartInit, UploadPart
 
 DATABASE_URL = os.getenv("VTV_TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DATABASE_URL, reason="VTV_TEST_DATABASE_URL is not set")
@@ -59,3 +60,36 @@ async def test_project_and_analysis_dag_are_committed_atomically(
     assert dependency_count == 6
     assert outbox_count == 2
     assert stored_job and stored_job.idempotency_key == "project-analysis:1"
+
+    upload_id = UUID(int=200)
+    sha256 = "a" * 64
+    await repository.create_upload_session(
+        workspace_id,
+        upload_id,
+        MultipartInit(
+            project_id=project.id,
+            filename="E01.mp4",
+            content_type="video/mp4",
+            size_bytes=96,
+            part_size_bytes=32 * 1024 * 1024,
+            sha256=sha256,
+        ),
+        "source/E01.mp4",
+        "provider-upload-id",
+    )
+    completed = await repository.complete_upload(
+        workspace_id,
+        upload_id,
+        [UploadPart(part_number=1, size_bytes=96, etag="etag")],
+        sha256,
+        "s3://vtv/source/E01.mp4",
+        "video/mp4",
+        96,
+    )
+    assert completed.status == "COMPLETED"
+    assert completed.ingest_job_id
+    async with database() as session:
+        assert await session.scalar(select(func.count()).select_from(Episode)) == 1
+        assert await session.scalar(select(func.count()).select_from(MediaAsset)) == 1
+        ingest = await session.get(Job, completed.ingest_job_id)
+        assert ingest and ingest.kind == "EPISODE_INGEST"
