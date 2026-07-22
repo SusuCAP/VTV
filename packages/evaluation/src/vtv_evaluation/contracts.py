@@ -88,6 +88,7 @@ class SampleResult(FrozenModel):
     latency_seconds: float = Field(gt=0)
     cost_usd: float = Field(ge=0)
     output_duration_seconds: float = Field(gt=0)
+    error_class: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_scores(self) -> SampleResult:

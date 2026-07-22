@@ -21,6 +21,12 @@
 做最优置换后的说话人时间重叠准确率。两项均输出 `[0,1]` 分数，可直接作为 Policy 的关键
 指标；最多八名说话人的精确置换限制会显式报错，避免大场景评测悄悄退化为近似结果。
 
+`run_audio_golden_dataset` 把固定音频 case 运行成可直接提交 benchmark API 的
+`BenchmarkReleaseCreate`。执行前逐文件校验 SHA-256 和 ffprobe 时长（容差 50 ms），任何
+Dataset 漂移都会终止整批，不能被误算成模型失败。推理异常则只把对应样本标记为 critical
+failure 并记录异常类型，整批继续；成功样本采集 transcript/speaker 指标、端到端延迟和按
+计算秒计价的成本。这样基础设施错误、数据污染与模型质量失败在审计上保持不同语义。
+
 迁移 `0007_benchmark_releases.sql` 新增不可变 `benchmark_releases` 与逐样本
 `benchmark_sample_results`。报告唯一身份由 model release、dataset 指纹、policy 指纹与权重
 hash 组成；`model_releases.approved_benchmark_release_id` 只允许引用已落库报告。事务 API 在
