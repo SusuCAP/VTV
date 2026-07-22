@@ -377,3 +377,18 @@
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 152 passed，5 skipped；仅保留 Starlette TestClient 上游弃用提示 |
 | 2026-07-22 | `uv sync --all-packages` | 外部 Codex 用量授权限制阻止访问 uv cache；既有 `.venv` 测试通过，锁文件同步待权限恢复 |
+| 2026-07-23 | 自动 Delivery Draft + Scheduler 证据链解析 | 18 files, 706 insertions；Evidence Stage 完成时自动绑定资产创建 Draft |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 152 passed，5 skipped |
+| 2026-07-23 | C2PA 签名状态机 | 18 files, 862 insertions；migration 0011、passthrough Adapter、Scheduler 自动触发、API 端点 |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 172 passed，11 skipped；含 20 个 C2PA 新测试 |
+| 2026-07-23 | A–F 视觉镜头路由分类器 | 13 files, 949 insertions；vtv-routing 包、VisualShotRouter、EpisodeWorkflowPlan |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 200 passed，11 skipped；含 28 个路由新测试 |
+| 2026-07-23 | 视觉生产 Worker（SAM3.1/Wan-Animate passthrough） | 12 files, 1144 insertions；vtv-visual-worker、6 个 VISUAL_* 阶段、首帧预览门控 |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 225 passed，11 skipped；含 25 个视觉 Worker 新测试 |
+| 2026-07-23 | 生产 DAG 触发 API | 8 files, 517 insertions；ProduceRequest、create_production_job、POST /v1/projects/{id}:produce |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 230 passed，16 skipped |
