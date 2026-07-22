@@ -6,6 +6,7 @@ from vtv_db.model_registry import (
     InvalidModelReleaseTransitionError,
     LicenseStatus,
     ModelReleaseState,
+    canary_receives_job,
     review_license,
     set_automation_status,
 )
@@ -73,3 +74,11 @@ def test_automation_status_enforces_traffic_range(
             traffic_percent=traffic,
             expected_state_version=2,
         )
+
+
+def test_canary_assignment_is_stable_and_has_exact_boundaries() -> None:
+    job_id = uuid4()
+    first = canary_receives_job(job_id, "AUDIO_ANALYSIS", 17)
+    assert canary_receives_job(job_id, "AUDIO_ANALYSIS", 17) is first
+    assert canary_receives_job(job_id, "AUDIO_ANALYSIS", 0) is False
+    assert canary_receives_job(job_id, "AUDIO_ANALYSIS", 100) is True

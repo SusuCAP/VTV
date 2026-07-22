@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
+    ModelReleaseConflictError,
     ProjectNotFoundError,
     ProjectRepository,
     UploadConflictError,
@@ -14,6 +15,12 @@ from vtv_db.repository import (
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
+from vtv_schemas.model_releases import (
+    ModelAutomationUpdate,
+    ModelLicenseReview,
+    ModelReleaseCreate,
+    ModelReleaseRead,
+)
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import (
     ArtifactConfirm,
@@ -74,6 +81,67 @@ def create_app(
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> ProjectRead:
         return await repo.create_project(workspace, payload)
+
+    @app.post(
+        "/v1/model-releases",
+        response_model=ModelReleaseRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_model_release(
+        payload: ModelReleaseCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelReleaseRead:
+        try:
+            return await repo.create_model_release(workspace, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="fallback model release not found") from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/v1/model-releases", response_model=list[ModelReleaseRead])
+    async def list_model_releases(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        model_key: Annotated[str | None, Query(max_length=64)] = None,
+    ) -> list[ModelReleaseRead]:
+        return await repo.list_model_releases(workspace, model_key)
+
+    @app.post("/v1/model-releases/{release_id}/license-review", response_model=ModelReleaseRead)
+    async def review_model_license(
+        release_id: UUID,
+        payload: ModelLicenseReview,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelReleaseRead:
+        try:
+            return await repo.review_model_license(
+                workspace,
+                release_id,
+                payload.decision,
+                payload.actor_id,
+                payload.expected_state_version,
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/model-releases/{release_id}/automation", response_model=ModelReleaseRead)
+    async def update_model_automation(
+        release_id: UUID,
+        payload: ModelAutomationUpdate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelReleaseRead:
+        try:
+            return await repo.update_model_automation(
+                workspace,
+                release_id,
+                payload.target,
+                payload.traffic_percent,
+                payload.expected_state_version,
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/v1/projects", response_model=list[ProjectRead])
     async def list_projects(

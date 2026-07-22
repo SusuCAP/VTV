@@ -2,6 +2,14 @@ from datetime import UTC, datetime
 from threading import RLock
 from uuid import UUID, uuid4
 
+from vtv_db.model_registry import (
+    AutomationStatus,
+    InvalidModelReleaseTransitionError,
+    LicenseStatus,
+    ModelReleaseState,
+    review_license,
+    set_automation_status,
+)
 from vtv_db.releases import (
     ArtifactReleaseState,
     ArtifactReleaseStatus,
@@ -12,6 +20,7 @@ from vtv_db.releases import (
 from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
+    ModelReleaseConflictError,
     ProjectNotFoundError,
     UploadConflictError,
     UploadRecord,
@@ -20,6 +29,7 @@ from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
+from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
@@ -35,6 +45,7 @@ class MemoryRepository:
         self._episodes: dict[UUID, list[EpisodeRead]] = {}
         self._releases: dict[UUID, ArtifactReleaseRead] = {}
         self._analysis_documents: list[AnalysisDocumentRead] = []
+        self._model_releases: dict[UUID, ModelReleaseRead] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -51,6 +62,153 @@ class MemoryRepository:
         with self._lock:
             self._projects[project.id] = project
         return project
+
+    async def create_model_release(
+        self, workspace_id: UUID, payload: ModelReleaseCreate
+    ) -> ModelReleaseRead:
+        with self._lock:
+            if any(
+                item.workspace_id == workspace_id
+                and item.model_key == payload.model_key
+                and item.release_name == payload.release_name
+                for item in self._model_releases.values()
+            ):
+                raise ModelReleaseConflictError("model release already exists")
+            if payload.fallback_release_id:
+                fallback = self._model_releases.get(payload.fallback_release_id)
+                if (
+                    fallback is None
+                    or fallback.workspace_id != workspace_id
+                    or fallback.model_key != payload.model_key
+                ):
+                    raise ProjectNotFoundError(payload.fallback_release_id)
+            now = datetime.now(UTC)
+            release = ModelReleaseRead(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                model_key=payload.model_key,
+                release_name=payload.release_name,
+                provider=payload.provider,
+                endpoint=payload.endpoint,
+                license_id=payload.license_id,
+                license_status="REVIEW",
+                automation_status="OBSERVE",
+                traffic_percent=0,
+                state_version=1,
+                model_card_uri=payload.model_card_uri,
+                config=payload.config,
+                fallback_release_id=payload.fallback_release_id,
+                created_at=now,
+                updated_at=now,
+            )
+            self._model_releases[release.id] = release
+            return release
+
+    async def list_model_releases(
+        self, workspace_id: UUID, model_key: str | None = None
+    ) -> list[ModelReleaseRead]:
+        with self._lock:
+            return [
+                item
+                for item in self._model_releases.values()
+                if item.workspace_id == workspace_id
+                and (model_key is None or item.model_key == model_key)
+            ]
+
+    async def review_model_license(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        decision: str,
+        actor_id: UUID,
+        expected_state_version: int,
+    ) -> ModelReleaseRead:
+        release = self._get_model_release(workspace_id, release_id)
+        try:
+            state = review_license(
+                _memory_model_state(release),
+                decision=LicenseStatus(decision),
+                actor_id=actor_id,
+                expected_state_version=expected_state_version,
+            )
+        except InvalidModelReleaseTransitionError as exc:
+            raise ModelReleaseConflictError(str(exc)) from exc
+        return self._store_model_state(release, state)
+
+    async def update_model_automation(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        target: str,
+        traffic_percent: int,
+        expected_state_version: int,
+    ) -> ModelReleaseRead:
+        release = self._get_model_release(workspace_id, release_id)
+        target_status = AutomationStatus(target)
+        with self._lock:
+            others = [
+                item
+                for item in self._model_releases.values()
+                if item.id != release.id
+                and item.workspace_id == workspace_id
+                and item.model_key == release.model_key
+                and item.automation_status in {"CANARY", "ACTIVE"}
+            ]
+            active = [item for item in others if item.automation_status == "ACTIVE"]
+            canary = [item for item in others if item.automation_status == "CANARY"]
+            if target_status is AutomationStatus.CANARY and (canary or not active):
+                raise ModelReleaseConflictError(
+                    "canary requires one ACTIVE baseline and no other canary"
+                )
+            if target_status is AutomationStatus.ACTIVE:
+                if canary:
+                    raise ModelReleaseConflictError("another canary release must be disabled")
+                if active and release.automation_status != "CANARY":
+                    raise ModelReleaseConflictError("activate through canary first")
+                if active:
+                    previous = active[0]
+                    disabled = set_automation_status(
+                        _memory_model_state(previous),
+                        target=AutomationStatus.DISABLED,
+                        traffic_percent=0,
+                        expected_state_version=previous.state_version,
+                    )
+                    self._store_model_state(previous, disabled)
+        try:
+            state = set_automation_status(
+                _memory_model_state(release),
+                target=target_status,
+                traffic_percent=traffic_percent,
+                expected_state_version=expected_state_version,
+            )
+        except InvalidModelReleaseTransitionError as exc:
+            raise ModelReleaseConflictError(str(exc)) from exc
+        return self._store_model_state(release, state)
+
+    def _get_model_release(self, workspace_id: UUID, release_id: UUID) -> ModelReleaseRead:
+        with self._lock:
+            release = self._model_releases.get(release_id)
+        if release is None or release.workspace_id != workspace_id:
+            raise ProjectNotFoundError(release_id)
+        return release
+
+    def _store_model_state(
+        self, release: ModelReleaseRead, state: ModelReleaseState
+    ) -> ModelReleaseRead:
+        changed = release.model_copy(
+            update={
+                "license_status": state.license_status,
+                "automation_status": state.automation_status,
+                "traffic_percent": state.traffic_percent,
+                "state_version": state.state_version,
+                "reviewed_by": state.reviewed_by,
+                "reviewed_at": state.reviewed_at,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            self._model_releases[release.id] = changed
+        return changed
 
     async def get_project(self, workspace_id: UUID, project_id: UUID) -> ProjectRead:
         with self._lock:
@@ -472,4 +630,19 @@ def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:
         confirmed_at=release.confirmed_at,
         released_at=release.released_at,
         stale_at=release.stale_at,
+    )
+
+
+def _memory_model_state(release: ModelReleaseRead) -> ModelReleaseState:
+    return ModelReleaseState(
+        release_id=release.id,
+        endpoint=release.endpoint,
+        license_id=release.license_id,
+        model_card_uri=release.model_card_uri,
+        license_status=LicenseStatus(release.license_status),
+        automation_status=AutomationStatus(release.automation_status),
+        traffic_percent=release.traffic_percent,
+        state_version=release.state_version,
+        reviewed_by=release.reviewed_by,
+        reviewed_at=release.reviewed_at,
     )

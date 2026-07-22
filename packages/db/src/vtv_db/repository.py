@@ -7,16 +7,27 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
+from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_BASELINE_DAG, build_project_analysis_dag
+from .model_registry import (
+    AutomationStatus,
+    InvalidModelReleaseTransitionError,
+    LicenseStatus,
+    ModelReleaseState,
+    canary_receives_job,
+    review_license,
+    set_automation_status,
+)
 from .models import (
     AnalysisDocument,
     ArtifactRelease,
@@ -25,6 +36,7 @@ from .models import (
     ExecutionControl,
     Job,
     MediaAsset,
+    ModelRelease,
     OrphanAsset,
     OutboxEvent,
     Project,
@@ -58,6 +70,10 @@ class ArtifactConflictError(ValueError):
     pass
 
 
+class ModelReleaseConflictError(ValueError):
+    pass
+
+
 @dataclass(frozen=True, slots=True)
 class UploadRecord:
     upload: UploadRead
@@ -70,6 +86,32 @@ class UploadRecord:
 
 
 class ProjectRepository(Protocol):
+    async def create_model_release(
+        self, workspace_id: UUID, payload: ModelReleaseCreate
+    ) -> ModelReleaseRead: ...
+
+    async def list_model_releases(
+        self, workspace_id: UUID, model_key: str | None = None
+    ) -> list[ModelReleaseRead]: ...
+
+    async def review_model_license(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        decision: str,
+        actor_id: UUID,
+        expected_state_version: int,
+    ) -> ModelReleaseRead: ...
+
+    async def update_model_automation(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        target: str,
+        traffic_percent: int,
+        expected_state_version: int,
+    ) -> ModelReleaseRead: ...
+
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead: ...
 
     async def get_project(self, workspace_id: UUID, project_id: UUID) -> ProjectRead: ...
@@ -165,6 +207,161 @@ class SqlAlchemyProjectRepository:
     ) -> None:
         self._sessions = session_factory
         self._id_factory = id_factory
+
+    async def create_model_release(
+        self, workspace_id: UUID, payload: ModelReleaseCreate
+    ) -> ModelReleaseRead:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                insert(Workspace)
+                .values(id=workspace_id, name=f"Workspace {workspace_id}")
+                .on_conflict_do_nothing(index_elements=[Workspace.id])
+            )
+            if payload.fallback_release_id:
+                fallback = await session.scalar(
+                    select(ModelRelease).where(
+                        ModelRelease.id == payload.fallback_release_id,
+                        ModelRelease.workspace_id == workspace_id,
+                        ModelRelease.model_key == payload.model_key,
+                    )
+                )
+                if fallback is None:
+                    raise ProjectNotFoundError(payload.fallback_release_id)
+            release = ModelRelease(
+                id=self._id_factory(),
+                workspace_id=workspace_id,
+                model_key=payload.model_key,
+                release_name=payload.release_name,
+                provider=payload.provider,
+                endpoint=payload.endpoint,
+                license_id=payload.license_id,
+                model_card_uri=payload.model_card_uri,
+                config_json=payload.config,
+                fallback_release_id=payload.fallback_release_id,
+            )
+            session.add(release)
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="model_release",
+                    aggregate_id=release.id,
+                    event_type="model_release.created",
+                    payload={"release_id": str(release.id), "model_key": release.model_key},
+                )
+            )
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                raise ModelReleaseConflictError("model release already exists") from exc
+            return _model_release_read(release)
+
+    async def list_model_releases(
+        self, workspace_id: UUID, model_key: str | None = None
+    ) -> list[ModelReleaseRead]:
+        async with self._sessions() as session:
+            query = select(ModelRelease).where(ModelRelease.workspace_id == workspace_id)
+            if model_key:
+                query = query.where(ModelRelease.model_key == model_key)
+            releases = list(
+                await session.scalars(query.order_by(ModelRelease.created_at.desc()))
+            )
+            return [_model_release_read(release) for release in releases]
+
+    async def review_model_license(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        decision: str,
+        actor_id: UUID,
+        expected_state_version: int,
+    ) -> ModelReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, release_id)
+            try:
+                changed = review_license(
+                    _model_release_state(release),
+                    decision=LicenseStatus(decision),
+                    actor_id=actor_id,
+                    expected_state_version=expected_state_version,
+                )
+            except InvalidModelReleaseTransitionError as exc:
+                raise ModelReleaseConflictError(str(exc)) from exc
+            _apply_model_release_state(release, changed)
+            _add_model_release_event(session, workspace_id, release, "model_release.reviewed")
+            await session.flush()
+            return _model_release_read(release)
+
+    async def update_model_automation(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        target: str,
+        traffic_percent: int,
+        expected_state_version: int,
+    ) -> ModelReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, release_id)
+            target_status = AutomationStatus(target)
+            others = list(
+                await session.scalars(
+                    select(ModelRelease)
+                    .where(
+                        ModelRelease.workspace_id == workspace_id,
+                        ModelRelease.model_key == release.model_key,
+                        ModelRelease.id != release.id,
+                        ModelRelease.automation_status.in_(("CANARY", "ACTIVE")),
+                    )
+                    .with_for_update()
+                )
+            )
+            active = [item for item in others if item.automation_status == "ACTIVE"]
+            canary = [item for item in others if item.automation_status == "CANARY"]
+            if len(active) > 1 or len(canary) > 1:
+                raise ModelReleaseConflictError("model registry has conflicting traffic state")
+            if target_status is AutomationStatus.CANARY:
+                if canary:
+                    raise ModelReleaseConflictError("a canary release already exists")
+                if not active:
+                    raise ModelReleaseConflictError("canary requires an ACTIVE baseline release")
+            if target_status is AutomationStatus.ACTIVE:
+                if canary:
+                    raise ModelReleaseConflictError(
+                        "another canary release must be disabled before direct activation"
+                    )
+                if active and release.automation_status != "CANARY":
+                    raise ModelReleaseConflictError(
+                        "activate through canary or disable the current ACTIVE release first"
+                    )
+                if active:
+                    previous = active[0]
+                    disabled = set_automation_status(
+                        _model_release_state(previous),
+                        target=AutomationStatus.DISABLED,
+                        traffic_percent=0,
+                        expected_state_version=previous.state_version,
+                    )
+                    _apply_model_release_state(previous, disabled)
+                    _add_model_release_event(
+                        session,
+                        workspace_id,
+                        previous,
+                        "model_release.automation_changed",
+                    )
+            try:
+                changed = set_automation_status(
+                    _model_release_state(release),
+                    target=target_status,
+                    traffic_percent=traffic_percent,
+                    expected_state_version=expected_state_version,
+                )
+            except InvalidModelReleaseTransitionError as exc:
+                raise ModelReleaseConflictError(str(exc)) from exc
+            _apply_model_release_state(release, changed)
+            _add_model_release_event(
+                session, workspace_id, release, "model_release.automation_changed"
+            )
+            await session.flush()
+            return _model_release_read(release)
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
         async with self._sessions.begin() as session:
@@ -332,6 +529,12 @@ class SqlAlchemyProjectRepository:
                 total_stages=len(definitions),
             )
             session.add(job)
+            selected_releases = {
+                model_key: await _select_model_release(
+                    session, workspace_id, model_key, job.id
+                )
+                for model_key in ("AUDIO_ANALYSIS", "VISION_ANALYSIS")
+            }
             runs: dict[str, StageRun] = {}
             for definition in definitions:
                 episode = episode_by_id.get(definition.episode_id)
@@ -348,6 +551,20 @@ class SqlAlchemyProjectRepository:
                     )
                 if definition.stage_type == "PROJECT_SYNTHESIS":
                     params["release_versions"] = next_release_versions
+                model_key = {
+                    "ASR_ALIGN": "AUDIO_ANALYSIS",
+                    "VISION_ANALYSIS": "VISION_ANALYSIS",
+                }.get(definition.stage_type)
+                selected_release = selected_releases.get(model_key) if model_key else None
+                if selected_release is not None:
+                    params["model_runtime"] = {
+                        "model_key": selected_release.model_key,
+                        "endpoint": selected_release.endpoint,
+                        "release": selected_release.release_name,
+                        "license_id": selected_release.license_id,
+                        "approved_for_automation": True,
+                        "config": selected_release.config_json,
+                    }
                 run = StageRun(
                     id=self._id_factory(),
                     job_id=job.id,
@@ -357,6 +574,7 @@ class SqlAlchemyProjectRepository:
                     status="READY" if not definition.depends_on else "PENDING",
                     idempotency_key=f"{job.id}:{definition.key}",
                     runtime_profile_id=definition.runtime_profile_id,
+                    model_release_id=selected_release.id if selected_release else None,
                     observed_control_version=control.control_version,
                     params=params,
                 )
@@ -971,6 +1189,118 @@ def _analysis_document_read(document: AnalysisDocument) -> AnalysisDocumentRead:
         created_at=document.created_at,
         updated_at=document.updated_at,
     )
+
+
+async def _locked_model_release(
+    session: AsyncSession, workspace_id: UUID, release_id: UUID
+) -> ModelRelease:
+    release = await session.scalar(
+        select(ModelRelease)
+        .where(ModelRelease.id == release_id, ModelRelease.workspace_id == workspace_id)
+        .with_for_update()
+    )
+    if release is None:
+        raise ProjectNotFoundError(release_id)
+    return release
+
+
+def _model_release_state(release: ModelRelease) -> ModelReleaseState:
+    return ModelReleaseState(
+        release_id=release.id,
+        endpoint=release.endpoint,
+        license_id=release.license_id,
+        model_card_uri=release.model_card_uri,
+        license_status=LicenseStatus(release.license_status),
+        automation_status=AutomationStatus(release.automation_status),
+        traffic_percent=release.traffic_percent,
+        state_version=release.state_version,
+        reviewed_by=release.reviewed_by,
+        reviewed_at=release.reviewed_at,
+    )
+
+
+def _apply_model_release_state(release: ModelRelease, state: ModelReleaseState) -> None:
+    release.license_status = state.license_status
+    release.automation_status = state.automation_status
+    release.traffic_percent = state.traffic_percent
+    release.state_version = state.state_version
+    release.reviewed_by = state.reviewed_by
+    release.reviewed_at = state.reviewed_at
+
+
+def _model_release_read(release: ModelRelease) -> ModelReleaseRead:
+    return ModelReleaseRead(
+        id=release.id,
+        workspace_id=release.workspace_id,
+        model_key=release.model_key,
+        release_name=release.release_name,
+        provider=release.provider,
+        endpoint=release.endpoint,
+        license_id=release.license_id,
+        license_status=release.license_status,
+        automation_status=release.automation_status,
+        traffic_percent=release.traffic_percent,
+        state_version=release.state_version,
+        model_card_uri=release.model_card_uri,
+        config=release.config_json,
+        fallback_release_id=release.fallback_release_id,
+        reviewed_by=release.reviewed_by,
+        reviewed_at=release.reviewed_at,
+        created_at=release.created_at,
+        updated_at=release.updated_at,
+    )
+
+
+def _add_model_release_event(
+    session: AsyncSession,
+    workspace_id: UUID,
+    release: ModelRelease,
+    event_type: str,
+) -> None:
+    session.add(
+        OutboxEvent(
+            workspace_id=workspace_id,
+            aggregate_type="model_release",
+            aggregate_id=release.id,
+            event_type=event_type,
+            payload={
+                "release_id": str(release.id),
+                "model_key": release.model_key,
+                "license_status": str(release.license_status),
+                "automation_status": str(release.automation_status),
+                "traffic_percent": release.traffic_percent,
+            },
+        )
+    )
+
+
+async def _select_model_release(
+    session: AsyncSession,
+    workspace_id: UUID,
+    model_key: str,
+    job_id: UUID,
+) -> ModelRelease | None:
+    candidates = list(
+        await session.scalars(
+            select(ModelRelease)
+            .where(
+                ModelRelease.workspace_id == workspace_id,
+                ModelRelease.model_key == model_key,
+                ModelRelease.license_status == "APPROVED",
+                ModelRelease.automation_status.in_(("CANARY", "ACTIVE")),
+            )
+            .with_for_update()
+        )
+    )
+    if not candidates:
+        return None
+    active = [item for item in candidates if item.automation_status == "ACTIVE"]
+    canary = [item for item in candidates if item.automation_status == "CANARY"]
+    if len(active) > 1 or len(canary) > 1:
+        raise ModelReleaseConflictError(f"conflicting traffic releases exist for {model_key}")
+    if canary and canary_receives_job(job_id, model_key, canary[0].traffic_percent):
+        return canary[0]
+    return active[0] if active else None
 
 
 async def _invalidate_release_graph(

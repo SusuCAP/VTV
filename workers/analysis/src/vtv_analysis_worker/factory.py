@@ -1,3 +1,5 @@
+from vtv_schemas.jobs import StageJob
+
 from .config import Settings, get_settings
 from .runtime import (
     FallbackAudioAnalysisPipeline,
@@ -52,6 +54,52 @@ def create_analysis_worker(settings: Settings | None = None) -> AnalysisWorker:
         vision_pipeline=vision,
         synthesizer=deterministic.synthesizer,
     )
+
+
+def create_analysis_worker_for_job(
+    job: StageJob, settings: Settings | None = None
+) -> AnalysisWorker:
+    settings = settings or get_settings()
+    runtime = job.params.get("model_runtime")
+    if not isinstance(runtime, dict):
+        return create_analysis_worker(settings)
+    deterministic = AnalysisWorker()
+    endpoint = ModelEndpoint(
+        endpoint=str(runtime.get("endpoint") or ""),
+        release=str(runtime.get("release") or ""),
+        license_id=str(runtime.get("license_id") or ""),
+        approved_for_automation=runtime.get("approved_for_automation") is True,
+        bearer_token=(
+            settings.audio_analysis_token.get_secret_value()
+            if job.stage_type == "ASR_ALIGN" and settings.audio_analysis_token
+            else settings.vision_analysis_token.get_secret_value()
+            if job.stage_type == "VISION_ANALYSIS" and settings.vision_analysis_token
+            else None
+        ),
+        timeout_seconds=settings.model_timeout_seconds,
+    )
+    transport = HttpxInferenceTransport()
+    config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
+    allow_fallback = settings.allow_model_fallback and config.get("allow_fallback") is True
+    if job.stage_type == "ASR_ALIGN":
+        audio = RemoteAudioAnalysisPipeline(endpoint, transport)
+        if allow_fallback:
+            audio = FallbackAudioAnalysisPipeline(audio, deterministic.pipeline)
+        return AnalysisWorker(
+            pipeline=audio,
+            vision_pipeline=deterministic.vision_pipeline,
+            synthesizer=deterministic.synthesizer,
+        )
+    if job.stage_type == "VISION_ANALYSIS":
+        vision = RemoteVisionAnalysisPipeline(endpoint, transport)
+        if allow_fallback:
+            vision = FallbackVisionAnalysisPipeline(vision, deterministic.vision_pipeline)
+        return AnalysisWorker(
+            pipeline=deterministic.pipeline,
+            vision_pipeline=vision,
+            synthesizer=deterministic.synthesizer,
+        )
+    raise ValueError(f"model runtime cannot be assigned to stage {job.stage_type}")
 
 
 def _endpoint(

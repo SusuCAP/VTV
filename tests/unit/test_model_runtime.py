@@ -1,4 +1,5 @@
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from vtv_analysis import (
@@ -8,7 +9,7 @@ from vtv_analysis import (
     DeterministicVad,
 )
 from vtv_analysis_worker.config import Settings
-from vtv_analysis_worker.factory import create_analysis_worker
+from vtv_analysis_worker.factory import create_analysis_worker, create_analysis_worker_for_job
 from vtv_analysis_worker.runtime import (
     FallbackAudioAnalysisPipeline,
     ModelAccessDeniedError,
@@ -16,6 +17,7 @@ from vtv_analysis_worker.runtime import (
     RemoteAudioAnalysisPipeline,
     RemoteInferenceError,
 )
+from vtv_schemas.jobs import StageJob
 
 
 class FakeTransport:
@@ -101,3 +103,30 @@ def test_explicit_fallback_records_actual_deterministic_release(tmp_path: Path) 
 def test_remote_factory_rejects_incomplete_configuration() -> None:
     with pytest.raises(ValueError, match="missing"):
         create_analysis_worker(Settings(analysis_adapter_mode="remote"))
+
+
+def test_stage_job_database_runtime_overrides_deterministic_default() -> None:
+    job = StageJob(
+        stage_run_id=uuid4(),
+        stage_attempt_id=uuid4(),
+        project_id=uuid4(),
+        idempotency_key="runtime-selection",
+        stage_type="ASR_ALIGN",
+        output_prefix="file:///tmp/output",
+        runtime_profile_id="gpu-audio",
+        observed_control_version=1,
+        params={
+            "model_runtime": {
+                "endpoint": "https://models.example.test/audio",
+                "release": "audio-db@3",
+                "license_id": "license-db-3",
+                "approved_for_automation": True,
+                "config": {},
+            }
+        },
+        trace_id="runtime-selection-test",
+    )
+
+    worker = create_analysis_worker_for_job(job, Settings())
+
+    assert worker.pipeline.asr.model_release == "audio-db@3:asr-align"

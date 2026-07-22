@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from uuid import UUID
 
 
@@ -33,6 +34,15 @@ class ModelReleaseState:
     state_version: int = 1
     reviewed_by: UUID | None = None
     reviewed_at: datetime | None = None
+
+
+def canary_receives_job(job_id: UUID, model_key: str, traffic_percent: int) -> bool:
+    if not 0 <= traffic_percent <= 100:
+        raise ValueError("traffic_percent must be between 0 and 100")
+    bucket = int.from_bytes(
+        sha256(f"{job_id}:{model_key}".encode()).digest()[:4], "big"
+    ) % 100 + 1
+    return bucket <= traffic_percent
 
 
 def review_license(

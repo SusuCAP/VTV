@@ -1,6 +1,12 @@
 from .enums import JobStatus, ProjectStatus, StageStatus
 from .episodes import EpisodeRead
 from .jobs import AssetRef, DomainArtifact, JobAccepted, StageJob, StageResult, VariantResult
+from .model_releases import (
+    ModelAutomationUpdate,
+    ModelLicenseReview,
+    ModelReleaseCreate,
+    ModelReleaseRead,
+)
 from .projects import Budget, OutputSpec, ProjectCreate, ProjectRead
 from .releases import (
     ArtifactConfirm,
@@ -32,6 +38,10 @@ __all__ = [
     "MultipartComplete",
     "MultipartInit",
     "MultipartUpload",
+    "ModelAutomationUpdate",
+    "ModelLicenseReview",
+    "ModelReleaseCreate",
+    "ModelReleaseRead",
     "UploadPart",
     "VariantResult",
 ]
