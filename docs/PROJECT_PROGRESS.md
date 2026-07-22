@@ -9,7 +9,7 @@
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
-| Phase 3 自动生产 | 进行中 | 60% | TTS 唯一采纳、L0–L5 口型 Job/DAG、运行时与六项 QC 门禁 |
+| Phase 3 自动生产 | 进行中 | 65% | TTS/口型闭环与确定性字幕、响度重混、逐集合成运行时 |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
 
@@ -196,14 +196,21 @@
 - [x] Scheduler 支持 workspace/project 隔离的显式输入资产，装载源镜头与唯一采用 TTS 音频。
 - [x] 口型在 Job 创建、Worker 条件提交和最终候选采纳三处重新验证权威授权。
 - [x] LIPSYNC 候选强制技术完整性、身份、时序、结构、嘴部同步和连续性六项 QC 证据齐备。
+- [x] 新增 `vtv-assembly` 强类型字幕、Audio Mix、Loudness Preset 与 Episode Master 合同。
+- [x] Subtitle Renderer 生成毫秒级 UTF-8 SRT/VTT，并拒绝重叠时间码和序号缺口。
+- [x] 无 libass/drawtext 环境通过 Pillow 透明图层与 FFmpeg overlay 烧录字幕，保留多语言字体注入点。
+- [x] Audio Mix 按时间线放置采用 TTS，恢复 MUSIC/EFFECTS/BACKGROUND，并支持对白距离增益与房间混响。
+- [x] 平台响度 preset 执行后复测 LUFS/true peak；超过 1 LU/0.2 dB 容差即硬失败并保留实测证据。
+- [x] Episode Assembly 固定分辨率、帧率、编解码和显式音视频映射，完成后复核音轨、尺寸与 50 ms 时长门禁。
+- [x] Assembly Worker 接入本地 Stage Router 和 S3 物化/不可变回传边界。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: add episode lipsync workflow`
+`feat: add deterministic assembly runtime`
 
-本提交完成后，下一步实现对白/音乐/音效重混、字幕与逐集合成 DAG；
+本提交完成后，下一步实现逐集合成 Job/API、采用产物门禁和 Subtitle→Mix→Master 数据库 DAG；
 同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
@@ -318,3 +325,6 @@
 | 2026-07-22 | SQLAlchemy metadata/schema import | 24 tables loaded；LipSync Job Schema 与 Render Variant 外键可解析 |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 137 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |
+| 2026-07-22 | Subtitle/Mix/Assembly 真实 FFmpeg 链 | 3 passed；覆盖时间码、Pillow 烧录、TTS 延迟/混响、响度复测和 9:16 H.264/AAC master |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 140 passed，3 个真实 PostgreSQL 用例待外部数据库执行 |

@@ -22,6 +22,7 @@ members = [
   "packages/evaluation",
   "packages/analysis",
   "packages/audio",
+  "packages/assembly",
   "packages/media",
   "packages/production",
   "packages/schemas",
@@ -30,6 +31,7 @@ members = [
   "workers/production",
   "workers/analysis",
   "workers/audio",
+  "workers/assemble",
 ]
 
 [tool.pytest.ini_options]

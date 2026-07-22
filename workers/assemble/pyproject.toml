@@ -1,0 +1,20 @@
+[project]
+name = "vtv-assemble-worker"
+version = "0.1.0"
+description = "Deterministic FFmpeg subtitle, audio mix and episode assembly worker for VTV"
+requires-python = ">=3.12"
+dependencies = [
+  "pillow>=11.1.0",
+  "vtv-assembly",
+  "vtv-media",
+  "vtv-schemas",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+vtv-assembly = { workspace = true }
+vtv-media = { workspace = true }
+vtv-schemas = { workspace = true }

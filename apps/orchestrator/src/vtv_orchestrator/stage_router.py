@@ -5,6 +5,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from vtv_analysis_worker import execute as execute_analysis
+from vtv_assemble_worker import execute as execute_assemble
 from vtv_audio_worker import execute as execute_audio
 from vtv_media_worker import execute as execute_media
 from vtv_production_worker import execute as execute_production
@@ -17,6 +18,7 @@ MEDIA_STAGES = frozenset({"INGEST_VALIDATE", "PROXY_GENERATE", "SHOT_DETECT"})
 ANALYSIS_STAGES = frozenset({"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"})
 AUDIO_STAGES = frozenset({"AUDIO_STEM_SEPARATION"})
 PRODUCTION_STAGES = frozenset({"TTS_GENERATE", "LIPSYNC_GENERATE"})
+ASSEMBLY_STAGES = frozenset({"SUBTITLE_RENDER", "AUDIO_MIX", "ASSEMBLE_EPISODE"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +28,7 @@ class StageRouter:
     analysis_executor: Callable[[StageJob], StageResult] = execute_analysis
     audio_executor: Callable[[StageJob], StageResult] = execute_audio
     production_executor: Callable[[StageJob], StageResult] = execute_production
+    assembly_executor: Callable[[StageJob], StageResult] = execute_assemble
     fallback_executor: Callable[[StageJob], StageResult] = execute_mock
     object_store: WorkerObjectStoreAdapter | None = None
 
@@ -40,6 +43,10 @@ class StageRouter:
             if job.stage_type in PRODUCTION_STAGES:
                 return self._upload_outputs(
                     job, self.production_executor(self._prepare_job(job))
+                )
+            if job.stage_type in ASSEMBLY_STAGES:
+                return self._upload_outputs(
+                    job, self.assembly_executor(self._prepare_job(job))
                 )
             return self.fallback_executor(job)
         except Exception as exc:
