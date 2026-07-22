@@ -24,6 +24,18 @@ PROJECT_ANALYSIS_DAG: tuple[StageDefinition, ...] = (
 )
 
 
+EPISODE_BASELINE_DAG: tuple[StageDefinition, ...] = (
+    StageDefinition("ingest", "INGEST_VALIDATE", "cpu-media"),
+    StageDefinition("proxy", "PROXY_GENERATE", "cpu-media", ("ingest",)),
+    StageDefinition("shots", "SHOT_DETECT", "cpu-media", ("proxy",)),
+    StageDefinition("localize", "MOCK_LOCALIZE", "cpu-mock", ("shots",)),
+    StageDefinition("render", "MOCK_RENDER", "cpu-mock", ("localize",)),
+    StageDefinition("qc", "QC_TECHNICAL", "cpu-mock", ("render",)),
+    StageDefinition("assemble", "ASSEMBLE_EPISODE", "cpu-media", ("qc",)),
+    StageDefinition("manifest", "DELIVERY_MANIFEST", "cpu-media", ("assemble",)),
+)
+
+
 def validate_dag(definitions: tuple[StageDefinition, ...]) -> None:
     keys = [stage.key for stage in definitions]
     if len(keys) != len(set(keys)):

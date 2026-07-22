@@ -13,7 +13,7 @@ from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
-from .dag import PROJECT_ANALYSIS_DAG, validate_dag
+from .dag import EPISODE_BASELINE_DAG, PROJECT_ANALYSIS_DAG, validate_dag
 from .models import (
     Episode,
     ExecutionControl,
@@ -157,6 +157,7 @@ class SqlAlchemyProjectRepository:
             if control is None:
                 raise RuntimeError("project execution control is missing")
 
+            validate_dag(EPISODE_BASELINE_DAG)
             job = Job(
                 id=self._id_factory(),
                 project_id=project_id,
@@ -323,24 +324,40 @@ class SqlAlchemyProjectRepository:
                 kind="EPISODE_INGEST",
                 status=JobStatus.QUEUED,
                 idempotency_key=f"episode-ingest:{upload.id}",
-                total_stages=1,
+                total_stages=len(EPISODE_BASELINE_DAG),
             )
             session.add_all([episode, asset, job])
             await session.flush()
             episode.source_asset_id = asset.id
-            stage = StageRun(
-                id=self._id_factory(),
-                job_id=job.id,
-                project_id=upload.project_id,
-                episode_id=episode.id,
-                stage_type="INGEST_VALIDATE",
-                status="READY",
-                idempotency_key=f"{job.id}:ingest",
-                runtime_profile_id="cpu-media",
-                observed_control_version=1,
-                params={"source_asset_id": str(asset.id)},
-            )
-            session.add(stage)
+            runs: dict[str, StageRun] = {}
+            for definition in EPISODE_BASELINE_DAG:
+                run = StageRun(
+                    id=self._id_factory(),
+                    job_id=job.id,
+                    project_id=upload.project_id,
+                    episode_id=episode.id,
+                    stage_type=definition.stage_type,
+                    status="READY" if not definition.depends_on else "PENDING",
+                    idempotency_key=f"{job.id}:{definition.key}",
+                    runtime_profile_id=definition.runtime_profile_id,
+                    observed_control_version=1,
+                    params={
+                        "source_asset_id": str(asset.id),
+                        "episode_id": str(episode.id),
+                        "mock_baseline": True,
+                    },
+                )
+                runs[definition.key] = run
+                session.add(run)
+            await session.flush()
+            for definition in EPISODE_BASELINE_DAG:
+                for dependency in definition.depends_on:
+                    session.add(
+                        StageDependency(
+                            stage_run_id=runs[definition.key].id,
+                            depends_on_stage_run_id=runs[dependency].id,
+                        )
+                    )
             upload.status = "COMPLETED"
             upload.completed_parts = [part.model_dump(mode="json") for part in parts]
             upload.object_checksum_sha256 = object_checksum_sha256

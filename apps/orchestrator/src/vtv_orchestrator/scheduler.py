@@ -2,10 +2,19 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from vtv_db.models import Job, OrphanAsset, StageAttempt, StageRun
+from vtv_db.models import (
+    Job,
+    MediaAsset,
+    OrphanAsset,
+    Project,
+    StageAttempt,
+    StageDependency,
+    StageRun,
+)
 from vtv_db.queries import CLAIM_READY_STAGE, COMMIT_OUTPUT_READY, PROMOTE_READY_DEPENDENTS
-from vtv_schemas.jobs import StageResult
+from vtv_schemas.jobs import AssetRef, StageJob, StageResult
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,7 +26,12 @@ class ClaimedStage:
     observed_control_version: int
     stage_type: str
     project_id: UUID
+    workspace_id: UUID
+    episode_id: UUID | None
     job_id: UUID | None
+    idempotency_key: str
+    runtime_profile_id: str
+    params: dict
 
 
 class Scheduler:
@@ -49,6 +63,17 @@ class Scheduler:
                 status="RUNNING",
             )
             session.add(attempt)
+            workspace_id = await session.scalar(
+                select(Project.workspace_id).where(Project.id == row["project_id"])
+            )
+            if workspace_id is None:
+                raise ValueError("claimed stage project not found")
+            if row["job_id"]:
+                await session.execute(
+                    update(Job)
+                    .where(Job.id == row["job_id"], Job.status == "QUEUED")
+                    .values(status="RUNNING")
+                )
             await session.flush()
             return ClaimedStage(
                 stage_run_id=row["id"],
@@ -58,8 +83,54 @@ class Scheduler:
                 observed_control_version=row["observed_control_version"],
                 stage_type=row["stage_type"],
                 project_id=row["project_id"],
+                workspace_id=workspace_id,
+                episode_id=row["episode_id"],
                 job_id=row["job_id"],
+                idempotency_key=row["idempotency_key"],
+                runtime_profile_id=row["runtime_profile_id"],
+                params=row["params"],
             )
+
+    async def build_job(self, claim: ClaimedStage) -> StageJob:
+        async with self._sessions() as session:
+            dependency_ids = select(StageDependency.depends_on_stage_run_id).where(
+                StageDependency.stage_run_id == claim.stage_run_id
+            )
+            assets = list(
+                await session.scalars(
+                    select(MediaAsset).where(MediaAsset.source_stage_run_id.in_(dependency_ids))
+                )
+            )
+            source_asset_id = claim.params.get("source_asset_id")
+            if source_asset_id and claim.stage_type == "INGEST_VALIDATE":
+                source = await session.get(MediaAsset, UUID(source_asset_id))
+                if source is not None:
+                    assets.append(source)
+        return StageJob(
+            stage_run_id=claim.stage_run_id,
+            stage_attempt_id=claim.stage_attempt_id,
+            project_id=claim.project_id,
+            episode_id=claim.episode_id,
+            idempotency_key=claim.idempotency_key,
+            stage_type=claim.stage_type,
+            input_assets=[
+                AssetRef(
+                    uri=asset.object_uri,
+                    sha256=asset.sha256,
+                    media_type=asset.content_type,
+                    size_bytes=asset.size_bytes,
+                )
+                for asset in assets
+            ],
+            output_prefix=(
+                f"memory://workspaces/{claim.workspace_id}/projects/{claim.project_id}"
+                f"/jobs/{claim.job_id}/stages/{claim.stage_run_id}"
+            ),
+            runtime_profile_id=claim.runtime_profile_id,
+            observed_control_version=claim.observed_control_version,
+            params=claim.params,
+            trace_id=f"stage-{claim.stage_run_id}",
+        )
 
     async def commit_result(self, claim: ClaimedStage, result: StageResult) -> bool:
         if result.stage_run_id != claim.stage_run_id:
@@ -96,6 +167,32 @@ class Scheduler:
                             )
                         )
                 return False
+            for variant in result.variants:
+                for asset in variant.output_assets:
+                    await session.execute(
+                        insert(MediaAsset)
+                        .values(
+                            id=uuid4(),
+                            workspace_id=claim.workspace_id,
+                            project_id=claim.project_id,
+                            source_stage_run_id=claim.stage_run_id,
+                            object_uri=asset.uri,
+                            sha256=asset.sha256,
+                            size_bytes=asset.size_bytes,
+                            content_type=asset.media_type,
+                            metadata={
+                                "stage_attempt_id": str(claim.stage_attempt_id),
+                                "variant_no": variant.variant_no,
+                            },
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=[
+                                MediaAsset.workspace_id,
+                                MediaAsset.sha256,
+                                MediaAsset.object_uri,
+                            ]
+                        )
+                    )
             await session.execute(
                 update(StageAttempt)
                 .where(StageAttempt.id == claim.stage_attempt_id)

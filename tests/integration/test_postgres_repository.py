@@ -8,6 +8,9 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from vtv_db.models import Episode, Job, MediaAsset, OutboxEvent, StageDependency, StageRun
 from vtv_db.repository import SqlAlchemyProjectRepository
+from vtv_orchestrator.mock_worker import execute
+from vtv_orchestrator.runner import OrchestratorLoop
+from vtv_orchestrator.scheduler import Scheduler
 from vtv_schemas.projects import ProjectCreate
 from vtv_schemas.uploads import MultipartInit, UploadPart
 
@@ -92,4 +95,21 @@ async def test_project_and_analysis_dag_are_committed_atomically(
         assert await session.scalar(select(func.count()).select_from(Episode)) == 1
         assert await session.scalar(select(func.count()).select_from(MediaAsset)) == 1
         ingest = await session.get(Job, completed.ingest_job_id)
+        ingest_stage_count = await session.scalar(
+            select(func.count())
+            .select_from(StageRun)
+            .where(StageRun.job_id == completed.ingest_job_id)
+        )
         assert ingest and ingest.kind == "EPISODE_INGEST"
+        assert ingest.total_stages == 8
+        assert ingest_stage_count == 8
+
+    processed = await OrchestratorLoop(Scheduler(database), execute).run_until_idle()
+    assert processed == 14
+    async with database() as session:
+        job_statuses = list(await session.scalars(select(Job.status).order_by(Job.created_at)))
+        generated_asset_count = await session.scalar(
+            select(func.count()).select_from(MediaAsset)
+        )
+    assert job_statuses == ["SUCCEEDED", "SUCCEEDED"]
+    assert generated_asset_count == 15

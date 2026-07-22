@@ -9,6 +9,9 @@ dependencies = [
   "vtv-schemas",
 ]
 
+[project.scripts]
+vtv-orchestrator = "vtv_orchestrator.__main__:main"
+
 [tool.uv.sources]
 vtv-db = { workspace = true }
 vtv-schemas = { workspace = true }

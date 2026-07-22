@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 90% | PostgreSQL 编排、S3 媒体接入、Mac 控制端与验证基线 |
+| Phase 1 基础平台 | 进行中 | 95% | 数据库驱动 Mock 交付闭环、S3 接入与 Mac 控制端 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -45,12 +45,14 @@
 - [x] 将 upload session 持久化到 PostgreSQL，支持服务重启后的完成/查询。
 - [x] 上传完成事务创建 Episode、Media Asset、ingest Job/Stage 和 Outbox。
 - [x] 数据库提交失败时登记已完成对象为 orphan，等待生命周期清理。
-- [ ] 完成 Mock Worker 从 ingest 到 assemble 的端到端执行与交付清单。
+- [x] 完成 ingest→proxy→shots→mock localize/render→QC→assemble→manifest DAG。
+- [x] 调度器构造标准 StageJob、读取上游资产并登记 Worker 输出 Media Asset。
+- [x] 提供 `vtv-orchestrator` 命令，一次运行队列直到空闲并设定阶段安全上限。
 - [ ] 将 Mac 客户端从演示数据切换到真实控制 API。
 
 ## 下一提交目标
 
-`feat: persist multipart media ingest with S3 adapter`
+`feat: run baseline episode delivery through mock orchestrator`
 
 完成后完成 Phase 1 的“Mock 合成端到端 + Mac 控制端真实 API 接入”。
 
@@ -83,3 +85,5 @@
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 23 passed，1 个 PostgreSQL 测试因 Docker Hub 镜像拉取无响应而跳过 |
 | 2026-07-22 | S3 Adapter 合约测试 | 预签名、multipart complete、逐分片 SHA-256 与 head 校验通过 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 24 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

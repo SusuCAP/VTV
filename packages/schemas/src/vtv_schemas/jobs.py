@@ -10,6 +10,7 @@ class AssetRef(BaseModel):
     uri: str
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     media_type: str
+    size_bytes: int = Field(default=1, gt=0)
 
 
 class VariantResult(BaseModel):

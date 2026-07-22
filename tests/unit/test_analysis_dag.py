@@ -1,5 +1,10 @@
 import pytest
-from vtv_db.dag import PROJECT_ANALYSIS_DAG, StageDefinition, validate_dag
+from vtv_db.dag import (
+    EPISODE_BASELINE_DAG,
+    PROJECT_ANALYSIS_DAG,
+    StageDefinition,
+    validate_dag,
+)
 
 
 def test_project_analysis_dag_is_topologically_valid() -> None:
@@ -22,3 +27,10 @@ def test_dag_rejects_forward_dependency() -> None:
     )
     with pytest.raises(ValueError, match="unresolved dependencies"):
         validate_dag(invalid)
+
+
+def test_episode_baseline_dag_reaches_delivery_manifest() -> None:
+    validate_dag(EPISODE_BASELINE_DAG)
+    assert len(EPISODE_BASELINE_DAG) == 8
+    assert EPISODE_BASELINE_DAG[0].stage_type == "INGEST_VALIDATE"
+    assert EPISODE_BASELINE_DAG[-1].stage_type == "DELIVERY_MANIFEST"

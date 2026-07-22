@@ -23,6 +23,8 @@ def test_mock_worker_returns_output_ready() -> None:
     result = execute(make_job())
     assert result.status == "OUTPUT_READY"
     assert result.attempt_usage["worker"] == "mock"
+    assert result.variants[0].output_assets[0].uri.endswith("result.json")
+    assert len(result.variants[0].output_assets[0].sha256) == 64
 
 
 def test_mock_worker_supports_retryable_failure() -> None:
