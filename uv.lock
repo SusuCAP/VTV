@@ -1572,10 +1572,14 @@ version = "0.1.0"
 source = { editable = "packages/schemas" }
 dependencies = [
     { name = "pydantic" },
+    { name = "vtv-evaluation" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+requires-dist = [
+    { name = "pydantic", specifier = ">=2.10.6" },
+    { name = "vtv-evaluation", editable = "packages/evaluation" },
+]
 
 [[package]]
 name = "vtv-storage"

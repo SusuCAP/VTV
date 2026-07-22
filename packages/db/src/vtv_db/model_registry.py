@@ -117,6 +117,8 @@ def _assert_admissible(state: ModelReleaseState) -> None:
         raise InvalidModelReleaseTransitionError("model license and model card are required")
     if not state.endpoint.startswith(("https://", "http://127.0.0.1", "http://localhost")):
         raise InvalidModelReleaseTransitionError("model endpoint must use HTTPS or localhost")
+    if state.approved_benchmark_release_id is None:
+        raise InvalidModelReleaseTransitionError("model release has no approved benchmark release")
 
 
 def _check_version(state: ModelReleaseState, expected: int) -> None:

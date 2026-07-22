@@ -9,7 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from vtv_evaluation import evaluate_release
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -32,6 +34,8 @@ from .models import (
     AnalysisDocument,
     ArtifactRelease,
     ArtifactReleaseDependency,
+    BenchmarkRelease,
+    BenchmarkSampleResult,
     Episode,
     ExecutionControl,
     Job,
@@ -86,6 +90,14 @@ class UploadRecord:
 
 
 class ProjectRepository(Protocol):
+    async def create_benchmark_release(
+        self, workspace_id: UUID, model_release_id: UUID, payload: BenchmarkReleaseCreate
+    ) -> BenchmarkReleaseRead: ...
+
+    async def list_benchmark_releases(
+        self, workspace_id: UUID, model_release_id: UUID
+    ) -> list[BenchmarkReleaseRead]: ...
+
     async def create_model_release(
         self, workspace_id: UUID, payload: ModelReleaseCreate
     ) -> ModelReleaseRead: ...
@@ -208,6 +220,104 @@ class SqlAlchemyProjectRepository:
         self._sessions = session_factory
         self._id_factory = id_factory
 
+    async def create_benchmark_release(
+        self, workspace_id: UUID, model_release_id: UUID, payload: BenchmarkReleaseCreate
+    ) -> BenchmarkReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, model_release_id)
+            if release.state_version != payload.expected_model_state_version:
+                raise ModelReleaseConflictError(
+                    "model release state version mismatch: "
+                    f"expected {payload.expected_model_state_version}, "
+                    f"actual {release.state_version}"
+                )
+            report = evaluate_release(
+                model_key=release.model_key,
+                model_release=release.release_name,
+                dataset=payload.dataset,
+                policy=payload.policy,
+                evidence=payload.evidence,
+                results=payload.results,
+            )
+            benchmark = BenchmarkRelease(
+                id=self._id_factory(),
+                workspace_id=workspace_id,
+                model_release_id=release.id,
+                dataset_key=payload.dataset.dataset_key,
+                dataset_release=payload.dataset.release,
+                dataset_fingerprint=payload.dataset.fingerprint,
+                annotation_release=payload.dataset.annotation_release,
+                policy_key=payload.policy.policy_key,
+                policy_release=payload.policy.release,
+                policy_fingerprint=payload.policy.fingerprint,
+                weights_sha256=payload.evidence.weights_sha256,
+                runtime_fingerprint=payload.evidence.runtime_fingerprint,
+                evidence=payload.evidence.model_dump(mode="json"),
+                report=report.model_dump(mode="json"),
+                approved=report.approved,
+                failed_gates=list(report.failed_gates),
+            )
+            session.add(benchmark)
+            sample_by_id = {sample.sample_id: sample for sample in payload.dataset.samples}
+            for result in payload.results:
+                sample = sample_by_id[result.sample_id]
+                session.add(
+                    BenchmarkSampleResult(
+                        id=self._id_factory(),
+                        benchmark_release_id=benchmark.id,
+                        sample_id=result.sample_id,
+                        source_sha256=sample.source_sha256,
+                        critical=sample.critical,
+                        result=result.model_dump(mode="json"),
+                    )
+                )
+            if report.approved:
+                release.approved_benchmark_release_id = benchmark.id
+                release.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="benchmark_release",
+                    aggregate_id=benchmark.id,
+                    event_type="benchmark_release.created",
+                    payload={
+                        "benchmark_release_id": str(benchmark.id),
+                        "model_release_id": str(release.id),
+                        "approved": report.approved,
+                        "failed_gates": list(report.failed_gates),
+                    },
+                )
+            )
+            try:
+                await session.flush()
+            except IntegrityError as exc:
+                raise ModelReleaseConflictError("benchmark release already exists") from exc
+            return _benchmark_release_read(benchmark)
+
+    async def list_benchmark_releases(
+        self, workspace_id: UUID, model_release_id: UUID
+    ) -> list[BenchmarkReleaseRead]:
+        async with self._sessions() as session:
+            release = await session.scalar(
+                select(ModelRelease.id).where(
+                    ModelRelease.id == model_release_id,
+                    ModelRelease.workspace_id == workspace_id,
+                )
+            )
+            if release is None:
+                raise ProjectNotFoundError(model_release_id)
+            rows = list(
+                await session.scalars(
+                    select(BenchmarkRelease)
+                    .where(
+                        BenchmarkRelease.workspace_id == workspace_id,
+                        BenchmarkRelease.model_release_id == model_release_id,
+                    )
+                    .order_by(BenchmarkRelease.created_at.desc())
+                )
+            )
+            return [_benchmark_release_read(row) for row in rows]
+
     async def create_model_release(
         self, workspace_id: UUID, payload: ModelReleaseCreate
     ) -> ModelReleaseRead:
@@ -302,6 +412,19 @@ class SqlAlchemyProjectRepository:
         async with self._sessions.begin() as session:
             release = await _locked_model_release(session, workspace_id, release_id)
             target_status = AutomationStatus(target)
+            if target_status in {AutomationStatus.CANARY, AutomationStatus.ACTIVE}:
+                approved_benchmark = await session.scalar(
+                    select(BenchmarkRelease.id).where(
+                        BenchmarkRelease.id == release.approved_benchmark_release_id,
+                        BenchmarkRelease.workspace_id == workspace_id,
+                        BenchmarkRelease.model_release_id == release.id,
+                        BenchmarkRelease.approved.is_(True),
+                    )
+                )
+                if approved_benchmark is None:
+                    raise ModelReleaseConflictError(
+                        "model release has no valid approved benchmark release"
+                    )
             others = list(
                 await session.scalars(
                     select(ModelRelease)
@@ -1250,6 +1373,27 @@ def _model_release_read(release: ModelRelease) -> ModelReleaseRead:
         approved_benchmark_release_id=release.approved_benchmark_release_id,
         created_at=release.created_at,
         updated_at=release.updated_at,
+    )
+
+
+def _benchmark_release_read(release: BenchmarkRelease) -> BenchmarkReleaseRead:
+    return BenchmarkReleaseRead(
+        id=release.id,
+        workspace_id=release.workspace_id,
+        model_release_id=release.model_release_id,
+        dataset_key=release.dataset_key,
+        dataset_release=release.dataset_release,
+        dataset_fingerprint=release.dataset_fingerprint,
+        annotation_release=release.annotation_release,
+        policy_key=release.policy_key,
+        policy_release=release.policy_release,
+        policy_fingerprint=release.policy_fingerprint,
+        weights_sha256=release.weights_sha256,
+        runtime_fingerprint=release.runtime_fingerprint,
+        report=release.report,
+        approved=release.approved,
+        failed_gates=tuple(release.failed_gates),
+        created_at=release.created_at,
     )
 
 

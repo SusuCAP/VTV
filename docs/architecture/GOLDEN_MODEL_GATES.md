@@ -19,5 +19,11 @@
 
 迁移 `0007_benchmark_releases.sql` 新增不可变 `benchmark_releases` 与逐样本
 `benchmark_sample_results`。报告唯一身份由 model release、dataset 指纹、policy 指纹与权重
-hash 组成；`model_releases.approved_benchmark_release_id` 只允许引用已落库报告。下一增量提供
-事务 API，并在进入 CANARY/ACTIVE 前验证引用报告已批准且归属同一 workspace/model release。
+hash 组成；`model_releases.approved_benchmark_release_id` 只允许引用已落库报告。事务 API 在
+进入 CANARY/ACTIVE 前验证引用报告已批准且归属同一 workspace/model release。
+
+控制平面通过 `POST/GET /v1/model-releases/{release_id}/benchmarks` 提交与查询报告。提交事务
+锁定 Model Release 并检查 state version，重新执行服务端判定，而不是信任客户端给出的
+`approved`。报告及逐样本证据、Outbox 事件原子写入；通过时同事务采用该报告并递增 Model
+Release state version，未通过报告仍保留用于审计但不会被采用。自动化切换同时检查状态机中的
+引用和数据库中报告的 workspace、model release、approved 四项一致性，不能伪造外键绕过。

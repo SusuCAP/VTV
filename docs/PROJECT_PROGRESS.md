@@ -135,15 +135,18 @@
 - [x] 聚合单位合格输出成本与 nearest-rank P95；单次报告返回全部失败原因且不短路。
 - [x] 新增不可变 benchmark release/逐样本结果表及 `0007` 迁移，固化评测完整证据。
 - [x] Model Release 新增 approved benchmark 外键，为 CANARY/ACTIVE 数据库门禁建立引用边界。
+- [x] 实现 benchmark 提交/查询 API，服务端重算报告并原子持久化逐样本证据与 Outbox。
+- [x] 通过报告自动采用并递增 Model Release state version；失败报告保留审计但不改变准入状态。
+- [x] CANARY/ACTIVE 同时验证报告归属 workspace/model release 且 approved，阻止伪造引用绕过。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`feat: persist golden benchmark releases`
+`feat: add production audio model adapters`
 
-下一步持久化不可变 benchmark report，并将 Model Release 进入 CANARY 的门禁绑定已批准
-报告；随后接入首组真实 VAD/ASR/diarization 权重。同时在 Modal API 网络恢复后补跑云端验收。
+下一步接入首组真实 VAD/ASR/diarization 权重与惰性加载 Adapter，并用同一 Golden 门禁生成
+候选报告。同时在 Modal API 网络恢复后补跑云端验收。
 
 ## 决策日志
 
@@ -224,3 +227,5 @@
 | 2026-07-22 | Golden Dataset 发布门禁 | 4 passed；覆盖完整批准、多门禁失败、样本完整性与不可变配置 |
 | 2026-07-22 | `pytest` | 73 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | SQLAlchemy metadata | 21 tables loaded；Model Release approved benchmark 外键可解析 |
+| 2026-07-22 | Benchmark/Registry 准入闭环 | 12 passed；覆盖服务端重算、采用、失败审计与自动化拒绝 |
+| 2026-07-22 | `pytest` | 74 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

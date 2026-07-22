@@ -18,6 +18,7 @@ def _state() -> ModelReleaseState:
         endpoint="https://models.example.test/infer",
         license_id="license-1",
         model_card_uri="s3://registry/cards/model.json",
+        approved_benchmark_release_id=uuid4(),
     )
 
 

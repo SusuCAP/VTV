@@ -25,7 +25,9 @@ from vtv_db.repository import (
     UploadConflictError,
     UploadRecord,
 )
+from vtv_evaluation import evaluate_release
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
@@ -46,6 +48,7 @@ class MemoryRepository:
         self._releases: dict[UUID, ArtifactReleaseRead] = {}
         self._analysis_documents: list[AnalysisDocumentRead] = []
         self._model_releases: dict[UUID, ModelReleaseRead] = {}
+        self._benchmark_releases: dict[UUID, BenchmarkReleaseRead] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -62,6 +65,76 @@ class MemoryRepository:
         with self._lock:
             self._projects[project.id] = project
         return project
+
+    async def create_benchmark_release(
+        self, workspace_id: UUID, model_release_id: UUID, payload: BenchmarkReleaseCreate
+    ) -> BenchmarkReleaseRead:
+        with self._lock:
+            model = self._model_releases.get(model_release_id)
+            if model is None or model.workspace_id != workspace_id:
+                raise ProjectNotFoundError(model_release_id)
+            if model.state_version != payload.expected_model_state_version:
+                raise ModelReleaseConflictError(
+                    "model release state version mismatch: "
+                    f"expected {payload.expected_model_state_version}, actual {model.state_version}"
+                )
+            report = evaluate_release(
+                model_key=model.model_key,
+                model_release=model.release_name,
+                dataset=payload.dataset,
+                policy=payload.policy,
+                evidence=payload.evidence,
+                results=payload.results,
+            )
+            if any(
+                item.model_release_id == model_release_id
+                and item.dataset_fingerprint == payload.dataset.fingerprint
+                and item.policy_fingerprint == payload.policy.fingerprint
+                and item.weights_sha256 == payload.evidence.weights_sha256
+                for item in self._benchmark_releases.values()
+            ):
+                raise ModelReleaseConflictError("benchmark release already exists")
+            benchmark = BenchmarkReleaseRead(
+                id=uuid4(),
+                workspace_id=workspace_id,
+                model_release_id=model_release_id,
+                dataset_key=payload.dataset.dataset_key,
+                dataset_release=payload.dataset.release,
+                dataset_fingerprint=payload.dataset.fingerprint,
+                annotation_release=payload.dataset.annotation_release,
+                policy_key=payload.policy.policy_key,
+                policy_release=payload.policy.release,
+                policy_fingerprint=payload.policy.fingerprint,
+                weights_sha256=payload.evidence.weights_sha256,
+                runtime_fingerprint=payload.evidence.runtime_fingerprint,
+                report=report,
+                approved=report.approved,
+                failed_gates=report.failed_gates,
+                created_at=datetime.now(UTC),
+            )
+            self._benchmark_releases[benchmark.id] = benchmark
+            if report.approved:
+                self._model_releases[model.id] = model.model_copy(
+                    update={
+                        "approved_benchmark_release_id": benchmark.id,
+                        "state_version": model.state_version + 1,
+                        "updated_at": datetime.now(UTC),
+                    }
+                )
+            return benchmark
+
+    async def list_benchmark_releases(
+        self, workspace_id: UUID, model_release_id: UUID
+    ) -> list[BenchmarkReleaseRead]:
+        with self._lock:
+            model = self._model_releases.get(model_release_id)
+            if model is None or model.workspace_id != workspace_id:
+                raise ProjectNotFoundError(model_release_id)
+            return [
+                item
+                for item in self._benchmark_releases.values()
+                if item.workspace_id == workspace_id and item.model_release_id == model_release_id
+            ]
 
     async def create_model_release(
         self, workspace_id: UUID, payload: ModelReleaseCreate
@@ -146,6 +219,19 @@ class MemoryRepository:
         release = self._get_model_release(workspace_id, release_id)
         target_status = AutomationStatus(target)
         with self._lock:
+            if target_status in {AutomationStatus.CANARY, AutomationStatus.ACTIVE}:
+                benchmark = self._benchmark_releases.get(
+                    release.approved_benchmark_release_id
+                )
+                if (
+                    benchmark is None
+                    or benchmark.workspace_id != workspace_id
+                    or benchmark.model_release_id != release.id
+                    or not benchmark.approved
+                ):
+                    raise ModelReleaseConflictError(
+                        "model release has no valid approved benchmark release"
+                    )
             others = [
                 item
                 for item in self._model_releases.values()

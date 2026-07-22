@@ -17,6 +17,8 @@ from .releases import (
 from .uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadPart
 
 __all__ = [
+    "BenchmarkReleaseCreate",
+    "BenchmarkReleaseRead",
     "AssetRef",
     "AnalysisDocumentRead",
     "ArtifactConfirm",
@@ -46,3 +48,4 @@ __all__ = [
     "VariantResult",
 ]
 from .analysis import AnalysisDocumentRead
+from .benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead

@@ -13,6 +13,7 @@ from vtv_db.repository import (
     UploadConflictError,
 )
 from vtv_schemas.analysis import AnalysisDocumentRead
+from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.model_releases import (
@@ -104,6 +105,36 @@ def create_app(
         model_key: Annotated[str | None, Query(max_length=64)] = None,
     ) -> list[ModelReleaseRead]:
         return await repo.list_model_releases(workspace, model_key)
+
+    @app.post(
+        "/v1/model-releases/{release_id}/benchmarks",
+        response_model=BenchmarkReleaseRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_benchmark_release(
+        release_id: UUID,
+        payload: BenchmarkReleaseCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> BenchmarkReleaseRead:
+        try:
+            return await repo.create_benchmark_release(workspace, release_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+        except (ModelReleaseConflictError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/model-releases/{release_id}/benchmarks",
+        response_model=list[BenchmarkReleaseRead],
+    )
+    async def list_benchmark_releases(
+        release_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[BenchmarkReleaseRead]:
+        try:
+            return await repo.list_benchmark_releases(workspace, release_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
 
     @app.post("/v1/model-releases/{release_id}/license-review", response_model=ModelReleaseRead)
     async def review_model_license(
