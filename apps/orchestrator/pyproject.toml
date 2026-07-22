@@ -6,6 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
   "sqlalchemy[asyncio]>=2.0.39",
   "vtv-db",
+  "vtv-media-worker",
+  "vtv-analysis-worker",
   "vtv-schemas",
 ]
 
@@ -14,6 +16,8 @@ vtv-orchestrator = "vtv_orchestrator.__main__:main"
 
 [tool.uv.sources]
 vtv-db = { workspace = true }
+vtv-media-worker = { workspace = true }
+vtv-analysis-worker = { workspace = true }
 vtv-schemas = { workspace = true }
 
 [build-system]

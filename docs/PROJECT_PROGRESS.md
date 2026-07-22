@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 67% | 多集分析 fan-out、按集资产追踪与项目级汇聚 |
+| Phase 2 全剧分析 | 进行中 | 72% | 多集分析与具体 Media/Analysis Worker 编排路由 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -93,13 +93,17 @@
 - [x] 空项目分析返回 409，阻止创建没有源资产且无法执行的 DAG。
 - [x] Stage 输出资产透传 episode/stage 元数据，项目合成按集严格配对输入。
 - [x] 合成器跨集合并 track/scene，并生成逐集 Continuity Snapshot 与异构 release provenance。
+- [x] 编排器按 stage type 路由 Media Worker、Analysis Worker 与剩余 Mock Worker。
+- [x] 本地具体 Worker 使用隔离 `--work-root`，输出不可混淆的 file URI。
+- [x] Worker 异常转换为标准 `EXECUTION_FAILED`，防止异常穿透导致编排进程退出。
+- [x] CLI 默认真实本地路由，同时保留显式 `--worker-mode mock` 合同测试模式。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: route stages to concrete local workers`
+`feat: add worker object-store materialization`
 
-下一步把编排器从全量 Mock executor 改为按 stage type 路由 Media Worker、Analysis Worker 与保留的 Mock 生产阶段。
+下一步增加 Worker S3/MinIO 输入物化与输出上传，让具体 Worker 能消费对象存储 URI，而不只接受 file URI。
 
 ## 决策日志
 
@@ -159,3 +163,5 @@
 | 2026-07-22 | `pytest` | 45 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | 多集分析 DAG 与汇聚测试 | 通过；两集生成 11 stages、空集拒绝、四份分析资产按集配对 |
 | 2026-07-22 | `pytest` | 47 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Stage Router 测试 | 2 passed；覆盖三路分发、本地输出隔离和异常标准化 |
+| 2026-07-22 | `pytest` | 49 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

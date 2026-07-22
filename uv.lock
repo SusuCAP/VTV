@@ -916,14 +916,18 @@ version = "0.1.0"
 source = { editable = "apps/orchestrator" }
 dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "vtv-analysis-worker" },
     { name = "vtv-db" },
+    { name = "vtv-media-worker" },
     { name = "vtv-schemas" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.39" },
+    { name = "vtv-analysis-worker", editable = "workers/analysis" },
     { name = "vtv-db", editable = "packages/db" },
+    { name = "vtv-media-worker", editable = "workers/media" },
     { name = "vtv-schemas", editable = "packages/schemas" },
 ]
 
