@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .contracts import EvaluatorReleaseCreate, MetricDefinition
+from .contracts import BenchmarkPolicy, EvaluatorReleaseCreate, MetricDefinition
 
 VISUAL_TECHNICAL_EVALUATOR = EvaluatorReleaseCreate(
     evaluator_key="visual_technical",
@@ -135,4 +135,21 @@ BUILTIN_EVALUATORS = (
     VISUAL_CONTINUITY_EVALUATOR,
     LIPSYNC_QC_EVALUATOR,
     AUDIO_CONTINUITY_EVALUATOR,
+)
+
+
+VISUAL_GENERATION_POLICY = BenchmarkPolicy(
+    policy_key="visual_generation_default",
+    release="vtv.visual-generation-policy.v1",
+    minimum_sample_count=10,
+    minimum_metric_scores={
+        "character_identity_score": 0.6,
+        "temporal_smoothness": 0.7,
+        "background_preservation_score": 0.7,
+        "lipsync_alignment_score": 0.6,
+    },
+    maximum_critical_failure_rate=0.05,
+    maximum_human_reject_rate=0.10,
+    maximum_cost_per_passed_second=2.0,
+    maximum_p95_latency_seconds=120.0,
 )

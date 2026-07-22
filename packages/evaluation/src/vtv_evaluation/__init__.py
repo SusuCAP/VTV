@@ -47,5 +47,23 @@ __all__ = [
     "signal_fidelity",
     "transcript_accuracy",
     "temporal_iou",
+    "background_preservation_score",
+    "character_identity_score",
+    "lipsync_alignment_score",
+    "temporal_smoothness",
+    "VisualGenerationBenchmarkPayload",
+    "VisualGoldenBenchmarkRunner",
+    "VisualGoldenSample",
 ]
 from .audio_metrics import TimedSpeakerLabel, diarization_overlap_accuracy, transcript_accuracy
+from .visual_generation_metrics import (
+    background_preservation_score,
+    character_identity_score,
+    lipsync_alignment_score,
+    temporal_smoothness,
+)
+from .visual_runner import (
+    VisualGenerationBenchmarkPayload,
+    VisualGoldenBenchmarkRunner,
+    VisualGoldenSample,
+)
