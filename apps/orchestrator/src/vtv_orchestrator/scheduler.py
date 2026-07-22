@@ -162,6 +162,8 @@ class Scheduler:
                     **claim.params,
                     "delivery_evidence_request": request,
                 }
+            elif claim.stage_type == "SHOT_ROUTING":
+                params = await _resolve_shot_routing_params(session, claim)
             elif claim.stage_type == "C2PA_SIGN":
                 params = await _resolve_c2pa_sign_params(session, claim)
         return StageJob(
@@ -904,5 +906,55 @@ async def _resolve_c2pa_sign_params(
                 f"/jobs/{claim.job_id}/stages/{claim.stage_run_id}"
             ),
             "signer_id": "vtv.passthrough-signer.v1",
+        },
+    }
+
+
+async def _resolve_shot_routing_params(
+    session: AsyncSession,
+    claim: ClaimedStage,
+) -> dict:
+    """Build shot_routing_request from stored AnalysisDocuments at claim time."""
+    if claim.episode_id is None:
+        raise ValueError("SHOT_ROUTING requires an episode_id on the stage run")
+
+    template = claim.params.get("shot_routing_template") or {}
+    shots: list[dict] = template.get("shots") or []
+
+    # Query latest VISION_ANALYSIS for this episode
+    vision_doc = await session.scalar(
+        select(AnalysisDocument)
+        .where(
+            AnalysisDocument.project_id == claim.project_id,
+            AnalysisDocument.episode_id == claim.episode_id,
+            AnalysisDocument.document_type == "VISION_ANALYSIS",
+        )
+        .order_by(AnalysisDocument.id.desc())
+        .limit(1)
+    )
+
+    # Query latest AUDIO_ANALYSIS for this episode
+    audio_doc = await session.scalar(
+        select(AnalysisDocument)
+        .where(
+            AnalysisDocument.project_id == claim.project_id,
+            AnalysisDocument.episode_id == claim.episode_id,
+            AnalysisDocument.document_type == "AUDIO_ANALYSIS",
+        )
+        .order_by(AnalysisDocument.id.desc())
+        .limit(1)
+    )
+
+    vision_payload: dict = vision_doc.payload if vision_doc is not None else {}
+    audio_payload: dict = audio_doc.payload if audio_doc is not None else {}
+
+    return {
+        **claim.params,
+        "shot_routing_request": {
+            "episode_id": str(claim.episode_id),
+            "shots": shots,
+            "person_observations": vision_payload.get("people") or [],
+            "ocr_observations": vision_payload.get("ocr") or [],
+            "utterances": audio_payload.get("utterances") or [],
         },
     }

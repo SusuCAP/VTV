@@ -27,6 +27,7 @@ members = [
   "packages/delivery",
   "packages/media",
   "packages/production",
+  "packages/routing",
   "packages/schemas",
   "packages/storage",
   "workers/media",

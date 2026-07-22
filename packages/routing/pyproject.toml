@@ -1,0 +1,20 @@
+[project]
+name = "vtv-routing"
+version = "0.1.0"
+description = "A–F visual shot routing classifier and WorkflowPlan generator for VTV"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.10.6",
+  "vtv-schemas",
+  "vtv-analysis",
+  "vtv-production",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+vtv-analysis = { workspace = true }
+vtv-production = { workspace = true }

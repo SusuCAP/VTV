@@ -26,6 +26,7 @@ ASSEMBLY_STAGES = frozenset(
         "AUDIO_MIX",
         "ASSEMBLE_EPISODE",
         "DELIVERY_EVIDENCE",
+        "SHOT_ROUTING",
     }
 )
 C2PA_STAGES = frozenset({"C2PA_SIGN"})

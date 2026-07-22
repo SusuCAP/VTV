@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import unquote, urlparse
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from PIL import Image, ImageDraw, ImageFont
 from vtv_assembly import (
@@ -20,6 +20,11 @@ from vtv_assembly import (
 from vtv_delivery import DeliveryEvidenceRequest, QcEvidence
 from vtv_media import probe_media
 from vtv_media.process import run_media_process
+from vtv_routing import (
+    EpisodeWorkflowPlan,
+    ShotVisualFeatures,
+    VisualShotRouter,
+)
 from vtv_schemas.jobs import AssetRef, DomainArtifact, StageJob, StageResult, VariantResult
 
 
@@ -39,6 +44,8 @@ class AssembleWorker:
             return self._picture_conform(job)
         if job.stage_type == "DELIVERY_EVIDENCE":
             return self._delivery_evidence(job)
+        if job.stage_type == "SHOT_ROUTING":
+            return self._shot_routing(job)
         raise ValueError(f"unsupported assemble stage: {job.stage_type}")
 
     def _subtitle(self, job: StageJob) -> StageResult:
@@ -443,6 +450,53 @@ class AssembleWorker:
             request.source_video_sha256,
         )
 
+    def _shot_routing(self, job: StageJob) -> StageResult:
+        try:
+            request = job.params["shot_routing_request"]
+        except KeyError as exc:
+            raise ValueError("SHOT_ROUTING requires a shot_routing_request in params") from exc
+
+        try:
+            episode_id = UUID(request["episode_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("shot_routing_request must contain a valid episode_id") from exc
+
+        raw_shots: list[dict] = request.get("shots") or []
+        raw_persons: list[dict] = request.get("person_observations") or []
+        raw_ocr: list[dict] = request.get("ocr_observations") or []
+        raw_utterances: list[dict] = request.get("utterances") or []
+
+        shot_features = tuple(
+            _build_shot_features(shot, raw_persons, raw_ocr, raw_utterances)
+            for shot in raw_shots
+        )
+
+        router = VisualShotRouter()
+        plan: EpisodeWorkflowPlan = router.plan(episode_id, shot_features)
+
+        output_directory = _local_path(job.output_prefix)
+        output_directory.mkdir(parents=True, exist_ok=True)
+        plan_path = output_directory / "workflow-plan.json"
+        payload = plan.model_dump(mode="json")
+        _atomic_write(plan_path, _canonical_json(payload))
+        plan_asset = _asset(plan_path, "application/json", payload)
+
+        return StageResult(
+            stage_run_id=job.stage_run_id,
+            stage_attempt_id=job.stage_attempt_id,
+            status="OUTPUT_READY",
+            variants=[VariantResult(variant_no=1, output_assets=[plan_asset])],
+            domain_artifacts=[
+                DomainArtifact(
+                    document_type="WORKFLOW_PLAN",
+                    episode_id=job.episode_id,
+                    source_asset_sha256=plan_asset.sha256,
+                    payload=payload,
+                )
+            ],
+            attempt_usage={"worker": "assemble", "local": True},
+        )
+
     def _delivery_evidence(self, job: StageJob) -> StageResult:
         try:
             request = DeliveryEvidenceRequest.model_validate(
@@ -544,6 +598,86 @@ class AssembleWorker:
             ],
             attempt_usage={"worker": "assemble", "local": True},
         )
+
+
+def _build_shot_features(
+    shot: dict,
+    persons: list[dict],
+    ocr: list[dict],
+    utterances: list[dict],
+) -> ShotVisualFeatures:
+    """Aggregate per-shot visual/audio features from raw observation lists."""
+    shot_id = UUID(shot["shot_id"])
+    shot_no: int = int(shot["shot_no"])
+    start_ms: int = int(shot.get("start_ms", 0))
+    end_ms: int = int(shot.get("end_ms", start_ms + 1))
+    duration_ms: int = end_ms - start_ms
+
+    start_s = start_ms / 1000.0
+    end_s = end_ms / 1000.0
+
+    # PersonObservation fields: start_seconds, end_seconds, face_visible, box (w*h = face area)
+    shot_persons = [
+        p
+        for p in persons
+        if float(p.get("end_seconds", 0)) > start_s
+        and float(p.get("start_seconds", 0)) < end_s
+    ]
+    person_count = len({p.get("track_id", p.get("observation_id", "")) for p in shot_persons})
+    has_face_visible = any(p.get("face_visible", False) for p in shot_persons)
+    max_face_scale = 0.0
+    max_occlusion = 0.0
+    for p in shot_persons:
+        box = p.get("box") or {}
+        w = float(box.get("width", 0))
+        h = float(box.get("height", 0))
+        max_face_scale = max(max_face_scale, w * h)
+    # max_occlusion not directly available in PersonObservation; default to 0
+
+    # OcrObservation: detect non-Latin script overlays
+    shot_ocr = [
+        o
+        for o in ocr
+        if float(o.get("end_seconds", 0)) > start_s
+        and float(o.get("start_seconds", 0)) < end_s
+    ]
+    has_text_overlay = any(
+        o.get("script") not in (None, "Latin", "latin") for o in shot_ocr
+    )
+
+    # Utterances: detect dialogue overlapping this shot
+    shot_utterances = [
+        u
+        for u in utterances
+        if float(u.get("end_seconds", 0)) > start_s
+        and float(u.get("start_seconds", 0)) < end_s
+    ]
+    has_dialogue = len(shot_utterances) > 0
+    dialogue_duration_seconds = sum(
+        min(float(u.get("end_seconds", start_s)), end_s)
+        - max(float(u.get("start_seconds", end_s)), start_s)
+        for u in shot_utterances
+    )
+
+    return ShotVisualFeatures(
+        shot_id=shot_id,
+        shot_no=shot_no,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        duration_ms=duration_ms,
+        person_count=person_count,
+        has_face_visible=has_face_visible,
+        max_face_scale=min(max_face_scale, 1.0),
+        max_occlusion=max_occlusion,
+        has_text_overlay=has_text_overlay,
+        has_dialogue=has_dialogue,
+        dialogue_duration_seconds=max(dialogue_duration_seconds, 0.0),
+        has_background_replacement_needed=bool(
+            shot.get("has_background_replacement_needed", False)
+        ),
+        full_regen_required=bool(shot.get("full_regen_required", False)),
+        primary_scene_label=str(shot.get("primary_scene_label", "")),
+    )
 
 
 def _result(

@@ -7,6 +7,7 @@ dependencies = [
   "pillow>=11.1.0",
   "vtv-assembly",
   "vtv-media",
+  "vtv-routing",
   "vtv-schemas",
   "vtv-delivery",
 ]
@@ -18,5 +19,6 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 vtv-assembly = { workspace = true }
 vtv-media = { workspace = true }
+vtv-routing = { workspace = true }
 vtv-schemas = { workspace = true }
 vtv-delivery = { workspace = true }
