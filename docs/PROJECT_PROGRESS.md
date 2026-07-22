@@ -133,6 +133,8 @@
 - [x] 发布判定覆盖技术访问、复现、回滚、校准、样本量、硬失败和人工退回门禁。
 - [x] 关键指标以置信下界而非均值准入，关键样本单次失败不可被总体平均掩盖。
 - [x] 聚合单位合格输出成本与 nearest-rank P95；单次报告返回全部失败原因且不短路。
+- [x] 新增不可变 benchmark release/逐样本结果表及 `0007` 迁移，固化评测完整证据。
+- [x] Model Release 新增 approved benchmark 外键，为 CANARY/ACTIVE 数据库门禁建立引用边界。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
@@ -221,3 +223,4 @@
 | 2026-07-22 | `pytest` | 69 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Golden Dataset 发布门禁 | 4 passed；覆盖完整批准、多门禁失败、样本完整性与不可变配置 |
 | 2026-07-22 | `pytest` | 73 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | SQLAlchemy metadata | 21 tables loaded；Model Release approved benchmark 外键可解析 |

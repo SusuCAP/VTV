@@ -1216,6 +1216,7 @@ def _model_release_state(release: ModelRelease) -> ModelReleaseState:
         state_version=release.state_version,
         reviewed_by=release.reviewed_by,
         reviewed_at=release.reviewed_at,
+        approved_benchmark_release_id=release.approved_benchmark_release_id,
     )
 
 
@@ -1246,6 +1247,7 @@ def _model_release_read(release: ModelRelease) -> ModelReleaseRead:
         fallback_release_id=release.fallback_release_id,
         reviewed_by=release.reviewed_by,
         reviewed_at=release.reviewed_at,
+        approved_benchmark_release_id=release.approved_benchmark_release_id,
         created_at=release.created_at,
         updated_at=release.updated_at,
     )

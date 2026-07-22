@@ -645,4 +645,5 @@ def _memory_model_state(release: ModelReleaseRead) -> ModelReleaseState:
         state_version=release.state_version,
         reviewed_by=release.reviewed_by,
         reviewed_at=release.reviewed_at,
+        approved_benchmark_release_id=release.approved_benchmark_release_id,
     )

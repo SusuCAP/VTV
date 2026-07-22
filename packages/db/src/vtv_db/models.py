@@ -386,6 +386,62 @@ class ModelRelease(TimestampMixin, Base):
     )
     reviewed_by: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_benchmark_release_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("benchmark_releases.id", ondelete="SET NULL", use_alter=True)
+    )
+
+
+class BenchmarkRelease(Base):
+    __tablename__ = "benchmark_releases"
+    __table_args__ = (
+        UniqueConstraint(
+            "model_release_id",
+            "dataset_fingerprint",
+            "policy_fingerprint",
+            "weights_sha256",
+        ),
+        CheckConstraint(
+            "approved = FALSE OR jsonb_array_length(failed_gates) = 0",
+            name="ck_benchmark_releases_approved_has_no_failures",
+        ),
+        Index("ix_benchmark_releases_workspace_model", "workspace_id", "model_release_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    workspace_id: Mapped[UUID] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False
+    )
+    model_release_id: Mapped[UUID] = mapped_column(
+        ForeignKey("model_releases.id", ondelete="CASCADE"), nullable=False
+    )
+    dataset_key: Mapped[str] = mapped_column(String(128))
+    dataset_release: Mapped[str] = mapped_column(String(128))
+    dataset_fingerprint: Mapped[str] = mapped_column(String(64))
+    annotation_release: Mapped[str] = mapped_column(String(128))
+    policy_key: Mapped[str] = mapped_column(String(128))
+    policy_release: Mapped[str] = mapped_column(String(128))
+    policy_fingerprint: Mapped[str] = mapped_column(String(64))
+    weights_sha256: Mapped[str] = mapped_column(String(64))
+    runtime_fingerprint: Mapped[str] = mapped_column(Text)
+    evidence: Mapped[dict] = mapped_column(JSONB)
+    report: Mapped[dict] = mapped_column(JSONB)
+    approved: Mapped[bool] = mapped_column(Boolean)
+    failed_gates: Mapped[list] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BenchmarkSampleResult(Base):
+    __tablename__ = "benchmark_sample_results"
+    __table_args__ = (UniqueConstraint("benchmark_release_id", "sample_id"),)
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    benchmark_release_id: Mapped[UUID] = mapped_column(
+        ForeignKey("benchmark_releases.id", ondelete="CASCADE"), nullable=False
+    )
+    sample_id: Mapped[str] = mapped_column(String(128))
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    critical: Mapped[bool] = mapped_column(Boolean, default=False)
+    result: Mapped[dict] = mapped_column(JSONB)
 
 
 class OrphanAsset(TimestampMixin, Base):

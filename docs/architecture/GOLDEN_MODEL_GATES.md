@@ -17,5 +17,7 @@
 全部失败原因，便于修复、复测和审批审计。没有合格输出时成本门禁必然失败；指标缺失不会
 被当作零分静默处理，而会生成独立的 `METRIC_MISSING` 原因。
 
-当前模块是纯领域层，不直接修改 Model Release 状态。下一增量把报告持久化为不可变
-benchmark release，并要求 Registry 在进入 CANARY 前引用一份已批准报告。
+迁移 `0007_benchmark_releases.sql` 新增不可变 `benchmark_releases` 与逐样本
+`benchmark_sample_results`。报告唯一身份由 model release、dataset 指纹、policy 指纹与权重
+hash 组成；`model_releases.approved_benchmark_release_id` 只允许引用已落库报告。下一增量提供
+事务 API，并在进入 CANARY/ACTIVE 前验证引用报告已批准且归属同一 workspace/model release。

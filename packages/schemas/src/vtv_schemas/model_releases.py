@@ -45,5 +45,6 @@ class ModelReleaseRead(BaseModel):
     fallback_release_id: UUID | None = None
     reviewed_by: UUID | None = None
     reviewed_at: datetime | None = None
+    approved_benchmark_release_id: UUID | None = None
     created_at: datetime
     updated_at: datetime

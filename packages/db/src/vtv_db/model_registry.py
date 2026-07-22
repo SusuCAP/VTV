@@ -34,6 +34,7 @@ class ModelReleaseState:
     state_version: int = 1
     reviewed_by: UUID | None = None
     reviewed_at: datetime | None = None
+    approved_benchmark_release_id: UUID | None = None
 
 
 def canary_receives_job(job_id: UUID, model_key: str, traffic_percent: int) -> bool:
