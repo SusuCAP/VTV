@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 88% | 可查询分析投影、版本一致的 DRAFT Release 与 Outbox |
+| Phase 2 全剧分析 | 进行中 | 94% | 可门禁远程模型运行时、显式回退与真实 release provenance |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -109,13 +109,18 @@
 - [x] 重分析预分配下一 Release 版本，并在 Worker JSON 与提交事务两侧校验一致性。
 - [x] 新版本自动 supersede 同类型旧版本并传递 stale 旧下游。
 - [x] 新增 analysis documents 查询 API，支持 project/episode/type 过滤。
+- [x] 实现音频/视觉远程推理 multipart 传输与强类型响应/媒体时长校验。
+- [x] 远程执行要求 endpoint、release、license ID 与 automation approval 四项门禁。
+- [x] endpoint 强制 HTTPS 或 localhost，远程错误不泄漏 token/响应正文。
+- [x] 模型回退默认关闭；仅显式开启且发生远程服务错误时使用确定性 Adapter。
+- [x] 回退后 provenance 记录实际 fallback release，许可/批准失败不可绕过。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: add production model adapter runtime`
+`feat: add model release registry`
 
-下一步为 VAD/ASR/diarization 与视觉模型增加可配置生产 Adapter 运行时、release/许可门禁和稳定回退，替换当前确定性合同实现。
+下一步建立 PostgreSQL Model Release Registry 与准入 API，让运行时门禁从环境配置升级为数据库权威 release、许可、灰度与禁用状态。
 
 ## 决策日志
 
@@ -182,3 +187,5 @@
 | 2026-07-22 | Domain Artifact/Release 投影测试 | 通过；覆盖 8 类文档、三类 release 依赖及跨版本 Bible/Anchor 锁定 |
 | 2026-07-22 | SQLAlchemy metadata | 18 tables loaded，包含 `analysis_documents` |
 | 2026-07-22 | `pytest` | 55 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | 生产模型运行时测试 | 4 passed；覆盖批准门禁、强类型响应、实际回退 release 与缺失配置拒绝 |
+| 2026-07-22 | `pytest` | 59 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |

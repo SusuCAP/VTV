@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Audio and multimodal analysis stage worker for VTV"
 requires-python = ">=3.12"
 dependencies = [
+  "httpx>=0.28.1",
+  "pydantic-settings>=2.8.1",
   "vtv-analysis",
   "vtv-media",
   "vtv-schemas",

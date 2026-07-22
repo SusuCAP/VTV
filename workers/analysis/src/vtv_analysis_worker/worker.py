@@ -367,4 +367,6 @@ class AnalysisWorker:
 
 
 def execute(job: StageJob) -> StageResult:
-    return AnalysisWorker().execute(job)
+    from .factory import create_analysis_worker
+
+    return create_analysis_worker().execute(job)
