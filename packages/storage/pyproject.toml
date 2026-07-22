@@ -1,0 +1,13 @@
+[project]
+name = "vtv-storage"
+version = "0.1.0"
+description = "Object storage adapter contracts for VTV"
+requires-python = ">=3.12"
+dependencies = ["vtv-schemas"]
+
+[tool.uv.sources]
+vtv-schemas = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

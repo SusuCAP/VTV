@@ -8,10 +8,12 @@ dependencies = [
   "pydantic-settings>=2.8.1",
   "uvicorn[standard]>=0.34.0",
   "vtv-schemas",
+  "vtv-storage",
 ]
 
 [tool.uv.sources]
 vtv-schemas = { workspace = true }
+vtv-storage = { workspace = true }
 
 [project.scripts]
 vtv-api = "vtv_control_api.__main__:main"

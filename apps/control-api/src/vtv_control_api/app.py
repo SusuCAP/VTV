@@ -4,6 +4,9 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
+from vtv_schemas.uploads import MultipartComplete, MultipartInit, MultipartUpload, UploadRead
+from vtv_storage import MemoryObjectStore, UploadIntegrityError
+from vtv_storage.adapter import UploadNotFoundError
 
 from .config import get_settings
 from .repository import MemoryRepository, ProjectNotFoundError
@@ -15,11 +18,16 @@ def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUI
     return x_workspace_id or DEFAULT_LOCAL_WORKSPACE_ID
 
 
-def create_app(repository: MemoryRepository | None = None) -> FastAPI:
+def create_app(
+    repository: MemoryRepository | None = None,
+    object_store: MemoryObjectStore | None = None,
+) -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.api_title, version=settings.api_version)
     repo = repository or MemoryRepository()
+    storage = object_store or MemoryObjectStore()
     app.state.repository = repo
+    app.state.object_store = storage
 
     @app.get("/healthz", tags=["system"])
     def health() -> dict[str, str]:
@@ -69,6 +77,44 @@ def create_app(repository: MemoryRepository | None = None) -> FastAPI:
             return repo.get_job(workspace, job_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
+
+    @app.post(
+        "/v1/uploads/multipart-init",
+        response_model=MultipartUpload,
+        status_code=status.HTTP_201_CREATED,
+    )
+    def multipart_init(
+        payload: MultipartInit,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> MultipartUpload:
+        try:
+            repo.get_project(workspace, payload.project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        return storage.multipart_init(workspace, payload)
+
+    @app.post("/v1/uploads/{upload_id}/multipart-complete", response_model=UploadRead)
+    def multipart_complete(
+        upload_id: UUID,
+        payload: MultipartComplete,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> UploadRead:
+        try:
+            return storage.multipart_complete(workspace, upload_id, payload)
+        except UploadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="upload not found") from exc
+        except UploadIntegrityError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/v1/uploads/{upload_id}", response_model=UploadRead)
+    def get_upload(
+        upload_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> UploadRead:
+        try:
+            return storage.get_upload(workspace, upload_id)
+        except UploadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="upload not found") from exc
 
     return app
 

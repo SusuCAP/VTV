@@ -7,6 +7,7 @@ members = [
     "vtv-control-api",
     "vtv-db",
     "vtv-schemas",
+    "vtv-storage",
     "vtv-workspace",
 ]
 
@@ -669,6 +670,7 @@ dependencies = [
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "vtv-schemas" },
+    { name = "vtv-storage" },
 ]
 
 [package.metadata]
@@ -677,6 +679,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = ">=2.8.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "vtv-schemas", editable = "packages/schemas" },
+    { name = "vtv-storage", editable = "packages/storage" },
 ]
 
 [[package]]
@@ -706,6 +709,17 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "pydantic", specifier = ">=2.10.6" }]
+
+[[package]]
+name = "vtv-storage"
+version = "0.1.0"
+source = { editable = "packages/storage" }
+dependencies = [
+    { name = "vtv-schemas" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "vtv-schemas", editable = "packages/schemas" }]
 
 [[package]]
 name = "vtv-workspace"

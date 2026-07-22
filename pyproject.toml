@@ -17,6 +17,7 @@ members = [
   "apps/control-api",
   "packages/db",
   "packages/schemas",
+  "packages/storage",
 ]
 
 [tool.pytest.ini_options]

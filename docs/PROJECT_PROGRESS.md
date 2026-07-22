@@ -7,7 +7,7 @@
 | 阶段 | 状态 | 完成度 | 当前交付 |
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
-| Phase 1 基础平台 | 进行中 | 30% | 共享 Schema、控制 API、PostgreSQL 核心模型与状态机 |
+| Phase 1 基础平台 | 进行中 | 42% | 控制 API、数据库编排核心、分片上传与存储适配边界 |
 | Phase 2 全剧分析 | 未开始 | 0% | — |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
@@ -31,12 +31,14 @@
 - [x] 实现 DAG 依赖、Outbox、execution control、lease、tombstone 与 orphan 结构。
 - [x] 固化 `FOR UPDATE SKIP LOCKED` 领取和 lease/state/control version 条件提交 SQL。
 - [x] 固化 Stage Run 合法状态迁移并覆盖成功、失败、取消、失效路径测试。
+- [x] 实现对象存储 Adapter 协议与无媒体代理的 multipart API。
+- [x] 实现 32–128 MiB 分片、恢复查询、顺序/大小/SHA-256 完成校验。
 - [ ] 用 PostgreSQL Repository 替换开发期内存 Repository。
 - [ ] 建立 Node workspace 与 React/Tauri 控制端骨架。
 
 ## 下一提交目标
 
-`feat: add PostgreSQL orchestration core and stage lifecycle`
+`feat: add multipart upload and object storage contract`
 
 完成后继续 Phase 1 的“PostgreSQL 核心模型 + 数据库驱动状态机”。
 
@@ -57,3 +59,5 @@
 | 2026-07-22 | SQLAlchemy metadata import | 13 tables loaded |
 | 2026-07-22 | `ruff check .` | 通过 |
 | 2026-07-22 | `pytest` | 15 passed；同一上游弃用提示 |
+| 2026-07-22 | `ruff check .` | 通过 |
+| 2026-07-22 | `pytest` | 17 passed；同一上游弃用提示 |
