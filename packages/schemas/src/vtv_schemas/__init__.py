@@ -60,6 +60,11 @@ __all__ = [
     "BenchmarkReleaseRead",
     "AssetRef",
     "AnalysisDocumentRead",
+    "ModelChangeover",
+    "ModelCostEntry",
+    "ModelHotUpdateConfig",
+    "ProjectCostReport",
+    "StageCostEntry",
     "ArtifactConfirm",
     "ArtifactReleaseCreate",
     "ArtifactReleaseRead",
@@ -109,4 +114,6 @@ __all__ = [
 ]
 from .analysis import AnalysisDocumentRead
 from .benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from .cost_report import ModelCostEntry, ProjectCostReport, StageCostEntry
+from .model_hotupdate import ModelChangeover, ModelHotUpdateConfig
 from .retention import DEFAULT_RETENTION_POLICY, RetentionPolicy, RetentionRule

@@ -41,8 +41,10 @@ from vtv_schemas.candidates import (
     CandidateQcCreate,
     CandidateVariantRead,
 )
+from vtv_schemas.cost_report import ProjectCostReport
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobProgress, JobRead, JobSummary, ProduceRequest
+from vtv_schemas.model_hotupdate import ModelHotUpdateConfig
 from vtv_schemas.model_releases import (
     ModelAutomationUpdate,
     ModelLicenseReview,
@@ -1046,6 +1048,43 @@ def create_app(
             return {"deleted": deleted}
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/cost-report",
+        response_model=ProjectCostReport,
+    )
+    async def get_project_cost_report(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectCostReport:
+        try:
+            return await repo.get_project_cost_report(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/model-releases/{model_release_id}:configure-hotupdate",
+        response_model=dict,
+        status_code=status.HTTP_200_OK,
+    )
+    async def configure_model_hotupdate(
+        model_release_id: UUID,
+        payload: ModelHotUpdateConfig,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> dict:
+        # Validate that the model release exists
+        releases = await repo.list_model_releases(workspace, payload.model_key)
+        if not any(r.id == model_release_id for r in releases):
+            raise HTTPException(status_code=404, detail="model release not found")
+        # Store-only: return the configuration as acknowledged
+        return {
+            "model_release_id": str(model_release_id),
+            "model_key": payload.model_key,
+            "changeover_strategy": payload.changeover_strategy,
+            "max_drain_seconds": payload.max_drain_seconds,
+            "rollback_on_failure_rate": payload.rollback_on_failure_rate,
+            "status": "configured",
+        }
 
     return app
 

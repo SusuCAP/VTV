@@ -64,6 +64,7 @@ from vtv_schemas.candidates import (
     CandidateVariantRead,
     QcMetricRead,
 )
+from vtv_schemas.cost_report import ProjectCostReport
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
@@ -2209,6 +2210,39 @@ class MemoryRepository:
             "failure_rate": 0.0,
             "circuit_breaker_active": False,
         }
+
+
+    async def list_expired_assets(
+        self, workspace_id: UUID, project_id: UUID, policy: object
+    ) -> list[dict]:
+        await self.get_project(workspace_id, project_id)
+        return []
+
+    async def cleanup_expired_orphans(
+        self, workspace_id: UUID, project_id: UUID | None = None
+    ) -> int:
+        if project_id is not None:
+            await self.get_project(workspace_id, project_id)
+        return 0
+
+    async def get_project_cost_report(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectCostReport:
+        from datetime import datetime
+        from decimal import Decimal
+
+        await self.get_project(workspace_id, project_id)
+        zero = Decimal("0.000000")
+        return ProjectCostReport(
+            project_id=project_id,
+            workspace_id=workspace_id,
+            report_generated_at=datetime.now(UTC),
+            total_cost_usd=zero,
+            episode_count=0,
+            shot_count=0,
+            cost_per_episode_usd=zero,
+            cost_per_shot_usd=zero,
+        )
 
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:

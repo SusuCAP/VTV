@@ -56,6 +56,7 @@ from vtv_schemas.candidates import (
     CandidateVariantRead,
     QcMetricRead,
 )
+from vtv_schemas.cost_report import ModelCostEntry, ProjectCostReport, StageCostEntry
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
@@ -612,6 +613,10 @@ class ProjectRepository(Protocol):
     async def cleanup_expired_orphans(
         self, workspace_id: UUID, project_id: UUID | None = None
     ) -> int: ...
+
+    async def get_project_cost_report(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectCostReport: ...
 
 
 class SqlAlchemyProjectRepository:
@@ -4092,6 +4097,162 @@ class SqlAlchemyProjectRepository:
                 "failure_rate": failure_rate,
                 "circuit_breaker_active": circuit_breaker_active,
             }
+
+    async def get_project_cost_report(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectCostReport:
+        """Aggregate cost data from stage_attempts for the project."""
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            project = exists
+            now = datetime.now(UTC)
+
+            # 1. Total cost across all stage_attempts for the project
+            total_cost_row = await session.scalar(
+                select(func.coalesce(func.sum(StageAttempt.cost_usd), Decimal("0")))
+                .join(StageRun, StageRun.id == StageAttempt.stage_run_id)
+                .where(StageRun.project_id == project_id)
+            )
+            total_cost = Decimal(str(total_cost_row or "0"))
+
+            # 2. By-stage breakdown
+            stage_rows = list(
+                await session.execute(
+                    select(
+                        StageRun.stage_type,
+                        func.count(StageRun.id.distinct()).label("stage_run_count"),
+                        func.coalesce(func.sum(StageAttempt.cost_usd), 0).label("total_cost"),
+                        func.coalesce(func.avg(StageAttempt.cost_usd), 0).label("avg_cost"),
+                    )
+                    .join(StageAttempt, StageAttempt.stage_run_id == StageRun.id)
+                    .where(StageRun.project_id == project_id)
+                    .group_by(StageRun.stage_type)
+                    .order_by(StageRun.stage_type)
+                )
+            )
+
+            # Compute p95 latency per stage_type by fetching durations
+            stage_durations: dict[str, list[float]] = {}
+            duration_rows = list(
+                await session.execute(
+                    select(
+                        StageRun.stage_type,
+                        StageAttempt.started_at,
+                        StageAttempt.finished_at,
+                    )
+                    .join(StageAttempt, StageAttempt.stage_run_id == StageRun.id)
+                    .where(
+                        StageRun.project_id == project_id,
+                        StageAttempt.finished_at.is_not(None),
+                    )
+                )
+            )
+            for stage_type, started_at, finished_at in duration_rows:
+                if started_at is not None and finished_at is not None:
+                    dur = (finished_at - started_at).total_seconds()
+                    stage_durations.setdefault(stage_type, []).append(max(0.0, dur))
+
+            def _p95(values: list[float]) -> float:
+                if not values:
+                    return 0.0
+                sorted_vals = sorted(values)
+                idx = int(len(sorted_vals) * 0.95)
+                return sorted_vals[min(idx, len(sorted_vals) - 1)]
+
+            by_stage = [
+                StageCostEntry(
+                    stage_type=row.stage_type,
+                    stage_run_count=int(row.stage_run_count),
+                    total_cost_usd=Decimal(str(row.total_cost)).quantize(Decimal("0.000001")),
+                    avg_cost_usd=Decimal(str(row.avg_cost)).quantize(Decimal("0.000001")),
+                    p95_latency_seconds=_p95(stage_durations.get(row.stage_type, [])),
+                )
+                for row in stage_rows
+            ]
+
+            # 3. By-model breakdown
+            model_rows = list(
+                await session.execute(
+                    select(
+                        ModelRelease.model_key,
+                        ModelRelease.release_name,
+                        func.count(StageAttempt.id).label("invocation_count"),
+                        func.coalesce(func.sum(StageAttempt.cost_usd), 0).label("total_cost"),
+                    )
+                    .join(StageRun, StageRun.id == StageAttempt.stage_run_id)
+                    .join(ModelRelease, ModelRelease.id == StageRun.model_release_id)
+                    .where(StageRun.project_id == project_id)
+                    .group_by(ModelRelease.model_key, ModelRelease.release_name)
+                    .order_by(ModelRelease.model_key)
+                )
+            )
+            by_model = [
+                ModelCostEntry(
+                    model_key=row.model_key,
+                    model_release_name=row.release_name,
+                    invocation_count=int(row.invocation_count),
+                    total_cost_usd=Decimal(str(row.total_cost)).quantize(Decimal("0.000001")),
+                    total_gpu_seconds=0.0,
+                )
+                for row in model_rows
+            ]
+
+            # 4. Episode and shot counts
+            episode_count = int(
+                await session.scalar(
+                    select(func.count(Episode.id)).where(Episode.project_id == project_id)
+                ) or 0
+            )
+            shot_count = int(
+                await session.scalar(
+                    select(func.count(Shot.id))
+                    .join(Episode, Episode.id == Shot.episode_id)
+                    .where(Episode.project_id == project_id)
+                ) or 0
+            )
+
+            zero = Decimal("0.000000")
+            cost_per_episode = (
+                (total_cost / episode_count).quantize(Decimal("0.000001"))
+                if episode_count > 0
+                else zero
+            )
+            cost_per_shot = (
+                (total_cost / shot_count).quantize(Decimal("0.000001"))
+                if shot_count > 0
+                else zero
+            )
+
+            budget_usd: Decimal | None = project.budget_hard_limit
+            budget_utilization_pct: float | None = None
+            if budget_usd is not None and budget_usd > 0:
+                budget_utilization_pct = float(total_cost / budget_usd * 100)
+
+            return ProjectCostReport(
+                project_id=project_id,
+                workspace_id=workspace_id,
+                report_generated_at=now,
+                total_cost_usd=total_cost.quantize(Decimal("0.000001")),
+                by_stage=by_stage,
+                by_model=by_model,
+                episode_count=episode_count,
+                shot_count=shot_count,
+                cost_per_episode_usd=cost_per_episode,
+                cost_per_shot_usd=cost_per_shot,
+                budget_usd=(
+                    Decimal(str(budget_usd)).quantize(Decimal("0.000001"))
+                    if budget_usd is not None
+                    else None
+                ),
+                budget_utilization_pct=budget_utilization_pct,
+            )
 
     async def list_expired_assets(
         self,

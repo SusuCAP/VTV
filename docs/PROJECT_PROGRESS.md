@@ -11,7 +11,7 @@
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
 | Phase 4 QC 与批量 | 已完成 | 100% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark + 视觉模型基准准入门控 |
-| Phase 5 研究工具完善 | 未开始 | 0% | — |
+| Phase 5 研究工具完善 | 进行中 | 30% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 |
 
 ## 已完成
 
