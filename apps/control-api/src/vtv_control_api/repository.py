@@ -2,11 +2,24 @@ from datetime import UTC, datetime
 from threading import RLock
 from uuid import UUID, uuid4
 
-from vtv_db.repository import ProjectNotFoundError, UploadConflictError, UploadRecord
+from vtv_db.releases import (
+    ArtifactReleaseState,
+    ArtifactReleaseStatus,
+    InvalidArtifactTransitionError,
+    confirm_release,
+    publish_release,
+)
+from vtv_db.repository import (
+    ArtifactConflictError,
+    ProjectNotFoundError,
+    UploadConflictError,
+    UploadRecord,
+)
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
+from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 
@@ -18,6 +31,7 @@ class MemoryRepository:
         self._jobs: dict[UUID, JobRead] = {}
         self._uploads: dict[UUID, UploadRecord] = {}
         self._episodes: dict[UUID, list[EpisodeRead]] = {}
+        self._releases: dict[UUID, ArtifactReleaseRead] = {}
         self._lock = RLock()
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
@@ -91,6 +105,185 @@ class MemoryRepository:
             raise ProjectNotFoundError(job_id)
         await self.get_project(workspace_id, job.project_id)
         return job
+
+    async def create_artifact_release(
+        self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate
+    ) -> ArtifactReleaseRead:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            dependencies = set(payload.dependency_release_ids)
+            if any(
+                release_id not in self._releases
+                or self._releases[release_id].project_id != project_id
+                for release_id in dependencies
+            ):
+                raise ProjectNotFoundError("artifact dependency")
+            if payload.supersedes_release_id:
+                superseded = self._releases.get(payload.supersedes_release_id)
+                if (
+                    superseded is None
+                    or superseded.project_id != project_id
+                    or superseded.artifact_type != payload.artifact_type
+                ):
+                    raise ArtifactConflictError(
+                        "superseded release must have the same artifact type"
+                    )
+            version = 1 + max(
+                (
+                    item.version
+                    for item in self._releases.values()
+                    if item.project_id == project_id and item.artifact_type == payload.artifact_type
+                ),
+                default=0,
+            )
+            now = datetime.now(UTC)
+            release = ArtifactReleaseRead(
+                id=uuid4(),
+                project_id=project_id,
+                artifact_type=payload.artifact_type,
+                version=version,
+                status="DRAFT",
+                state_version=1,
+                content_asset_id=payload.content_asset_id,
+                supersedes_release_id=payload.supersedes_release_id,
+                dependency_release_ids=tuple(sorted(dependencies)),
+                created_at=now,
+                updated_at=now,
+            )
+            self._releases[release.id] = release
+            if payload.supersedes_release_id:
+                self._invalidate_memory_graph(payload.supersedes_release_id)
+            return release
+
+    async def list_artifact_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[ArtifactReleaseRead]:
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            return [item for item in self._releases.values() if item.project_id == project_id]
+
+    async def confirm_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead:
+        release = await self._get_release(workspace_id, release_id)
+        try:
+            changed = confirm_release(
+                _memory_state(release),
+                actor_id=actor_id,
+                expected_state_version=expected_state_version,
+            )
+        except InvalidArtifactTransitionError as exc:
+            raise ArtifactConflictError(str(exc)) from exc
+        return self._store_release_state(release, changed)
+
+    async def publish_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead:
+        release = await self._get_release(workspace_id, release_id)
+        with self._lock:
+            dependencies = tuple(
+                _memory_state(self._releases[item]) for item in release.dependency_release_ids
+            )
+        try:
+            changed = publish_release(
+                _memory_state(release),
+                dependencies=dependencies,
+                expected_state_version=expected_state_version,
+            )
+        except InvalidArtifactTransitionError as exc:
+            raise ArtifactConflictError(str(exc)) from exc
+        return self._store_release_state(release, changed)
+
+    async def invalidate_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> list[ArtifactReleaseRead]:
+        root = await self._get_release(workspace_id, release_id)
+        if root.state_version != expected_state_version:
+            raise ArtifactConflictError("artifact state version mismatch")
+        with self._lock:
+            pending = [root.id]
+            visited: set[UUID] = set()
+            changed: list[ArtifactReleaseRead] = []
+            while pending:
+                current_id = pending.pop()
+                if current_id in visited:
+                    continue
+                visited.add(current_id)
+                current = self._releases[current_id]
+                if current.status != "STALE":
+                    current = current.model_copy(
+                        update={
+                            "status": "STALE",
+                            "state_version": current.state_version + 1,
+                            "stale_at": datetime.now(UTC),
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                    self._releases[current.id] = current
+                    changed.append(current)
+                pending.extend(
+                    item.id
+                    for item in self._releases.values()
+                    if current_id in item.dependency_release_ids
+                )
+            return changed
+
+    async def _get_release(
+        self, workspace_id: UUID, release_id: UUID
+    ) -> ArtifactReleaseRead:
+        with self._lock:
+            release = self._releases.get(release_id)
+        if release is None:
+            raise ProjectNotFoundError(release_id)
+        await self.get_project(workspace_id, release.project_id)
+        return release
+
+    def _store_release_state(
+        self, release: ArtifactReleaseRead, state: ArtifactReleaseState
+    ) -> ArtifactReleaseRead:
+        changed = release.model_copy(
+            update={
+                "status": state.status,
+                "state_version": state.state_version,
+                "confirmed_by": state.confirmed_by,
+                "confirmed_at": state.confirmed_at,
+                "released_at": state.released_at,
+                "stale_at": state.stale_at,
+                "updated_at": datetime.now(UTC),
+            }
+        )
+        with self._lock:
+            self._releases[release.id] = changed
+        return changed
+
+    def _invalidate_memory_graph(self, root_release_id: UUID) -> list[ArtifactReleaseRead]:
+        pending = [root_release_id]
+        visited: set[UUID] = set()
+        changed: list[ArtifactReleaseRead] = []
+        now = datetime.now(UTC)
+        while pending:
+            current_id = pending.pop()
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+            current = self._releases[current_id]
+            if current.status != "STALE":
+                current = current.model_copy(
+                    update={
+                        "status": "STALE",
+                        "state_version": current.state_version + 1,
+                        "stale_at": now,
+                        "updated_at": now,
+                    }
+                )
+                self._releases[current.id] = current
+                changed.append(current)
+            pending.extend(
+                item.id
+                for item in self._releases.values()
+                if current_id in item.dependency_release_ids
+            )
+        return changed
 
     async def create_upload_session(
         self,
@@ -244,3 +437,15 @@ class MemoryRepository:
         reason: str,
     ) -> None:
         await self.get_project(workspace_id, project_id)
+
+
+def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:
+    return ArtifactReleaseState(
+        release_id=release.id,
+        status=ArtifactReleaseStatus(release.status),
+        state_version=release.state_version,
+        confirmed_by=release.confirmed_by,
+        confirmed_at=release.confirmed_at,
+        released_at=release.released_at,
+        stale_at=release.stale_at,
+    )

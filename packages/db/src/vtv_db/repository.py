@@ -12,10 +12,13 @@ from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
+from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_BASELINE_DAG, PROJECT_ANALYSIS_DAG, validate_dag
 from .models import (
+    ArtifactRelease,
+    ArtifactReleaseDependency,
     Episode,
     ExecutionControl,
     Job,
@@ -28,6 +31,13 @@ from .models import (
     UploadSession,
     Workspace,
 )
+from .releases import (
+    ArtifactReleaseState,
+    ArtifactReleaseStatus,
+    InvalidArtifactTransitionError,
+    confirm_release,
+    publish_release,
+)
 
 
 class ProjectNotFoundError(KeyError):
@@ -35,6 +45,10 @@ class ProjectNotFoundError(KeyError):
 
 
 class UploadConflictError(ValueError):
+    pass
+
+
+class ArtifactConflictError(ValueError):
     pass
 
 
@@ -63,6 +77,26 @@ class ProjectRepository(Protocol):
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead: ...
 
     async def get_job(self, workspace_id: UUID, job_id: UUID) -> JobRead: ...
+
+    async def create_artifact_release(
+        self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate
+    ) -> ArtifactReleaseRead: ...
+
+    async def list_artifact_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[ArtifactReleaseRead]: ...
+
+    async def confirm_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead: ...
+
+    async def publish_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead: ...
+
+    async def invalidate_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> list[ArtifactReleaseRead]: ...
 
     async def create_upload_session(
         self,
@@ -308,6 +342,194 @@ class SqlAlchemyProjectRepository:
             if job is None:
                 raise ProjectNotFoundError(job_id)
             return _job_read(job)
+
+    async def create_artifact_release(
+        self, workspace_id: UUID, project_id: UUID, payload: ArtifactReleaseCreate
+    ) -> ArtifactReleaseRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                ).with_for_update()
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            asset = await session.scalar(
+                select(MediaAsset.id).where(
+                    MediaAsset.id == payload.content_asset_id,
+                    MediaAsset.project_id == project_id,
+                    MediaAsset.workspace_id == workspace_id,
+                )
+            )
+            if asset is None:
+                raise ProjectNotFoundError(payload.content_asset_id)
+            dependency_ids = set(payload.dependency_release_ids)
+            if payload.supersedes_release_id:
+                dependency_ids.discard(payload.supersedes_release_id)
+            if dependency_ids:
+                found = set(
+                    await session.scalars(
+                        select(ArtifactRelease.id).where(
+                            ArtifactRelease.project_id == project_id,
+                            ArtifactRelease.id.in_(dependency_ids),
+                        )
+                    )
+                )
+                if found != dependency_ids:
+                    raise ProjectNotFoundError("artifact dependency")
+            if payload.supersedes_release_id:
+                superseded = await session.scalar(
+                    select(ArtifactRelease.id).where(
+                        ArtifactRelease.id == payload.supersedes_release_id,
+                        ArtifactRelease.project_id == project_id,
+                        ArtifactRelease.artifact_type == payload.artifact_type,
+                    )
+                )
+                if superseded is None:
+                    raise ArtifactConflictError(
+                        "superseded release must have the same artifact type"
+                    )
+            version = int(
+                await session.scalar(
+                    select(func.coalesce(func.max(ArtifactRelease.version), 0) + 1).where(
+                        ArtifactRelease.project_id == project_id,
+                        ArtifactRelease.artifact_type == payload.artifact_type,
+                    )
+                )
+            )
+            release = ArtifactRelease(
+                id=self._id_factory(),
+                project_id=project_id,
+                artifact_type=payload.artifact_type,
+                version=version,
+                content_asset_id=payload.content_asset_id,
+                supersedes_release_id=payload.supersedes_release_id,
+            )
+            session.add(release)
+            await session.flush()
+            session.add_all(
+                ArtifactReleaseDependency(
+                    upstream_release_id=dependency_id,
+                    downstream_release_id=release.id,
+                )
+                for dependency_id in dependency_ids
+            )
+            stale_ids: list[UUID] = []
+            if payload.supersedes_release_id:
+                stale = await _invalidate_release_graph(
+                    session, payload.supersedes_release_id, project_id, datetime.now(UTC)
+                )
+                stale_ids = [item.id for item in stale]
+                if stale:
+                    _add_release_event(
+                        session,
+                        workspace_id,
+                        stale[0],
+                        "artifact_release.invalidated",
+                        {"stale_release_ids": [str(item) for item in stale_ids]},
+                    )
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="artifact_release",
+                    aggregate_id=release.id,
+                    event_type="artifact_release.created",
+                    payload={
+                        "release_id": str(release.id),
+                        "project_id": str(project_id),
+                        "stale_release_ids": [str(item) for item in stale_ids],
+                    },
+                )
+            )
+            await session.flush()
+            return await _artifact_read(session, release)
+
+    async def list_artifact_releases(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> list[ArtifactReleaseRead]:
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id, Project.workspace_id == workspace_id
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            releases = list(
+                await session.scalars(
+                    select(ArtifactRelease)
+                    .where(ArtifactRelease.project_id == project_id)
+                    .order_by(ArtifactRelease.artifact_type, ArtifactRelease.version.desc())
+                )
+            )
+            return [await _artifact_read(session, release) for release in releases]
+
+    async def confirm_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, actor_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_release(session, workspace_id, release_id)
+            try:
+                changed = confirm_release(
+                    _artifact_state(release),
+                    actor_id=actor_id,
+                    expected_state_version=expected_state_version,
+                )
+            except InvalidArtifactTransitionError as exc:
+                raise ArtifactConflictError(str(exc)) from exc
+            _apply_artifact_state(release, changed)
+            _add_release_event(session, workspace_id, release, "artifact_release.confirmed")
+            await session.flush()
+            return await _artifact_read(session, release)
+
+    async def publish_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> ArtifactReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_release(session, workspace_id, release_id)
+            dependencies = list(
+                await session.scalars(
+                    select(ArtifactRelease)
+                    .join(
+                        ArtifactReleaseDependency,
+                        ArtifactReleaseDependency.upstream_release_id == ArtifactRelease.id,
+                    )
+                    .where(ArtifactReleaseDependency.downstream_release_id == release.id)
+                    .with_for_update()
+                )
+            )
+            try:
+                changed = publish_release(
+                    _artifact_state(release),
+                    dependencies=tuple(_artifact_state(item) for item in dependencies),
+                    expected_state_version=expected_state_version,
+                )
+            except InvalidArtifactTransitionError as exc:
+                raise ArtifactConflictError(str(exc)) from exc
+            _apply_artifact_state(release, changed)
+            _add_release_event(session, workspace_id, release, "artifact_release.released")
+            await session.flush()
+            return await _artifact_read(session, release)
+
+    async def invalidate_artifact_release(
+        self, workspace_id: UUID, release_id: UUID, expected_state_version: int
+    ) -> list[ArtifactReleaseRead]:
+        async with self._sessions.begin() as session:
+            root = await _locked_release(session, workspace_id, release_id)
+            if root.state_version != expected_state_version:
+                raise ArtifactConflictError("artifact state version mismatch")
+            changed = await _invalidate_release_graph(
+                session, root.id, root.project_id, datetime.now(UTC)
+            )
+            _add_release_event(
+                session,
+                workspace_id,
+                root,
+                "artifact_release.invalidated",
+                {"stale_release_ids": [str(item.id) for item in changed]},
+            )
+            await session.flush()
+            return [await _artifact_read(session, item) for item in changed]
 
     async def create_upload_session(
         self,
@@ -569,6 +791,119 @@ def _project_read(project: Project) -> ProjectRead:
         created_at=project.created_at or datetime.now(UTC),
         updated_at=project.updated_at or datetime.now(UTC),
     )
+
+
+async def _locked_release(
+    session: AsyncSession, workspace_id: UUID, release_id: UUID
+) -> ArtifactRelease:
+    release = await session.scalar(
+        select(ArtifactRelease)
+        .join(Project, Project.id == ArtifactRelease.project_id)
+        .where(ArtifactRelease.id == release_id, Project.workspace_id == workspace_id)
+        .with_for_update()
+    )
+    if release is None:
+        raise ProjectNotFoundError(release_id)
+    return release
+
+
+def _artifact_state(release: ArtifactRelease) -> ArtifactReleaseState:
+    return ArtifactReleaseState(
+        release_id=release.id,
+        status=ArtifactReleaseStatus(release.status),
+        state_version=release.state_version,
+        confirmed_by=release.confirmed_by,
+        confirmed_at=release.confirmed_at,
+        released_at=release.released_at,
+        stale_at=release.stale_at,
+    )
+
+
+def _apply_artifact_state(release: ArtifactRelease, state: ArtifactReleaseState) -> None:
+    release.status = state.status
+    release.state_version = state.state_version
+    release.confirmed_by = state.confirmed_by
+    release.confirmed_at = state.confirmed_at
+    release.released_at = state.released_at
+    release.stale_at = state.stale_at
+
+
+async def _artifact_read(
+    session: AsyncSession, release: ArtifactRelease
+) -> ArtifactReleaseRead:
+    dependency_ids = tuple(
+        await session.scalars(
+            select(ArtifactReleaseDependency.upstream_release_id)
+            .where(ArtifactReleaseDependency.downstream_release_id == release.id)
+            .order_by(ArtifactReleaseDependency.upstream_release_id)
+        )
+    )
+    return ArtifactReleaseRead(
+        id=release.id,
+        project_id=release.project_id,
+        artifact_type=release.artifact_type,
+        version=release.version,
+        status=release.status,
+        state_version=release.state_version,
+        content_asset_id=release.content_asset_id,
+        supersedes_release_id=release.supersedes_release_id,
+        dependency_release_ids=dependency_ids,
+        confirmed_by=release.confirmed_by,
+        confirmed_at=release.confirmed_at,
+        released_at=release.released_at,
+        stale_at=release.stale_at,
+        created_at=release.created_at,
+        updated_at=release.updated_at,
+    )
+
+
+def _add_release_event(
+    session: AsyncSession,
+    workspace_id: UUID,
+    release: ArtifactRelease,
+    event_type: str,
+    extra: dict | None = None,
+) -> None:
+    session.add(
+        OutboxEvent(
+            workspace_id=workspace_id,
+            aggregate_type="artifact_release",
+            aggregate_id=release.id,
+            event_type=event_type,
+            payload={"release_id": str(release.id), **(extra or {})},
+        )
+    )
+
+
+async def _invalidate_release_graph(
+    session: AsyncSession,
+    root_release_id: UUID,
+    project_id: UUID,
+    now: datetime,
+) -> list[ArtifactRelease]:
+    changed: list[ArtifactRelease] = []
+    pending = [root_release_id]
+    visited: set[UUID] = set()
+    while pending:
+        current_id = pending.pop()
+        if current_id in visited:
+            continue
+        visited.add(current_id)
+        current = await session.get(ArtifactRelease, current_id, with_for_update=True)
+        if current is None or current.project_id != project_id:
+            raise ArtifactConflictError("artifact dependency crosses project boundary")
+        if current.status != "STALE":
+            current.status = "STALE"
+            current.state_version += 1
+            current.stale_at = now
+            changed.append(current)
+        downstream = await session.scalars(
+            select(ArtifactReleaseDependency.downstream_release_id).where(
+                ArtifactReleaseDependency.upstream_release_id == current_id
+            )
+        )
+        pending.extend(downstream)
+    return changed
 
 
 def _job_read(job: Job) -> JobRead:

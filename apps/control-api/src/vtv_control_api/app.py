@@ -5,6 +5,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, Header, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from vtv_db.repository import (
+    ArtifactConflictError,
     ProjectNotFoundError,
     ProjectRepository,
     UploadConflictError,
@@ -12,6 +13,12 @@ from vtv_db.repository import (
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.jobs import JobAccepted, JobRead
 from vtv_schemas.projects import ProjectCreate, ProjectRead
+from vtv_schemas.releases import (
+    ArtifactConfirm,
+    ArtifactReleaseCreate,
+    ArtifactReleaseRead,
+    ArtifactTransition,
+)
 from vtv_schemas.uploads import (
     MultipartComplete,
     MultipartInit,
@@ -119,6 +126,92 @@ def create_app(
             return await repo.list_jobs(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/artifact-releases",
+        response_model=ArtifactReleaseRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_artifact_release(
+        project_id: UUID,
+        payload: ArtifactReleaseCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ArtifactReleaseRead:
+        try:
+            return await repo.create_artifact_release(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project, asset, or dependency not found"
+            ) from exc
+        except ArtifactConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/artifact-releases",
+        response_model=list[ArtifactReleaseRead],
+    )
+    async def list_artifact_releases(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[ArtifactReleaseRead]:
+        try:
+            return await repo.list_artifact_releases(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.post(
+        "/v1/artifact-releases/{release_id}/confirm",
+        response_model=ArtifactReleaseRead,
+    )
+    async def confirm_artifact_release(
+        release_id: UUID,
+        payload: ArtifactConfirm,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ArtifactReleaseRead:
+        try:
+            return await repo.confirm_artifact_release(
+                workspace, release_id, payload.actor_id, payload.expected_state_version
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="artifact release not found") from exc
+        except ArtifactConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/artifact-releases/{release_id}/publish",
+        response_model=ArtifactReleaseRead,
+    )
+    async def publish_artifact_release(
+        release_id: UUID,
+        payload: ArtifactTransition,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ArtifactReleaseRead:
+        try:
+            return await repo.publish_artifact_release(
+                workspace, release_id, payload.expected_state_version
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="artifact release not found") from exc
+        except ArtifactConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/artifact-releases/{release_id}/invalidate",
+        response_model=list[ArtifactReleaseRead],
+    )
+    async def invalidate_artifact_release(
+        release_id: UUID,
+        payload: ArtifactTransition,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[ArtifactReleaseRead]:
+        try:
+            return await repo.invalidate_artifact_release(
+                workspace, release_id, payload.expected_state_version
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="artifact release not found") from exc
+        except ArtifactConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/v1/jobs/{job_id}", response_model=JobRead)
     async def get_job(

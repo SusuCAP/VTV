@@ -13,5 +13,9 @@
 - 所有状态变化递增 state version，为数据库条件更新和并发冲突检测提供依据。
 
 迁移 `0004_artifact_releases.sql` 建立 release 与依赖表、唯一版本约束、状态检查、禁止
-自依赖以及项目/类型/状态索引。下一步会将状态机封装为事务 Repository 和控制 API。
+自依赖以及项目/类型/状态索引。
 
+事务 Repository 和控制 API 已覆盖：创建/列举 release、确认、发布、显式失效。每个写操作
+校验 workspace/project 边界并写 Outbox。新版本携带 `supersedes_release_id` 时，会在同一
+事务内锁定并使旧版本及全部下游 release 进入 `STALE`，避免“新版本已创建、旧产物仍可用”
+的竞态窗口。API 使用 `expected_state_version`，版本冲突返回 HTTP 409。

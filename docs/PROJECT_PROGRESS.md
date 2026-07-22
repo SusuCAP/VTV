@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 验证中 | 99% | 基础平台功能完成；等待真实 Postgres/MinIO 全链验证 |
-| Phase 2 全剧分析 | 进行中 | 51% | 项目合成与资产确认/release/传递失效基础层 |
+| Phase 2 全剧分析 | 进行中 | 59% | 资产 Release 事务、Outbox、控制 API 与自动失效 |
 | Phase 3 自动生产 | 未开始 | 0% | — |
 | Phase 4 QC 与批量 | 未开始 | 0% | — |
 | Phase 5 研究工具完善 | 未开始 | 0% | — |
@@ -83,13 +83,18 @@
 - [x] 实现 `DRAFT→CONFIRMED→RELEASED` 状态机与 state version CAS 校验。
 - [x] 发布门禁要求全部直接依赖已发布，阻止未确认或 stale 上游进入生产。
 - [x] 实现沿依赖图传递 stale，支持分叉、汇合及异常依赖环。
+- [x] 实现 Artifact Release PostgreSQL 事务 Repository 与 workspace/project 隔离。
+- [x] 实现 release 创建/列表、确认、发布、显式失效 FastAPI 路由及强类型 Schema。
+- [x] 每次创建、确认、发布和失效均在业务事务内写入 Outbox 事件。
+- [x] 创建 superseding 版本时自动失效旧版本及全部下游，消除客户端竞态窗口。
+- [x] API 将状态错误、依赖门禁和 CAS 冲突稳定映射为 HTTP 409。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 
 ## 下一提交目标
 
-`feat: persist artifact release transitions`
+`feat: project analysis episode fanout`
 
-下一步实现事务 Repository 与控制 API，把确认、发布及 stale 传播真正写入 PostgreSQL 和 Outbox。
+下一步修正项目分析入口的多集 fan-out，使 ingest/proxy/shots/ASR/vision 真正从各集源资产启动并汇聚到项目合成。
 
 ## 决策日志
 
@@ -145,3 +150,5 @@
 | 2026-07-22 | `pytest` | 39 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
 | 2026-07-22 | Artifact Release 状态机测试 | 3 passed；覆盖 CAS 确认/发布、依赖门禁和循环图传递失效 |
 | 2026-07-22 | `pytest` | 42 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
+| 2026-07-22 | Artifact Release API 集成测试 | 3 passed；覆盖发布链、CAS 冲突及 supersede 自动传递失效 |
+| 2026-07-22 | `pytest` | 45 passed，1 个真实 PostgreSQL 端到端测试待镜像可用后执行 |
