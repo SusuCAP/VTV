@@ -393,6 +393,45 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 
+    @app.post("/v1/projects/{project_id}:pause", response_model=ProjectRead)
+    async def pause_project(
+        project_id: UUID,
+        payload: ArchiveRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        """Stop dispatching new stages. Running stages complete at a safe point."""
+        try:
+            return await repo.pause_project(workspace, project_id, payload.reason)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/projects/{project_id}:resume", response_model=ProjectRead)
+    async def resume_project(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        """Resume dispatching PAUSED/READY stages."""
+        try:
+            return await repo.resume_project(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/projects/{project_id}:cancel", response_model=ProjectRead)
+    async def cancel_project(
+        project_id: UUID,
+        payload: ArchiveRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        """Request cancellation of all unstarted and running tasks (irreversible)."""
+        try:
+            return await repo.cancel_project(workspace, project_id, payload.reason)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
     @app.get("/v1/projects/{project_id}", response_model=ProjectRead)
     async def get_project(
         project_id: UUID,

@@ -559,6 +559,18 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, project_id: UUID
     ) -> ProjectRead: ...
 
+    async def pause_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead: ...
+
+    async def resume_project(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectRead: ...
+
+    async def cancel_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead: ...
+
     async def get_system_metrics(self, workspace_id: UUID) -> SystemMetrics: ...
 
     async def list_episodes(self, workspace_id: UUID, project_id: UUID) -> list[EpisodeRead]: ...
@@ -1451,6 +1463,107 @@ class SqlAlchemyProjectRepository:
                     aggregate_id=project.id,
                     event_type="project.unarchived",
                     payload={"project_id": str(project.id)},
+                )
+            )
+            await session.flush()
+            return _project_read(project)
+
+    async def pause_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise ProjectNotFoundError(project_id)
+            if control.cancel_requested:
+                raise ProjectArchivedError("cannot pause a project with cancel requested")
+            now = datetime.now(UTC)
+            control.paused = True
+            control.control_version += 1
+            project.state_version += 1
+            project.updated_at = now
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    event_type="project.paused",
+                    payload={"project_id": str(project.id), "reason": reason},
+                )
+            )
+            await session.flush()
+            return _project_read(project)
+
+    async def resume_project(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise ProjectNotFoundError(project_id)
+            if control.cancel_requested:
+                raise ProjectArchivedError("cannot resume a cancelled project")
+            now = datetime.now(UTC)
+            control.paused = False
+            control.control_version += 1
+            project.state_version += 1
+            project.updated_at = now
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    event_type="project.resumed",
+                    payload={"project_id": str(project.id)},
+                )
+            )
+            await session.flush()
+            return _project_read(project)
+
+    async def cancel_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            control = await session.get(ExecutionControl, project_id, with_for_update=True)
+            if control is None:
+                raise ProjectNotFoundError(project_id)
+            now = datetime.now(UTC)
+            control.cancel_requested = True
+            control.paused = True  # also pause to stop new dispatch immediately
+            control.control_version += 1
+            project.state_version += 1
+            project.updated_at = now
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    event_type="project.cancel_requested",
+                    payload={"project_id": str(project.id), "reason": reason},
                 )
             )
             await session.flush()

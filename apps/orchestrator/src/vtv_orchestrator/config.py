@@ -12,7 +12,10 @@ class ModelRuntimeSettings(BaseSettings):
     by loading a configs/environments/*.yaml file before starting the orchestrator.
     """
 
-    model_config = SettingsConfigDict(env_prefix="VTV_", env_file=".env", extra="ignore")
+    # No env_file — reads only actual process environment variables so that
+    # standalone test instantiation (ModelRuntimeSettings()) uses clean defaults.
+    # Production: start.sh does `source .env` which exports vars into the process.
+    model_config = SettingsConfigDict(env_prefix="VTV_", extra="ignore")
 
     # ASR / VAD  ── "deterministic" | "local_models" | "remote"
     asr_adapter_mode: str = "deterministic"
