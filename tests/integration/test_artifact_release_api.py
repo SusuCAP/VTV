@@ -1,7 +1,25 @@
+import os
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from vtv_control_api.app import create_app
+
+# Default workspace used when no X-Workspace-Id header is sent
+_DEFAULT_WORKSPACE = "00000000-0000-0000-0000-000000000001"
+
+
+def _real_asset_id(project_id: str) -> str:
+    """Return a content_asset_id that actually exists in the DB.
+
+    When running against a real PostgreSQL (VTV_DATABASE_URL is set) the
+    PostgresRepository validates the FK; we insert a minimal row via asyncpg
+    so the FK check passes.  Against MemoryRepository any UUID is fine.
+    """
+    if os.environ.get("VTV_DATABASE_URL"):
+        from .conftest import insert_test_media_asset  # noqa: PLC0415
+
+        return insert_test_media_asset(_DEFAULT_WORKSPACE, project_id)
+    return str(uuid4())
 
 
 def _create_project(client: TestClient) -> str:
@@ -20,7 +38,7 @@ def _create_release(
         f"/v1/projects/{project_id}/artifact-releases",
         json={
             "artifact_type": artifact_type,
-            "content_asset_id": str(uuid4()),
+            "content_asset_id": _real_asset_id(project_id),
             "dependency_release_ids": dependencies or [],
         },
     )
@@ -91,7 +109,7 @@ def test_superseding_release_automatically_invalidates_downstream() -> None:
             f"/v1/projects/{project_id}/artifact-releases",
             json={
                 "artifact_type": "BIBLE",
-                "content_asset_id": str(uuid4()),
+                "content_asset_id": _real_asset_id(project_id),
                 "supersedes_release_id": bible["id"],
             },
         )

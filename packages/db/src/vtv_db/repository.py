@@ -1010,6 +1010,7 @@ class SqlAlchemyProjectRepository:
             except InvalidModelReleaseTransitionError as exc:
                 raise ModelReleaseConflictError(str(exc)) from exc
             _apply_model_release_state(release, changed)
+            release.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
             _add_model_release_event(session, workspace_id, release, "model_release.reviewed")
             await session.flush()
             return _model_release_read(release)
@@ -1077,6 +1078,7 @@ class SqlAlchemyProjectRepository:
                         expected_state_version=previous.state_version,
                     )
                     _apply_model_release_state(previous, disabled)
+                    previous.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
                     _add_model_release_event(
                         session,
                         workspace_id,
@@ -1093,6 +1095,7 @@ class SqlAlchemyProjectRepository:
             except InvalidModelReleaseTransitionError as exc:
                 raise ModelReleaseConflictError(str(exc)) from exc
             _apply_model_release_state(release, changed)
+            release.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
             _add_model_release_event(
                 session, workspace_id, release, "model_release.automation_changed"
             )
@@ -1122,6 +1125,7 @@ class SqlAlchemyProjectRepository:
                 output_spec=payload.output.model_dump(mode="json"),
             )
             session.add(project)
+            await session.flush()  # project must exist before FK-dependent rows
             session.add(ExecutionControl(project_id=project.id))
             session.add(
                 OutboxEvent(
@@ -1175,6 +1179,7 @@ class SqlAlchemyProjectRepository:
             project.archived_at = now
             project.archive_reason = reason
             project.state_version += 1
+            project.updated_at = now  # explicit set prevents lazy-load of onupdate column
             session.add(
                 OutboxEvent(
                     workspace_id=workspace_id,
@@ -1199,9 +1204,11 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            now = datetime.now(UTC)
             project.archived_at = None
             project.archive_reason = None
             project.state_version += 1
+            project.updated_at = now  # explicit set prevents lazy-load of onupdate column
             session.add(
                 OutboxEvent(
                     workspace_id=workspace_id,
@@ -3507,11 +3514,13 @@ class SqlAlchemyProjectRepository:
                 raise RightsReleaseConflictError("rights release state version mismatch")
             if release.status != "ACTIVE" or release.revoked_at is not None:
                 raise RightsReleaseConflictError("rights release is already revoked")
+            now = datetime.now(UTC)
             release.status = "REVOKED"
             release.state_version += 1
-            release.revoked_at = datetime.now(UTC)
+            release.revoked_at = now
             release.revoked_by = actor_id
             release.revocation_reason = reason
+            release.updated_at = now  # explicit set prevents lazy-load of onupdate column
             session.add(
                 OutboxEvent(
                     workspace_id=workspace_id,
@@ -5024,6 +5033,7 @@ def _apply_artifact_state(release: ArtifactRelease, state: ArtifactReleaseState)
     release.confirmed_at = state.confirmed_at
     release.released_at = state.released_at
     release.stale_at = state.stale_at
+    release.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
 
 
 async def _artifact_read(
@@ -5457,6 +5467,7 @@ async def _invalidate_release_graph(
             current.status = "STALE"
             current.state_version += 1
             current.stale_at = now
+            current.updated_at = now  # prevent lazy-load of onupdate column
             changed.append(current)
         downstream = await session.scalars(
             select(ArtifactReleaseDependency.downstream_release_id).where(
