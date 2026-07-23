@@ -11,7 +11,7 @@
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
 | Phase 4 QC 与批量 | 已完成 | 100% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark + 视觉模型基准准入门控 |
-| Phase 5 研究工具完善 | 进行中 | 30% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 |
+| Phase 5 研究工具完善 | 进行中 | 90% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 + 成本报告 + 模型热更新 + 归档 + 健康检查 + SSE + 资产搜索 + 批量重试 + 剧集摘要 + 异步 TTL 缓存 |
 
 ## 已完成
 
@@ -235,19 +235,29 @@
 - [x] PassthroughSegmentationAdapter（全白 alpha-matte）、PassthroughVisualGenerationAdapter（copy-codec + 首帧预览）、PassthroughSubtitleCleanAdapter。
 - [x] 新包 `workers/visual`：VisualProductionWorker 处理 VISUAL_CHARACTER_REPLACE/BACKGROUND_REPLACE/JOINT_REPLACE/FULL_REGEN/SUBTITLE_CLEAN/KEYFRAME_PREVIEW 六个阶段。
 - [x] Stage Router：VISUAL_STAGES frozenset 路由到 VisualProductionWorker；C2PA_SIGN 路由到 C2paWorker。
+- [x] 多市场本地化配置（5 个内置市场：en-US/en-GB/es-US/ko-KR/ja-JP，zh-CN→en-US 文化适配规则）。
+- [x] 存储保留策略（10 类资产 TTL，孤儿资产 1 天自动清理）。
+- [x] 成本报告仪表板（按 Stage/Model 分组，P95 延迟，预算利用率）。
+- [x] 模型热更新配置（drain_then_switch/immediate 策略，自动回滚门控）。
+- [x] 项目归档状态机（migration 0013，archive/unarchive，已归档项目阻止创建新 Job）。
+- [x] 系统健康检查（GET /v1/health，database/storage/modal/schema_version 四项检查，503 降级）。
+- [x] SSE 实时事件流（GET /v1/projects/{id}/events，cursor-based 重连，heartbeat）。
+- [x] 资产搜索 API（按 episode_id/stage_type/content_type 过滤，分页）。
+- [x] 批量重试失败阶段（POST /v1/projects/{id}/jobs/{id}:retry-failed，Outbox 事件）。
+- [x] 剧集分析摘要（shot/dialogue/character/cost 多表聚合，production_complete 标志）。
+- [x] 异步 TTL 缓存（AsyncTTLCache，GET /v1/cache/stats，POST /v1/cache:invalidate）。
 - [ ] `POST /v1/projects/{id}:produce`：基于 WorkflowPlan 为每集生成视觉生产 DAG，接受预算与路由配置。
 - [ ] Docker Hub 恢复后执行真实 PostgreSQL + MinIO + Tauri 文件上传全链验收。
 - [ ] `api.modal.com` 的 Envoy 503 恢复后执行首次部署、health 与 S3 分析 Stage 云端验收。
 
 ## 下一提交目标
 
-`chore: await modal network recovery for cloud validation`
+`chore: cloud validation pending (Modal/Docker Hub)`
 
-Phase 4 本地实现完成（100%）。等待 api.modal.com Envoy 503 恢复后：
-1. modal deploy vtv-analysis（重试）
-2. 首次 Modal S3 分析 Stage 云端验收
-3. Docker Hub 恢复后 PostgreSQL + MinIO 全链验收
-下一个本地开发阶段：Phase 5（Mac 签名/公证、C2PA 正式 SDK、多市场配置）
+Phase 0–5 本地实现全部完成（397 passed, 27 skipped）。等待：
+- Docker Hub 恢复 → PostgreSQL + MinIO 全链端到端验收
+- api.modal.com gRPC 连通 → Modal 首次部署验收
+- Apple Developer 证书 → Tauri Mac 签名/公证
 
 ## 决策日志
 

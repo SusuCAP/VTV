@@ -61,6 +61,7 @@ from vtv_production import LipSyncRequest, ShotDialogueFeatures, TieredLipSyncRo
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
+from vtv_schemas.cache import AsyncTTLCache
 from vtv_schemas.candidates import (
     CandidateAdopt,
     CandidateGroupRead,
@@ -110,6 +111,10 @@ class MemoryRepository:
         self._delivery_inputs: dict[UUID, dict] = {}
         self._evaluator_releases: dict[UUID, EvaluatorReleaseRead] = {}
         self._lock = RLock()
+        self._cache = AsyncTTLCache(ttl_seconds=30.0)
+        self.list_projects = self._cache.cached(self.list_projects)
+        self.list_episodes = self._cache.cached(self.list_episodes)
+        self.get_project_cost_report = self._cache.cached(self.get_project_cost_report)
 
     async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
         now = datetime.now(UTC)

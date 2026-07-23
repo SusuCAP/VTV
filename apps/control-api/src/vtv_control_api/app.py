@@ -1312,6 +1312,29 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 
+    class CacheStats(BaseModel):
+        size: int
+        active: int
+        ttl_seconds: float
+
+    @app.get("/v1/cache/stats", response_model=CacheStats, tags=["system"])
+    async def get_cache_stats() -> CacheStats:
+        """Return in-process TTL cache statistics."""
+        cache = getattr(repo, "_cache", None)
+        if cache is None:
+            return CacheStats(size=0, active=0, ttl_seconds=0.0)
+        raw = await cache.stats()
+        return CacheStats(**raw)
+
+    @app.post("/v1/cache:invalidate", response_model=dict, tags=["system"])
+    async def invalidate_cache() -> dict:
+        """Flush the in-process TTL cache. Returns the count of invalidated entries."""
+        cache = getattr(repo, "_cache", None)
+        if cache is None:
+            return {"invalidated_count": 0}
+        count = await cache.invalidate()
+        return {"invalidated_count": count}
+
     return app
 
 
