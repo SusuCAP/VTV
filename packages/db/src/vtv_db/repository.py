@@ -67,6 +67,7 @@ from vtv_schemas.production import (
     DubbingUtteranceCreate,
     LipSyncJobCreate,
 )
+from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -722,6 +723,14 @@ class ProjectRepository(Protocol):
         episode_id: UUID,
     ) -> EpisodeSummary: ...
 
+    async def get_project_stats(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectStats: ...
+
+    async def list_episode_jobs(
+        self, workspace_id: UUID, project_id: UUID, episode_id: UUID
+    ) -> EpisodeJobSummary: ...
+
 
 class MemoryRepository:
     """Lightweight in-memory repository for unit tests.
@@ -821,6 +830,40 @@ class MemoryRepository:
             latest_delivery_status=None,
             total_cost_usd=Decimal("0"),
             generated_at=datetime.now(UTC),
+        )
+
+    async def get_project_stats(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectStats:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return ProjectStats(
+            project_id=project_id,
+            episodes=0,
+            total_shots=0,
+            total_stage_runs=0,
+            completed_stage_runs=0,
+            failed_stage_runs=0,
+            total_deliveries=0,
+            approved_deliveries=0,
+            total_cost_usd=Decimal("0.000000"),
+            analysis_complete_episodes=0,
+            production_complete_episodes=0,
+            generated_at=datetime.now(UTC),
+        )
+
+    async def list_episode_jobs(
+        self, workspace_id: UUID, project_id: UUID, episode_id: UUID
+    ) -> EpisodeJobSummary:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return EpisodeJobSummary(
+            episode_id=episode_id,
+            jobs=[],
+            pending_count=0,
+            running_count=0,
+            completed_count=0,
+            failed_count=0,
         )
 
 

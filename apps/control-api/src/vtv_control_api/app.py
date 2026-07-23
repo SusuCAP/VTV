@@ -62,6 +62,7 @@ from vtv_schemas.model_releases import (
     ModelReleaseRead,
 )
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
+from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import (
     ArtifactConfirm,
@@ -1035,6 +1036,33 @@ def create_app(
     ) -> EpisodeSummary:
         try:
             return await repo.get_episode_summary(workspace, project_id, episode_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project or episode not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/stats",
+        response_model=ProjectStats,
+    )
+    async def get_project_stats(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectStats:
+        try:
+            return await repo.get_project_stats(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/episodes/{episode_id}/jobs",
+        response_model=EpisodeJobSummary,
+    )
+    async def list_episode_jobs(
+        project_id: UUID,
+        episode_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EpisodeJobSummary:
+        try:
+            return await repo.list_episode_jobs(workspace, project_id, episode_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project or episode not found") from exc
 

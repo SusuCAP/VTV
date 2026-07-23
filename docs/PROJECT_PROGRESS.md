@@ -423,3 +423,7 @@ Phase 0–5 本地实现全部完成（429 passed, 27 skipped）。
 | 2026-07-23 | 市场感知字幕 CPS | vtv-markets 接入 AssembleWorker；5 unit tests |
 | 2026-07-23 | `ruff check .` | 通过 |
 | 2026-07-23 | `pytest` | 429 passed，27 skipped |
+| 2026-07-23 | 端到端工作流集成测试 | 5 tests；project lifecycle、evaluator、market、webhook、cost/QC stats |
+| 2026-07-23 | PostgreSQL + MinIO 全链验收 | 86/86 integration+component tests with real Postgres+MinIO |
+| 2026-07-23 | `pytest` | 434 passed，27 skipped |
+| 2026-07-23 | 项目级统计 + 逐集 Job 汇总 | ProjectStats, EpisodeJobSummary, 11 new unit tests |
