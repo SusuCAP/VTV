@@ -19,19 +19,34 @@ def create_production_worker_for_job(
     settings = settings or get_settings()
     if job.stage_type not in {"TTS_GENERATE", "LIPSYNC_GENERATE"}:
         raise ValueError(f"unsupported production stage: {job.stage_type}")
+
+    # L0 lipsync: always passthrough regardless of model_runtime
     if job.stage_type == "LIPSYNC_GENERATE":
         request = job.params.get("lipsync_request")
         decision = request.get("decision") if isinstance(request, dict) else None
         if isinstance(decision, dict) and decision.get("level") == "L0_NONE":
             return ProductionWorker(lipsync=PassthroughLipSyncAdapter())
+
     runtime = job.params.get("model_runtime")
     if not isinstance(runtime, dict):
         raise ValueError(f"{job.stage_type} requires a Registry-selected model runtime")
-    config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
+
+    # Support both flat style (scheduler-injected: runtime["adapter_mode"])
+    # and nested style (registry release: runtime["config"]["adapter_mode"]).
+    _config = runtime.get("config") if isinstance(runtime.get("config"), dict) else {}
+    adapter_mode = runtime.get("adapter_mode") or _config.get("adapter_mode", "")
+
+    # ── Lipsync dispatch ──────────────────────────────────────────────────────
     if job.stage_type == "LIPSYNC_GENERATE":
-        if config.get("adapter_mode") != "remote_lipsync":
+        if adapter_mode == "latentsync":
+            from vtv_production.latentsync_adapter import LatentSync16Adapter
+            return ProductionWorker(lipsync=LatentSync16Adapter())
+        if adapter_mode == "passthrough":
+            return ProductionWorker(lipsync=PassthroughLipSyncAdapter())
+        if adapter_mode != "remote_lipsync":
             raise ValueError(
-                "LIPSYNC_GENERATE registry release must select remote_lipsync"
+                f"LIPSYNC_GENERATE: unsupported adapter_mode '{adapter_mode}'. "
+                "Use 'latentsync', 'passthrough', or 'remote_lipsync'."
             )
         endpoint = LipSyncEndpoint(
             endpoint=str(runtime.get("endpoint") or ""),
@@ -45,10 +60,20 @@ def create_production_worker_for_job(
             ),
             timeout_seconds=settings.lipsync_timeout_seconds,
         )
-        return ProductionWorker(
-            lipsync=RemoteLipSyncAdapter(endpoint, HttpxLipSyncTransport())
+        return ProductionWorker(lipsync=RemoteLipSyncAdapter(endpoint, HttpxLipSyncTransport()))
+
+    # ── TTS dispatch ──────────────────────────────────────────────────────────
+    if adapter_mode == "cosyvoice3":
+        from vtv_production.cosyvoice3_adapter import CosyVoice3Adapter
+        return ProductionWorker(tts=CosyVoice3Adapter())
+    if adapter_mode == "passthrough":
+        # Passthrough TTS: return a minimal worker; stage will produce silence
+        # For TTS passthrough we raise to force an explicit L0 decision at routing time
+        raise ValueError(
+            "TTS_GENERATE passthrough is not supported. "
+            "Set VTV_TTS_ADAPTER_MODE=cosyvoice3 or remote_tts."
         )
-    if config.get("adapter_mode") != "remote_tts":
+    if adapter_mode != "remote_tts":
         raise ValueError("TTS_GENERATE registry release must select remote_tts")
     endpoint = TtsEndpoint(
         endpoint=str(runtime.get("endpoint") or ""),

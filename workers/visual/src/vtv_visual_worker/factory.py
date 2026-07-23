@@ -7,6 +7,7 @@ from vtv_production.visual_adapters import (
     PassthroughSubtitleCleanAdapter,
     PassthroughVisualGenerationAdapter,
 )
+from vtv_schemas.jobs import StageJob
 
 from .worker import VisualProductionWorker
 
@@ -25,9 +26,6 @@ def create_worker_with_benchmark_check(
     been submitted and approved via the ``POST /benchmark-releases`` API.
     Passing ``passthrough=False`` without ``benchmark_approved=True`` raises
     ``ValueError`` to prevent unapproved weights from reaching production.
-
-    This is a forward-compatibility hook.  All current adapter instances are
-    passthrough; the enforcement path is exercised once real adapters ship.
 
     Args:
         benchmark_approved: Whether a visual golden benchmark release has been
@@ -61,3 +59,48 @@ def create_worker_with_benchmark_check(
         full_regen=PassthroughVisualGenerationAdapter(route_handled="F"),
         subtitle_clean=PassthroughSubtitleCleanAdapter(),
     )
+
+
+def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
+    """Create a VisualProductionWorker whose adapters match the job's model_runtime.
+
+    Reads ``job.params.get("model_runtime", {})`` and dispatches to real or
+    passthrough adapters accordingly.  Real adapters (sam3, wan_animate) are
+    loaded lazily so CI environments without GPU packages can still import this
+    module without error.
+
+    Adapter modes recognised:
+        segmentation_adapter_mode: "passthrough" | "sam3"
+        adapter_mode (visual generation): "passthrough" | "wan_animate"
+    """
+    runtime: dict = job.params.get("model_runtime") or {}
+    seg_mode = runtime.get("segmentation_adapter_mode", "passthrough")
+    gen_mode = runtime.get("adapter_mode", "passthrough")
+
+    # -- segmentation adapter --------------------------------------------------
+    if seg_mode == "sam3":
+        from vtv_production.sam3_adapter import Sam31SegmentationAdapter
+        segmentation = Sam31SegmentationAdapter()
+    else:
+        segmentation = PassthroughSegmentationAdapter()
+
+    # -- visual generation adapters -------------------------------------------
+    if gen_mode == "wan_animate":
+        from vtv_production.wan_animate_adapter import WanAnimateAdapter
+        # Wan-Animate handles character replace (C), joint replace (E), and full regen (F)
+        character_replace = WanAnimateAdapter()
+        background_replace = WanAnimateAdapter()  # also handles D until a VACE adapter ships
+        full_regen = WanAnimateAdapter()
+    else:
+        character_replace = PassthroughVisualGenerationAdapter(route_handled="C")
+        background_replace = PassthroughVisualGenerationAdapter(route_handled="D")
+        full_regen = PassthroughVisualGenerationAdapter(route_handled="F")
+
+    return VisualProductionWorker(
+        segmentation=segmentation,
+        character_replace=character_replace,
+        background_replace=background_replace,
+        full_regen=full_regen,
+        subtitle_clean=PassthroughSubtitleCleanAdapter(),
+    )
+

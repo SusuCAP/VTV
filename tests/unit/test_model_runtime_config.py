@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from vtv_orchestrator.config import ModelRuntimeSettings, Settings, model_runtime_for_stage
 
 
