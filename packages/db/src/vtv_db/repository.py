@@ -186,6 +186,29 @@ class StageRunRead(BaseModel):
     updated_at: datetime
 
 
+class OutboxEventRead(BaseModel):
+    event_id: UUID
+    aggregate_type: str
+    aggregate_id: UUID
+    event_type: str
+    payload: dict
+    created_at: datetime
+
+
+class MediaAssetRead(BaseModel):
+    id: UUID
+    project_id: UUID
+    episode_id: UUID | None
+    object_uri: str
+    sha256: str
+    size_bytes: int
+    content_type: str
+    source_stage_run_id: UUID | None
+    stage_type: str | None
+    metadata: dict
+    created_at: datetime
+
+
 class FailedStageRead(BaseModel):
     stage_run_id: UUID
     stage_type: str
@@ -634,6 +657,88 @@ class ProjectRepository(Protocol):
     async def get_project_cost_report(
         self, workspace_id: UUID, project_id: UUID
     ) -> ProjectCostReport: ...
+
+    async def list_outbox_events(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        since: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]: ...
+
+    async def search_assets(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        stage_type: str | None = None,
+        content_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[MediaAssetRead]: ...
+
+
+class MemoryRepository:
+    """Lightweight in-memory repository for unit tests.
+
+    Only implements the subset of ProjectRepository used by unit tests.
+    Full business logic lives in SqlAlchemyProjectRepository; the richer
+    in-memory stub used by integration tests lives in
+    vtv_control_api.repository.
+    """
+
+    def __init__(self) -> None:
+        from threading import RLock  # noqa: PLC0415
+
+        self._projects: dict[UUID, ProjectRead] = {}
+        self._lock = RLock()
+
+    async def create_project(self, workspace_id: UUID, payload: ProjectCreate) -> ProjectRead:
+        from vtv_schemas.enums import ProjectStatus  # noqa: PLC0415
+
+        now = datetime.now(UTC)
+        project = ProjectRead(
+            **payload.model_dump(),
+            id=uuid4(),
+            workspace_id=workspace_id,
+            status=ProjectStatus.DRAFT,
+            state_version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        with self._lock:
+            self._projects[project.id] = project
+        return project
+
+    async def get_project(self, workspace_id: UUID, project_id: UUID) -> ProjectRead:
+        with self._lock:
+            project = self._projects.get(project_id)
+        if project is None or project.workspace_id != workspace_id:
+            raise ProjectNotFoundError(project_id)
+        return project
+
+    async def list_outbox_events(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        since: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        await self.get_project(workspace_id, project_id)
+        return []
+
+    async def search_assets(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        stage_type: str | None = None,
+        content_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[MediaAssetRead]:
+        await self.get_project(workspace_id, project_id)
+        return []
 
 
 class SqlAlchemyProjectRepository:
@@ -4483,6 +4588,82 @@ class SqlAlchemyProjectRepository:
                 await session.delete(asset)
             return len(assets)
 
+    async def list_outbox_events(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        since: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Return outbox events scoped to a project, ordered by created_at ASC.
+
+        Covers events where aggregate_id = project_id (project events) or
+        payload.project_id = project_id (job/stage events).
+        """
+        from sqlalchemy import or_  # noqa: PLC0415
+
+        async with self._sessions() as session:
+            q = (
+                select(OutboxEvent)
+                .where(
+                    OutboxEvent.workspace_id == workspace_id,
+                    or_(
+                        OutboxEvent.aggregate_id == project_id,
+                        OutboxEvent.payload["project_id"].astext == str(project_id),
+                    ),
+                )
+                .order_by(OutboxEvent.created_at.asc())
+                .limit(limit)
+            )
+            if since is not None:
+                since_dt = datetime.fromisoformat(since)
+                q = q.where(OutboxEvent.created_at > since_dt)
+            rows = list(await session.scalars(q))
+            return [
+                {
+                    "event_id": row.id,
+                    "aggregate_type": row.aggregate_type,
+                    "aggregate_id": row.aggregate_id,
+                    "event_type": row.event_type,
+                    "payload": row.payload,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ]
+
+    async def search_assets(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        stage_type: str | None = None,
+        content_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[MediaAssetRead]:
+        """Search media assets with optional filters. Returns paginated results."""
+        async with self._sessions() as session:
+            q = (
+                select(MediaAsset)
+                .where(
+                    MediaAsset.workspace_id == workspace_id,
+                    MediaAsset.project_id == project_id,
+                )
+                .order_by(MediaAsset.created_at.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            if episode_id is not None:
+                q = q.where(
+                    MediaAsset.metadata_json["episode_id"].astext == str(episode_id)
+                )
+            if stage_type is not None:
+                q = q.where(MediaAsset.metadata_json["stage_type"].astext == stage_type)
+            if content_type is not None:
+                q = q.where(MediaAsset.content_type == content_type)
+            rows = list(await session.scalars(q))
+            return [_media_asset_read(row) for row in rows]
+
 
 def _stage_run_read(run: StageRun) -> StageRunRead:
     return StageRunRead(
@@ -5021,6 +5202,28 @@ def _media_asset_record(asset: MediaAsset) -> dict:
         "content_type": asset.content_type,
         "metadata": asset.metadata_json,
     }
+
+
+def _media_asset_read(asset: MediaAsset) -> MediaAssetRead:
+    meta = asset.metadata_json or {}
+    ep_id_str = meta.get("episode_id")
+    try:
+        episode_id = UUID(ep_id_str) if ep_id_str else None
+    except (ValueError, AttributeError):
+        episode_id = None
+    return MediaAssetRead(
+        id=asset.id,
+        project_id=asset.project_id,
+        episode_id=episode_id,
+        object_uri=asset.object_uri,
+        sha256=asset.sha256,
+        size_bytes=asset.size_bytes,
+        content_type=asset.content_type,
+        source_stage_run_id=asset.source_stage_run_id,
+        stage_type=meta.get("stage_type"),
+        metadata=meta,
+        created_at=asset.created_at,
+    )
 
 
 def _delivery_read(delivery: Delivery) -> DeliveryRead:

@@ -2321,6 +2321,31 @@ class MemoryRepository:
             cost_per_shot_usd=zero,
         )
 
+    async def list_outbox_events(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        since: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return []
+
+    async def search_assets(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID | None = None,
+        stage_type: str | None = None,
+        content_type: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return []
+
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:
     return ArtifactReleaseState(

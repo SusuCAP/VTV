@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from math import ceil
 from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from vtv_db.repository import (
     AnalysisNotReadyError,
@@ -14,7 +17,9 @@ from vtv_db.repository import (
     DeliveryConflictError,
     EvaluatorConflictError,
     FailedStageRead,
+    MediaAssetRead,
     ModelReleaseConflictError,
+    OutboxEventRead,
     ProductionNotReadyError,
     ProjectArchivedError,
     ProjectNotFoundError,
@@ -1195,6 +1200,84 @@ def create_app(
             "rollback_on_failure_rate": payload.rollback_on_failure_rate,
             "status": "configured",
         }
+
+    @app.get("/v1/projects/{project_id}/events")
+    async def stream_project_events(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        since: Annotated[str | None, Query()] = None,
+        poll_interval: Annotated[float, Query(ge=0.5, le=10.0)] = 1.0,
+    ) -> StreamingResponse:
+        """Server-Sent Events stream for project activity.
+
+        Emits: id / event / data lines per SSE spec.
+        Pass the last received created_at ISO timestamp as `since` to resume.
+        """
+
+        async def event_generator():  # type: ignore[return]
+            current_since = since
+            while True:
+                events = await repo.list_outbox_events(
+                    workspace, project_id, since=current_since, limit=20
+                )
+                for ev in events:
+                    current_since = ev["created_at"].isoformat()
+                    yield (
+                        f"id: {ev['event_id']}\n"
+                        f"event: {ev['event_type']}\n"
+                        f"data: {json.dumps(ev['payload'])}\n\n"
+                    )
+                if not events:
+                    yield ": heartbeat\n\n"
+                await asyncio.sleep(poll_interval)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.get(
+        "/v1/projects/{project_id}/events/recent",
+        response_model=list[OutboxEventRead],
+    )
+    async def list_recent_events(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        since: Annotated[str | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> list[OutboxEventRead]:
+        """Non-streaming snapshot of recent project events."""
+        try:
+            events = await repo.list_outbox_events(
+                workspace, project_id, since=since, limit=limit
+            )
+            return [OutboxEventRead(**ev) for ev in events]
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/assets",
+        response_model=list[MediaAssetRead],
+    )
+    async def search_project_assets(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        episode_id: Annotated[UUID | None, Query()] = None,
+        stage_type: Annotated[str | None, Query(max_length=64)] = None,
+        content_type: Annotated[str | None, Query(max_length=100)] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        offset: Annotated[int, Query(ge=0)] = 0,
+    ) -> list[MediaAssetRead]:
+        """Search media assets belonging to the project, with optional filters."""
+        try:
+            return await repo.search_assets(
+                workspace,
+                project_id,
+                episode_id=episode_id,
+                stage_type=stage_type,
+                content_type=content_type,
+                limit=limit,
+                offset=offset,
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     return app
 
