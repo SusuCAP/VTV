@@ -64,6 +64,8 @@ from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.cache import AsyncTTLCache
 from vtv_schemas.candidates import (
     CandidateAdopt,
+    CandidateAdoptRequest,
+    CandidateAdoptResult,
     CandidateGroupRead,
     CandidateQcCreate,
     CandidateVariantRead,
@@ -76,7 +78,7 @@ from vtv_schemas.health import SystemMetrics
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
-from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats
+from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats, QualitySnapshot
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -2430,6 +2432,107 @@ class MemoryRepository:
             running_count=0,
             completed_count=0,
             failed_count=0,
+        )
+
+    async def adopt_candidate_manual(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        variant_id: UUID,
+        payload: CandidateAdoptRequest,
+    ) -> CandidateAdoptResult:
+        """Manually adopt a render variant by variant_id."""
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            found = next(
+                (
+                    (group, variant)
+                    for group in self._candidate_groups.values()
+                    for variant in group.variants
+                    if variant.id == variant_id and group.project_id == project_id
+                ),
+                None,
+            )
+        if found is None:
+            raise ProjectNotFoundError(variant_id)
+        group, variant = found
+        if variant.status == "QC_FAILED" and not payload.override_qc_failure:
+            raise CandidateConflictError(
+                "variant is QC_FAILED; set override_qc_failure=True to adopt anyway"
+            )
+        previous_status = variant.status
+        now = datetime.now(UTC)
+        updated_group = group.model_copy(
+            update={
+                "status": "ADOPTED",
+                "state_version": group.state_version + 1,
+                "adopted_variant_id": variant_id,
+                "variants": tuple(
+                    item.model_copy(
+                        update={
+                            "status": "ADOPTED" if item.id == variant_id else "REJECTED",
+                            "updated_at": now,
+                        }
+                    )
+                    for item in group.variants
+                ),
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._candidate_groups[group.id] = updated_group
+        return CandidateAdoptResult(
+            variant_id=variant_id,
+            candidate_group_id=group.id,
+            previous_status=previous_status,
+            new_status="ADOPTED",
+            actor_id=payload.actor_id,
+            adopted_at=now,
+        )
+
+    async def get_quality_snapshot(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+    ) -> QualitySnapshot:
+        """Snapshot of render variant QC status."""
+        await self.get_project(workspace_id, project_id)
+        with self._lock:
+            groups = [g for g in self._candidate_groups.values() if g.project_id == project_id]
+        counts: dict[str, int] = {}
+        failure_metric_counts: dict[str, int] = {}
+        for group in groups:
+            for variant in group.variants:
+                counts[variant.status] = counts.get(variant.status, 0) + 1
+                if variant.status == "QC_FAILED":
+                    for metric in variant.qc_results:
+                        if metric.verdict == "FAIL":
+                            failure_metric_counts[metric.metric_name] = (
+                                failure_metric_counts.get(metric.metric_name, 0) + 1
+                            )
+        total_generated = sum(counts.values())
+        qc_passed = counts.get("QC_PASSED", 0) + counts.get("ADOPTED", 0)
+        qc_failed = counts.get("QC_FAILED", 0)
+        qc_review = counts.get("REVIEW", 0)
+        adopted_count = counts.get("ADOPTED", 0)
+        pass_rate = qc_passed / total_generated if total_generated > 0 else 0.0
+        top_failure_reasons = sorted(
+            failure_metric_counts, key=lambda k: -failure_metric_counts[k]
+        )[:5]
+        evaluated = qc_passed + qc_failed
+        circuit_breaker_active = evaluated >= 10 and (qc_failed / evaluated > 0.5)
+        now = datetime.now(UTC)
+        return QualitySnapshot(
+            project_id=project_id,
+            total_candidates_generated=total_generated,
+            qc_passed=qc_passed,
+            qc_failed=qc_failed,
+            qc_review=qc_review,
+            adopted_count=adopted_count,
+            pass_rate=pass_rate,
+            circuit_breaker_active=circuit_breaker_active,
+            top_failure_reasons=top_failure_reasons,
+            generated_at=now,
         )
 
 

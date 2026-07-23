@@ -74,3 +74,18 @@ class CandidateAdopt(BaseModel):
     variant_id: UUID
     expected_state_version: int = Field(ge=1)
     actor_id: UUID
+
+
+class CandidateAdoptRequest(BaseModel):
+    actor_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(default="manual-adoption", min_length=1, max_length=500)
+    override_qc_failure: bool = False
+
+
+class CandidateAdoptResult(BaseModel):
+    variant_id: UUID
+    candidate_group_id: UUID
+    previous_status: str
+    new_status: str
+    actor_id: str
+    adopted_at: datetime

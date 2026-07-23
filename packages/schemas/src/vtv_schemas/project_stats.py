@@ -31,3 +31,16 @@ class EpisodeJobSummary(BaseModel):
     running_count: int = Field(ge=0)
     completed_count: int = Field(ge=0)
     failed_count: int = Field(ge=0)
+
+
+class QualitySnapshot(BaseModel):
+    project_id: UUID
+    total_candidates_generated: int = Field(ge=0)
+    qc_passed: int = Field(ge=0)
+    qc_failed: int = Field(ge=0)
+    qc_review: int = Field(ge=0)
+    adopted_count: int = Field(ge=0)
+    pass_rate: float = Field(ge=0, le=1)
+    circuit_breaker_active: bool = False
+    top_failure_reasons: list[str] = Field(default_factory=list)
+    generated_at: datetime

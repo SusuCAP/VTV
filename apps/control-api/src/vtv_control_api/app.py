@@ -46,6 +46,8 @@ from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
     CandidateAdopt,
+    CandidateAdoptRequest,
+    CandidateAdoptResult,
     CandidateGroupRead,
     CandidateQcCreate,
     CandidateVariantRead,
@@ -62,7 +64,7 @@ from vtv_schemas.model_releases import (
     ModelReleaseRead,
 )
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
-from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats
+from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats, QualitySnapshot
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import (
     ArtifactConfirm,
@@ -671,6 +673,38 @@ def create_app(
             ) from exc
         except CandidateConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/candidates/{variant_id}:adopt",
+        response_model=CandidateAdoptResult,
+    )
+    async def adopt_candidate_manual(
+        project_id: UUID,
+        variant_id: UUID,
+        payload: CandidateAdoptRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> CandidateAdoptResult:
+        try:
+            return await repo.adopt_candidate_manual(workspace, project_id, variant_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project or candidate variant not found"
+            ) from exc
+        except CandidateConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/quality-snapshot",
+        response_model=QualitySnapshot,
+    )
+    async def get_quality_snapshot(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> QualitySnapshot:
+        try:
+            return await repo.get_quality_snapshot(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     @app.post(
         "/v1/projects/{project_id}/artifact-releases",

@@ -51,6 +51,8 @@ from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
 from vtv_schemas.candidates import (
     CandidateAdopt,
+    CandidateAdoptRequest,
+    CandidateAdoptResult,
     CandidateGroupRead,
     CandidateQcCreate,
     CandidateVariantRead,
@@ -67,7 +69,7 @@ from vtv_schemas.production import (
     DubbingUtteranceCreate,
     LipSyncJobCreate,
 )
-from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats
+from vtv_schemas.project_stats import EpisodeJobSummary, ProjectStats, QualitySnapshot
 from vtv_schemas.projects import ProjectCreate, ProjectRead
 from vtv_schemas.releases import ArtifactReleaseCreate, ArtifactReleaseRead
 from vtv_schemas.rights import (
@@ -731,6 +733,20 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, project_id: UUID, episode_id: UUID
     ) -> EpisodeJobSummary: ...
 
+    async def adopt_candidate_manual(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        variant_id: UUID,
+        payload: CandidateAdoptRequest,
+    ) -> CandidateAdoptResult: ...
+
+    async def get_quality_snapshot(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+    ) -> QualitySnapshot: ...
+
 
 class MemoryRepository:
     """Lightweight in-memory repository for unit tests.
@@ -864,6 +880,37 @@ class MemoryRepository:
             running_count=0,
             completed_count=0,
             failed_count=0,
+        )
+
+    async def adopt_candidate_manual(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        variant_id: UUID,
+        payload: CandidateAdoptRequest,
+    ) -> CandidateAdoptResult:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        raise ProjectNotFoundError(variant_id)
+
+    async def get_quality_snapshot(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+    ) -> QualitySnapshot:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return QualitySnapshot(
+            project_id=project_id,
+            total_candidates_generated=0,
+            qc_passed=0,
+            qc_failed=0,
+            qc_review=0,
+            adopted_count=0,
+            pass_rate=0.0,
+            circuit_breaker_active=False,
+            top_failure_reasons=[],
+            generated_at=datetime.now(UTC),
         )
 
 
@@ -5003,6 +5050,174 @@ class SqlAlchemyProjectRepository:
                 q = q.where(MediaAsset.content_type == content_type)
             rows = list(await session.scalars(q))
             return [_media_asset_read(row) for row in rows]
+
+    async def adopt_candidate_manual(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        variant_id: UUID,
+        payload: CandidateAdoptRequest,
+    ) -> CandidateAdoptResult:
+        """Manually adopt a render variant by variant_id.
+
+        FOR UPDATE locks the candidate_group.
+        If override_qc_failure=False and variant is QC_FAILED, raises CandidateConflictError.
+        Sets variant status = ADOPTED, rejects all others in the same group.
+        Writes Outbox candidate.manually_adopted.
+        """
+        async with self._sessions.begin() as session:
+            variant = await session.scalar(
+                select(RenderVariant)
+                .join(
+                    CandidateGroup,
+                    CandidateGroup.id == RenderVariant.candidate_group_id,
+                )
+                .join(Project, Project.id == CandidateGroup.project_id)
+                .where(
+                    RenderVariant.id == variant_id,
+                    CandidateGroup.project_id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+                .with_for_update()
+            )
+            if variant is None:
+                raise ProjectNotFoundError(variant_id)
+            group = await session.get(
+                CandidateGroup, variant.candidate_group_id, with_for_update=True
+            )
+            if group is None:
+                raise ProjectNotFoundError(variant.candidate_group_id)
+            if group.status == "ADOPTED" and group.adopted_variant_id == variant_id:
+                # Already adopted — idempotent return
+                now = datetime.now(UTC)
+                return CandidateAdoptResult(
+                    variant_id=variant_id,
+                    candidate_group_id=group.id,
+                    previous_status=variant.status,
+                    new_status="ADOPTED",
+                    actor_id=payload.actor_id,
+                    adopted_at=variant.updated_at or now,
+                )
+            if variant.status == "QC_FAILED" and not payload.override_qc_failure:
+                raise CandidateConflictError(
+                    "variant is QC_FAILED; set override_qc_failure=True to adopt anyway"
+                )
+            previous_status = variant.status
+            now = datetime.now(UTC)
+            variant.status = "ADOPTED"
+            variant.updated_at = now
+            group.status = "ADOPTED"
+            group.state_version += 1
+            group.adopted_variant_id = variant_id
+            group.updated_at = now
+            await session.execute(
+                update(RenderVariant)
+                .where(
+                    RenderVariant.candidate_group_id == group.id,
+                    RenderVariant.id != variant_id,
+                )
+                .values(status="REJECTED", updated_at=now)
+            )
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="candidate_group",
+                    aggregate_id=group.id,
+                    event_type="candidate.manually_adopted",
+                    payload={
+                        "candidate_group_id": str(group.id),
+                        "variant_id": str(variant_id),
+                        "project_id": str(project_id),
+                        "actor_id": payload.actor_id,
+                        "reason": payload.reason,
+                        "override_qc_failure": payload.override_qc_failure,
+                    },
+                )
+            )
+            await session.flush()
+            return CandidateAdoptResult(
+                variant_id=variant_id,
+                candidate_group_id=group.id,
+                previous_status=previous_status,
+                new_status="ADOPTED",
+                actor_id=payload.actor_id,
+                adopted_at=now,
+            )
+
+    async def get_quality_snapshot(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+    ) -> QualitySnapshot:
+        """Snapshot of render variant QC status.
+
+        Queries render_variants by status and qc_results for failure reasons.
+        """
+        async with self._sessions() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            now = datetime.now(UTC)
+            status_counts = list(
+                await session.execute(
+                    select(RenderVariant.status, func.count(RenderVariant.id).label("cnt"))
+                    .join(
+                        CandidateGroup,
+                        CandidateGroup.id == RenderVariant.candidate_group_id,
+                    )
+                    .where(CandidateGroup.project_id == project_id)
+                    .group_by(RenderVariant.status)
+                )
+            )
+            counts: dict[str, int] = {row.status: int(row.cnt) for row in status_counts}
+            total_generated = sum(counts.values())
+            qc_passed = counts.get("QC_PASSED", 0) + counts.get("ADOPTED", 0)
+            qc_failed = counts.get("QC_FAILED", 0)
+            qc_review = counts.get("REVIEW", 0)
+            adopted_count = counts.get("ADOPTED", 0)
+            pass_rate = qc_passed / total_generated if total_generated > 0 else 0.0
+            # Top failure reasons from QcResult details
+            failure_rows = list(
+                await session.execute(
+                    select(QcResult.metric_name, func.count(QcResult.id).label("cnt"))
+                    .join(
+                        RenderVariant,
+                        RenderVariant.id == QcResult.render_variant_id,
+                    )
+                    .join(
+                        CandidateGroup,
+                        CandidateGroup.id == RenderVariant.candidate_group_id,
+                    )
+                    .where(
+                        CandidateGroup.project_id == project_id,
+                        QcResult.verdict == "FAIL",
+                    )
+                    .group_by(QcResult.metric_name)
+                    .order_by(func.count(QcResult.id).desc())
+                    .limit(5)
+                )
+            )
+            top_failure_reasons = [row.metric_name for row in failure_rows]
+            # Circuit breaker: active when fail rate > 50% with >= 10 candidates evaluated
+            evaluated = qc_passed + qc_failed
+            circuit_breaker_active = evaluated >= 10 and (qc_failed / evaluated > 0.5)
+            return QualitySnapshot(
+                project_id=project_id,
+                total_candidates_generated=total_generated,
+                qc_passed=qc_passed,
+                qc_failed=qc_failed,
+                qc_review=qc_review,
+                adopted_count=adopted_count,
+                pass_rate=pass_rate,
+                circuit_breaker_active=circuit_breaker_active,
+                top_failure_reasons=top_failure_reasons,
+                generated_at=now,
+            )
 
 
 def _stage_run_read(run: StageRun) -> StageRunRead:
