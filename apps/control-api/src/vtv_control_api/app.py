@@ -13,8 +13,11 @@ from pydantic import BaseModel, Field
 from vtv_db.repository import (
     AnalysisNotReadyError,
     ArtifactConflictError,
+    BatchRetryRequest,
+    BatchRetryResult,
     CandidateConflictError,
     DeliveryConflictError,
+    EpisodeSummary,
     EvaluatorConflictError,
     FailedStageRead,
     MediaAssetRead,
@@ -1003,6 +1006,36 @@ def create_app(
             raise HTTPException(status_code=404, detail="stage run not found") from exc
         except StageNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/jobs/{job_id}:retry-failed",
+        response_model=BatchRetryResult,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def batch_retry_failed_stages(
+        project_id: UUID,
+        job_id: UUID,
+        payload: BatchRetryRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> BatchRetryResult:
+        try:
+            return await repo.batch_retry_failed_stages(workspace, project_id, job_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project or job not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/episodes/{episode_id}/summary",
+        response_model=EpisodeSummary,
+    )
+    async def get_episode_summary(
+        project_id: UUID,
+        episode_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EpisodeSummary:
+        try:
+            return await repo.get_episode_summary(workspace, project_id, episode_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project or episode not found") from exc
 
     @app.post(
         "/v1/projects/{project_id}/shots/{shot_id}:override",

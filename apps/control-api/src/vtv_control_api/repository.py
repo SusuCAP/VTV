@@ -23,8 +23,11 @@ from vtv_db.repository import (
     REQUIRED_QC_METRICS_BY_PURPOSE,
     AnalysisNotReadyError,
     ArtifactConflictError,
+    BatchRetryRequest,
+    BatchRetryResult,
     CandidateConflictError,
     DeliveryConflictError,
+    EpisodeSummary,
     EvaluatorConflictError,
     FailedStageRead,
     ModelReleaseConflictError,
@@ -2345,6 +2348,47 @@ class MemoryRepository:
         # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
         await self.get_project(workspace_id, project_id)
         return []
+
+    async def batch_retry_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        payload: BatchRetryRequest,
+    ) -> BatchRetryResult:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return BatchRetryResult(job_id=job_id, retried_count=0, stage_run_ids=[])
+
+    async def get_episode_summary(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+    ) -> EpisodeSummary:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        from datetime import datetime  # noqa: PLC0415
+        from decimal import Decimal  # noqa: PLC0415
+
+        await self.get_project(workspace_id, project_id)
+        return EpisodeSummary(
+            episode_id=episode_id,
+            project_id=project_id,
+            episode_no=1,
+            title=None,
+            source_asset_id=None,
+            processing_status="READY",
+            duration_seconds=None,
+            shot_count=0,
+            dialogue_line_count=0,
+            character_count=0,
+            analysis_complete=False,
+            production_complete=False,
+            delivery_count=0,
+            latest_delivery_status=None,
+            total_cost_usd=Decimal("0"),
+            generated_at=datetime.now(UTC),
+        )
 
 
 def _memory_state(release: ArtifactReleaseRead) -> ArtifactReleaseState:

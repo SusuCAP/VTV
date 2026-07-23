@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -220,6 +220,36 @@ class FailedStageRead(BaseModel):
     attempt_count: int
     last_attempt_at: datetime | None
     created_at: datetime
+
+
+class BatchRetryRequest(BaseModel):
+    stage_types: list[str] = Field(default_factory=list)
+    reason: str = Field(default="batch-retry", min_length=1, max_length=200)
+
+
+class BatchRetryResult(BaseModel):
+    job_id: UUID
+    retried_count: int
+    stage_run_ids: list[UUID]
+
+
+class EpisodeSummary(BaseModel):
+    episode_id: UUID
+    project_id: UUID
+    episode_no: int
+    title: str | None
+    source_asset_id: UUID | None
+    processing_status: str
+    duration_seconds: float | None
+    shot_count: int
+    dialogue_line_count: int
+    character_count: int
+    analysis_complete: bool
+    production_complete: bool
+    delivery_count: int
+    latest_delivery_status: str | None
+    total_cost_usd: Decimal
+    generated_at: datetime
 
 
 TTS_REQUIRED_QC_METRICS = frozenset(
@@ -677,6 +707,21 @@ class ProjectRepository(Protocol):
         offset: int = 0,
     ) -> list[MediaAssetRead]: ...
 
+    async def batch_retry_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        payload: BatchRetryRequest,
+    ) -> BatchRetryResult: ...
+
+    async def get_episode_summary(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+    ) -> EpisodeSummary: ...
+
 
 class MemoryRepository:
     """Lightweight in-memory repository for unit tests.
@@ -739,6 +784,44 @@ class MemoryRepository:
     ) -> list[MediaAssetRead]:
         await self.get_project(workspace_id, project_id)
         return []
+
+    async def batch_retry_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        payload: BatchRetryRequest,
+    ) -> BatchRetryResult:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return BatchRetryResult(job_id=job_id, retried_count=0, stage_run_ids=[])
+
+    async def get_episode_summary(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+    ) -> EpisodeSummary:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return EpisodeSummary(
+            episode_id=episode_id,
+            project_id=project_id,
+            episode_no=1,
+            title=None,
+            source_asset_id=None,
+            processing_status="READY",
+            duration_seconds=None,
+            shot_count=0,
+            dialogue_line_count=0,
+            character_count=0,
+            analysis_complete=False,
+            production_complete=False,
+            delivery_count=0,
+            latest_delivery_status=None,
+            total_cost_usd=Decimal("0"),
+            generated_at=datetime.now(UTC),
+        )
 
 
 class SqlAlchemyProjectRepository:
@@ -4021,6 +4104,210 @@ class SqlAlchemyProjectRepository:
                 for row in rows
             ]
 
+    async def batch_retry_failed_stages(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        job_id: UUID,
+        payload: BatchRetryRequest,
+    ) -> BatchRetryResult:
+        async with self._sessions.begin() as session:
+            exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if exists is None:
+                raise ProjectNotFoundError(project_id)
+            job_exists = await session.scalar(
+                select(Job.id).where(
+                    Job.id == job_id,
+                    Job.project_id == project_id,
+                )
+            )
+            if job_exists is None:
+                raise ProjectNotFoundError(job_id)
+            query = (
+                select(StageRun)
+                .where(
+                    StageRun.project_id == project_id,
+                    StageRun.job_id == job_id,
+                    StageRun.status == "EXECUTION_FAILED",
+                )
+                .with_for_update()
+            )
+            if payload.stage_types:
+                query = query.where(StageRun.stage_type.in_(payload.stage_types))
+            runs = list(await session.scalars(query))
+            for run in runs:
+                run.status = "READY"
+                run.state_version += 1
+            retried_ids = [run.id for run in runs]
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="job",
+                    aggregate_id=job_id,
+                    event_type="job.batch_retry_requested",
+                    payload={
+                        "job_id": str(job_id),
+                        "project_id": str(project_id),
+                        "retried_count": len(runs),
+                        "reason": payload.reason,
+                    },
+                )
+            )
+            await session.flush()
+            return BatchRetryResult(
+                job_id=job_id,
+                retried_count=len(runs),
+                stage_run_ids=retried_ids,
+            )
+
+    async def get_episode_summary(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+    ) -> EpisodeSummary:
+        async with self._sessions() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(project_id)
+            episode = await session.scalar(
+                select(Episode).where(
+                    Episode.id == episode_id,
+                    Episode.project_id == project_id,
+                )
+            )
+            if episode is None:
+                raise ProjectNotFoundError(episode_id)
+            now = datetime.now(UTC)
+            # Duration from source asset metadata
+            duration_seconds: float | None = None
+            if episode.source_asset_id is not None:
+                source_asset = await session.get(MediaAsset, episode.source_asset_id)
+                if source_asset is not None:
+                    dur = source_asset.metadata_json.get("duration_seconds")
+                    if isinstance(dur, (int, float)) and dur > 0:
+                        duration_seconds = float(dur)
+            # Processing status from latest job
+            processing_status_val = await session.scalar(
+                select(Job.status)
+                .join(StageRun, StageRun.job_id == Job.id)
+                .where(StageRun.episode_id == episode_id)
+                .order_by(Job.created_at.desc())
+                .limit(1)
+            )
+            processing_status = str(processing_status_val) if processing_status_val else "READY"
+            # Shot count — prefer analysis document, fall back to shots table
+            shot_count = 0
+            shot_list_doc = await session.scalar(
+                select(AnalysisDocument)
+                .where(
+                    AnalysisDocument.project_id == project_id,
+                    AnalysisDocument.episode_id == episode_id,
+                    AnalysisDocument.document_type == "SHOT_LIST",
+                )
+                .order_by(AnalysisDocument.created_at.desc())
+                .limit(1)
+            )
+            if shot_list_doc is not None:
+                shots_payload = shot_list_doc.payload.get("shots", [])
+                shot_count = len(shots_payload) if isinstance(shots_payload, list) else 0
+            if shot_count == 0:
+                shot_count = int(
+                    await session.scalar(
+                        select(func.count(Shot.id)).where(Shot.episode_id == episode_id)
+                    )
+                    or 0
+                )
+            # Dialogue line count from ASR document
+            dialogue_line_count = 0
+            asr_doc = await session.scalar(
+                select(AnalysisDocument)
+                .where(
+                    AnalysisDocument.project_id == project_id,
+                    AnalysisDocument.episode_id == episode_id,
+                    AnalysisDocument.document_type == "ASR_TRANSCRIPT",
+                )
+                .order_by(AnalysisDocument.created_at.desc())
+                .limit(1)
+            )
+            if asr_doc is not None:
+                utterances = asr_doc.payload.get("utterances", [])
+                dialogue_line_count = len(utterances) if isinstance(utterances, list) else 0
+            # Character count from VISION_ANALYSIS document
+            character_count = 0
+            vision_doc = await session.scalar(
+                select(AnalysisDocument)
+                .where(
+                    AnalysisDocument.project_id == project_id,
+                    AnalysisDocument.episode_id == episode_id,
+                    AnalysisDocument.document_type == "VISION_ANALYSIS",
+                )
+                .order_by(AnalysisDocument.created_at.desc())
+                .limit(1)
+            )
+            if vision_doc is not None:
+                characters = vision_doc.payload.get("characters", [])
+                character_count = len(characters) if isinstance(characters, list) else 0
+            analysis_complete = (
+                shot_list_doc is not None and asr_doc is not None and vision_doc is not None
+            )
+            # Production complete when ASSEMBLE_EPISODE stage has COMPLETED
+            master_completed = await session.scalar(
+                select(StageRun.id).where(
+                    StageRun.project_id == project_id,
+                    StageRun.episode_id == episode_id,
+                    StageRun.stage_type == "ASSEMBLE_EPISODE",
+                    StageRun.status == "COMPLETED",
+                ).limit(1)
+            )
+            production_complete = master_completed is not None
+            # Deliveries
+            deliveries = list(
+                await session.scalars(
+                    select(Delivery)
+                    .where(
+                        Delivery.episode_id == episode_id,
+                        Delivery.workspace_id == workspace_id,
+                    )
+                    .order_by(Delivery.version.desc())
+                )
+            )
+            delivery_count = len(deliveries)
+            latest_delivery_status = deliveries[0].status if deliveries else None
+            # Total cost from stage_attempts (joined through stage_runs)
+            total_cost = await session.scalar(
+                select(func.coalesce(func.sum(StageAttempt.cost_usd), Decimal("0")))
+                .join(StageRun, StageRun.id == StageAttempt.stage_run_id)
+                .where(StageRun.episode_id == episode_id)
+            )
+            return EpisodeSummary(
+                episode_id=episode_id,
+                project_id=project_id,
+                episode_no=episode.episode_no,
+                title=episode.title,
+                source_asset_id=episode.source_asset_id,
+                processing_status=processing_status,
+                duration_seconds=duration_seconds,
+                shot_count=shot_count,
+                dialogue_line_count=dialogue_line_count,
+                character_count=character_count,
+                analysis_complete=analysis_complete,
+                production_complete=production_complete,
+                delivery_count=delivery_count,
+                latest_delivery_status=latest_delivery_status,
+                total_cost_usd=Decimal(str(total_cost or "0")),
+                generated_at=now,
+            )
 
     async def create_evaluator_release(
         self, workspace_id: UUID, payload: EvaluatorReleaseCreate
