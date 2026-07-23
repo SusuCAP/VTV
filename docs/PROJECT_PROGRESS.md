@@ -1,6 +1,6 @@
 # 项目进度
 
-最后更新：2026-07-23
+最后更新：2026-07-24
 
 ## 总览
 
@@ -8,7 +8,7 @@
 |---|---|---:|---|
 | Phase 0 工程与规格基线 | 已完成 | 100% | 仓库说明、路线图、环境与提交规范 |
 | Phase 1 基础平台 | 已完成 | 100% | 基础平台全链验收通过（PostgreSQL + MinIO 81/81 集成测试通过）|
-| Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
+| Phase 2 全剧分析 | 已完成 | 100% | Modal 分析运行时完成并首次部署验收通过（`vtv-analysis`，profile: zhuaiba88）|
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
 | Phase 4 QC 与批量 | 已完成 | 100% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark + 视觉模型基准准入门控 |
 | Phase 5 研究工具完善 | 已完成 | 100% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 + 成本报告 + 模型热更新 + 归档 + 健康检查 + SSE + 资产搜索 + 批量重试 + 剧集摘要 + 异步 TTL 缓存 |
@@ -426,4 +426,6 @@ Phase 0–5 本地实现全部完成（429 passed, 27 skipped）。
 | 2026-07-23 | 端到端工作流集成测试 | 5 tests；project lifecycle、evaluator、market、webhook、cost/QC stats |
 | 2026-07-23 | PostgreSQL + MinIO 全链验收 | 86/86 integration+component tests with real Postgres+MinIO |
 | 2026-07-23 | `pytest` | 434 passed，27 skipped |
+| 2026-07-24 | Modal 代理问题根因定位与修复 | Modal 1.5.2 自动读取系统代理（macOS 网络设置 `http://127.0.0.1:7897`），尝试通过 `python-socks` 建立 gRPC 代理连接但该包未安装，导致连接瞬间失败；根治方案：`MODAL_DISABLE_API_PROXY=1`（直连 api.modal.com，无需额外依赖） |
+| 2026-07-24 | Modal 计算平面首次部署验证 | `MODAL_DISABLE_API_PROXY=1 uv run modal deploy modal_apps/analysis.py` 成功；125s 完成镜像构建，所有 function 与 mount 创建完毕；App URL: https://modal.com/apps/zhuaiba88/main/deployed/vtv-analysis |
 | 2026-07-23 | 项目级统计 + 逐集 Job 汇总 | ProjectStats, EpisodeJobSummary, 11 new unit tests |
