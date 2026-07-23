@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     s3_access_key: str | None = None
     s3_secret_key: str | None = None
     s3_bucket: str = "vtv-local"
+    # Optional API key for Bearer token auth (empty string = auth disabled, local dev only)
+    api_key: str = ""
+    # HuggingFace token for gated models
+    hf_token: str | None = None
 
 
 @lru_cache

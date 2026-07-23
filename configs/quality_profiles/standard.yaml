@@ -1,0 +1,21 @@
+# 标准质量档位
+# 质量与成本均衡，L40S GPU
+
+profile: standard
+
+visual:
+  max_candidates: 2
+  gpu_preference: L40S
+  num_inference_steps: 30
+  guidance_scale: 5.0
+  require_keyframe_approval: false
+
+tts:
+  max_candidates: 2
+  max_duration_deviation: 0.08
+
+lipsync:
+  preferred_level: L2
+  fallback_level: L1
+
+budget_per_shot_usd: 0.5

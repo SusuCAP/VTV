@@ -1,0 +1,109 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: vtv
+          POSTGRES_PASSWORD: vtv
+          POSTGRES_DB: vtv_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U vtv -d vtv_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: vtv
+          MINIO_ROOT_PASSWORD: change-me-in-non-local-environments
+        ports: ["9000:9000"]
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+          --entrypoint '["minio", "server", "/data"]'
+    env:
+      VTV_TEST_DATABASE_URL: postgresql+asyncpg://vtv:vtv@127.0.0.1:5432/vtv_test
+      VTV_DATABASE_URL: postgresql+asyncpg://vtv:vtv@127.0.0.1:5432/vtv_test
+      VTV_S3_ENDPOINT: http://127.0.0.1:9000
+      VTV_S3_ACCESS_KEY: vtv
+      VTV_S3_SECRET_KEY: change-me-in-non-local-environments
+      VTV_S3_BUCKET: vtv-test
+      # All adapter modes default to deterministic/passthrough — no GPU needed in CI
+      VTV_ASR_ADAPTER_MODE: deterministic
+      VTV_VISION_ADAPTER_MODE: deterministic
+      VTV_SEGMENTATION_ADAPTER_MODE: passthrough
+      VTV_VISUAL_GENERATION_ADAPTER_MODE: passthrough
+      VTV_TTS_ADAPTER_MODE: passthrough
+      VTV_LIPSYNC_ADAPTER_MODE: passthrough
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --all-packages --locked
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check .
+
+      - name: Apply database migrations
+        run: |
+          uv run python scripts/apply_migrations.py \
+            postgresql+asyncpg://vtv:vtv@127.0.0.1:5432/vtv_test
+
+      - name: Create MinIO test bucket
+        run: |
+          pip install minio --quiet
+          python - <<'EOF'
+          from minio import Minio
+          c = Minio("127.0.0.1:9000", access_key="vtv",
+                    secret_key="change-me-in-non-local-environments", secure=False)
+          if not c.bucket_exists("vtv-test"):
+              c.make_bucket("vtv-test")
+          print("bucket ready")
+          EOF
+
+      - name: Unit tests
+        run: uv run pytest tests/unit -q --tb=short
+
+      - name: Component tests
+        run: uv run pytest tests/component -q --tb=short
+
+      - name: Integration tests
+        run: uv run pytest tests/integration -q --tb=short
+
+  mac-client-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:mac
+
+      - name: Build
+        run: npm run build:mac

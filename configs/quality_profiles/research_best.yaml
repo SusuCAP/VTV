@@ -1,0 +1,22 @@
+# 研究最优质量档位
+# 最高质量，不限 GPU 成本
+
+profile: research_best
+
+visual:
+  max_candidates: 6
+  gpu_preference: H200
+  num_inference_steps: 50
+  guidance_scale: 7.5
+  require_keyframe_approval: true
+
+tts:
+  max_candidates: 4
+  max_duration_deviation: 0.05
+
+lipsync:
+  # L2 LatentSync（标准） or L3 InfiniteTalk（全身）
+  preferred_level: L2
+  fallback_level: L1
+
+budget_per_shot_usd: 2.0

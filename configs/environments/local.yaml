@@ -1,0 +1,21 @@
+# 本地开发环境配置
+# 使用确定性 stub 适配器，无需 GPU，适合快速单元/集成测试
+
+environment: local
+
+model_runtime:
+  # ASR/VAD: deterministic stub（空 transcript）
+  asr_adapter_mode: deterministic
+  # 视觉分析: deterministic stub（空 observation）
+  vision_adapter_mode: deterministic
+  # 分割: passthrough（全白 mask）
+  segmentation_adapter_mode: passthrough
+  # 视觉生成: passthrough（原片透传）
+  visual_generation_adapter_mode: passthrough
+  # TTS: passthrough（静音音频）
+  tts_adapter_mode: passthrough
+  # Lipsync: L0 passthrough（原片透传）
+  lipsync_adapter_mode: passthrough
+
+quality_profile: preview
+max_visual_candidates: 1

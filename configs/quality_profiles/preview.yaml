@@ -1,0 +1,21 @@
+# 预览质量档位
+# 最低成本，用于快速验证流水线，L4 GPU
+
+profile: preview
+
+visual:
+  max_candidates: 1
+  gpu_preference: L4
+  num_inference_steps: 10
+  guidance_scale: 3.5
+  require_keyframe_approval: false
+
+tts:
+  max_candidates: 1
+  max_duration_deviation: 0.15
+
+lipsync:
+  preferred_level: L1
+  fallback_level: L0
+
+budget_per_shot_usd: 0.05

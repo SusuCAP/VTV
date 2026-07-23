@@ -1,0 +1,15 @@
+# 生产环境配置
+# 完整真实模型，H200 GPU，research_best 质量档位
+
+environment: prod
+
+model_runtime:
+  asr_adapter_mode: local_models
+  vision_adapter_mode: qwen3_vl
+  segmentation_adapter_mode: sam3
+  visual_generation_adapter_mode: wan_animate
+  tts_adapter_mode: cosyvoice3
+  lipsync_adapter_mode: latentsync
+
+quality_profile: research_best
+max_visual_candidates: 6

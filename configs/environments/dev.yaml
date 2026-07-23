@@ -1,0 +1,21 @@
+# 开发环境配置
+# 使用真实模型推理，L4 GPU，适合功能验证
+
+environment: dev
+
+model_runtime:
+  # ASR/VAD: FasterWhisper + Pyannote（已在 analysis.py 镜像中）
+  asr_adapter_mode: local_models
+  # 视觉分析: Qwen3-VL（已在 analysis.py 镜像中）
+  vision_adapter_mode: qwen3_vl
+  # 分割: SAM3.1（visual.py 镜像）
+  segmentation_adapter_mode: sam3
+  # 视觉生成: Wan-Animate passthrough（P8-D 完成后改为 wan_animate）
+  visual_generation_adapter_mode: passthrough
+  # TTS: CosyVoice3 passthrough（P8-E 完成后改为 cosyvoice3）
+  tts_adapter_mode: passthrough
+  # Lipsync: LatentSync passthrough（P8-F 完成后改为 latentsync）
+  lipsync_adapter_mode: passthrough
+
+quality_profile: standard
+max_visual_candidates: 2

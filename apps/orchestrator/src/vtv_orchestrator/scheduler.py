@@ -30,6 +30,8 @@ from vtv_db.models import (
 from vtv_db.queries import CLAIM_READY_STAGE, COMMIT_OUTPUT_READY, PROMOTE_READY_DEPENDENTS
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult
 
+from .config import Settings, get_settings, model_runtime_for_stage
+
 
 @dataclass(frozen=True, slots=True)
 class ClaimedStage:
@@ -52,8 +54,13 @@ class ClaimedStage:
 
 
 class Scheduler:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        settings: Settings | None = None,
+    ) -> None:
         self._sessions = sessions
+        self._settings = settings or get_settings()
 
     async def claim_one(self, worker_id: str, lease_seconds: int = 300) -> ClaimedStage | None:
         async with self._sessions.begin() as session:
@@ -142,6 +149,17 @@ class Scheduler:
                     raise ValueError("one or more explicit stage input assets are missing")
                 assets.extend(explicit_assets)
             params = claim.params
+            # Inject model_runtime adapter modes from orchestrator settings when not
+            # already present in the stored stage params (allows per-stage override).
+            runtime_override = model_runtime_for_stage(claim.stage_type, self._settings)
+            if runtime_override and "model_runtime" not in params:
+                params = {**params, "model_runtime": runtime_override}
+            elif runtime_override and isinstance(params.get("model_runtime"), dict):
+                # Merge: stored params take precedence; fill in any missing keys
+                params = {
+                    **params,
+                    "model_runtime": {**runtime_override, **params["model_runtime"]},
+                }
             if claim.stage_type == "ASSEMBLE_EPISODE":
                 template = claim.params.get("episode_assembly_template")
                 if not isinstance(template, dict):
