@@ -44,6 +44,7 @@ from vtv_delivery import (
 )
 from vtv_evaluation.contracts import EvaluatorReleaseCreate, EvaluatorReleaseRead, QcEvidenceCreate
 from vtv_markets import MarketConfig, get_market_config, list_markets
+from vtv_schemas.alerts import ProductionAlert
 from vtv_schemas.analysis import AnalysisDocumentRead
 from vtv_schemas.assembly import EpisodeAssemblyJobCreate
 from vtv_schemas.benchmarks import BenchmarkReleaseCreate, BenchmarkReleaseRead
@@ -55,6 +56,7 @@ from vtv_schemas.candidates import (
     CandidateQcCreate,
     CandidateVariantRead,
 )
+from vtv_schemas.concurrency import DEFAULT_CONCURRENCY_POLICY, ConcurrencyPolicy
 from vtv_schemas.cost_report import ProjectCostReport
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.health import HealthCheckResult, HealthReport, SystemMetrics
@@ -1502,6 +1504,80 @@ def create_app(
         if cfg is None or cfg.workspace_id != workspace:
             raise HTTPException(status_code=404, detail="webhook not found")
         return {"pinged": True, "webhook_id": str(webhook_id)}
+
+    # --- Alert endpoints ---
+
+    _EVENT_ALERT_MAP: dict[str, tuple[str, str]] = {
+        "delivery.approved": ("delivery_approved", "INFO"),
+        "delivery.revoked": ("delivery_revoked", "WARN"),
+        "qc.hard_failure": ("high_failure_rate", "CRITICAL"),
+        "circuit_breaker.tripped": ("circuit_breaker_tripped", "CRITICAL"),
+        "budget.warning": ("budget_warning", "WARN"),
+        "budget.exceeded": ("budget_exceeded", "CRITICAL"),
+        "stage_lease.expired": ("stage_lease_expired", "WARN"),
+        "model.rollback_triggered": ("model_rollback_triggered", "WARN"),
+    }
+
+    @app.get(
+        "/v1/projects/{project_id}/alerts",
+        response_model=list[ProductionAlert],
+        tags=["monitoring"],
+    )
+    async def list_project_alerts(
+        project_id: UUID,
+        severity: Annotated[str | None, Query(max_length=16)] = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 50,
+        workspace: Annotated[UUID, Depends(workspace_id)] = DEFAULT_LOCAL_WORKSPACE_ID,
+    ) -> list[ProductionAlert]:
+        """Return recent alerts derived from Outbox events for this project."""
+        events = await repo.list_outbox_events(workspace, project_id, limit=limit)
+        alerts: list[ProductionAlert] = []
+        for ev in events:
+            mapping = _EVENT_ALERT_MAP.get(ev["event_type"])
+            if mapping is None:
+                continue
+            alert_type, sev = mapping
+            if severity is not None and sev != severity:
+                continue
+            payload = ev.get("payload") or {}
+            episode_id_raw = payload.get("episode_id")
+            try:
+                episode_id = UUID(episode_id_raw) if episode_id_raw else None
+            except (ValueError, AttributeError):
+                episode_id = None
+            alerts.append(
+                ProductionAlert(
+                    alert_id=str(ev["event_id"]),
+                    project_id=project_id,
+                    episode_id=episode_id,
+                    severity=sev,
+                    alert_type=alert_type,
+                    message=payload.get("message") or ev["event_type"],
+                    metadata=payload,
+                    created_at=ev["created_at"],
+                )
+            )
+        return alerts
+
+    # --- Concurrency policy endpoints ---
+
+    @app.get(
+        "/v1/concurrency-policies/default",
+        response_model=ConcurrencyPolicy,
+        tags=["monitoring"],
+    )
+    async def get_default_concurrency_policy() -> ConcurrencyPolicy:
+        """Return the default concurrency policy."""
+        return DEFAULT_CONCURRENCY_POLICY
+
+    @app.post(
+        "/v1/concurrency-policies/validate",
+        response_model=ConcurrencyPolicy,
+        tags=["monitoring"],
+    )
+    async def validate_concurrency_policy(payload: ConcurrencyPolicy) -> ConcurrencyPolicy:
+        """Validate a proposed ConcurrencyPolicy and return it."""
+        return payload
 
     return app
 
