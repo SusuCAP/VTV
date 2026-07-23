@@ -4445,6 +4445,7 @@ class SqlAlchemyProjectRepository:
                 )
             )
             await session.flush()
+            await session.refresh(release)
             return _evaluator_release_read(release)
 
     async def submit_qc_evidence(
