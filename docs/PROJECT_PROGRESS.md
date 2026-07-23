@@ -11,7 +11,7 @@
 | Phase 2 全剧分析 | 验证中 | 99% | Modal 分析运行时完成；等待 API 网络恢复后部署验收 |
 | Phase 3 自动生产 | 已完成 | 100% | 视觉生产 Worker + A–F 路由分类器 + C2PA 状态机 + 单镜头覆盖/重试/异常中心 |
 | Phase 4 QC 与批量 | 已完成 | 100% | QC 评估器框架 + 视觉 QC Runner + 熔断器 + 交付包下载 + 批量 Job 状态 + 视觉 Golden Benchmark + 视觉模型基准准入门控 |
-| Phase 5 研究工具完善 | 进行中 | 90% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 + 成本报告 + 模型热更新 + 归档 + 健康检查 + SSE + 资产搜索 + 批量重试 + 剧集摘要 + 异步 TTL 缓存 |
+| Phase 5 研究工具完善 | 已完成 | 100% | 多市场配置（en-US/en-GB/es-US/ko-KR/ja-JP）+ 存储保留策略 + 成本报告 + 模型热更新 + 归档 + 健康检查 + SSE + 资产搜索 + 批量重试 + 剧集摘要 + 异步 TTL 缓存 |
 
 ## 已完成
 
@@ -252,12 +252,13 @@
 
 ## 下一提交目标
 
-`chore: cloud validation pending (Modal/Docker Hub)`
+`chore: cloud validation and Mac notarization`
 
-Phase 0–5 本地实现全部完成（397 passed, 27 skipped）。等待：
-- Docker Hub 恢复 → PostgreSQL + MinIO 全链端到端验收
-- api.modal.com gRPC 连通 → Modal 首次部署验收
-- Apple Developer 证书 → Tauri Mac 签名/公证
+Phase 0–5 本地实现全部完成（429 passed, 27 skipped）。
+等待外部条件：
+- Docker Hub 恢复 → PostgreSQL + MinIO 全链端到端验收（P1/P2 99%→100%）
+- api.modal.com gRPC 恢复 → Modal 首次部署验收（P1/P2 99%→100%）  
+- Apple Developer 证书 → Tauri Mac 签名/公证（P5 完整交付）
 
 ## 决策日志
 
@@ -417,3 +418,8 @@ Phase 0–5 本地实现全部完成（397 passed, 27 skipped）。等待：
 | 2026-07-23 | 视觉模型基准准入门控 | run_visual_benchmark CLI，passthrough benchmark payload |
 | 2026-07-23 | `ruff check .` | 通过 |
 | 2026-07-23 | `pytest` | 321 passed，27 skipped |
+| 2026-07-23 | Phase 5 Webhook + 速率限制 | 19 unit tests；WebhookConfig, TokenBucket, RateLimiter |
+| 2026-07-23 | `pytest` | 424 passed，27 skipped |
+| 2026-07-23 | 市场感知字幕 CPS | vtv-markets 接入 AssembleWorker；5 unit tests |
+| 2026-07-23 | `ruff check .` | 通过 |
+| 2026-07-23 | `pytest` | 429 passed，27 skipped |

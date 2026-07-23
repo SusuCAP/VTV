@@ -60,6 +60,16 @@ class AssembleWorker:
             raise ValueError("subtitle formats must contain srt and/or vtt")
         if len(formats) != len(set(formats)):
             raise ValueError("subtitle formats must be unique")
+        max_cps = _market_max_cps(job.params.get("market_code", "en-US"))
+        for cue in document.cues:
+            duration = cue.end_seconds - cue.start_seconds
+            if duration > 0:
+                cps = len(cue.text) / duration
+                if cps > max_cps:
+                    raise ValueError(
+                        f"subtitle cue {cue.index} exceeds {max_cps} CPS limit"
+                        f" ({cps:.1f} CPS for market {job.params.get('market_code', 'en-US')})"
+                    )
         output_directory = _local_path(job.output_prefix)
         output_directory.mkdir(parents=True, exist_ok=True)
         assets: list[AssetRef] = []
@@ -678,6 +688,26 @@ def _build_shot_features(
         full_regen_required=bool(shot.get("full_regen_required", False)),
         primary_scene_label=str(shot.get("primary_scene_label", "")),
     )
+
+
+_DEFAULT_MAX_CPS = 17
+
+
+def _market_max_cps(market_code: str) -> int:
+    """Return the max subtitle CPS for *market_code*.
+
+    Lazily imports vtv_markets; falls back to *_DEFAULT_MAX_CPS* if the
+    package is unavailable or the market is not registered.
+    """
+    try:
+        from vtv_markets import get_market_config  # noqa: PLC0415
+
+        config = get_market_config(market_code)
+        return config.max_subtitle_cps
+    except KeyError:
+        return _DEFAULT_MAX_CPS
+    except Exception:  # ImportError or any unexpected error
+        return _DEFAULT_MAX_CPS
 
 
 def _result(
