@@ -84,6 +84,7 @@ from vtv_schemas.uploads import (
     UploadPart,
     UploadRead,
 )
+from vtv_schemas.webhook import WebhookConfig, WebhookCreate
 from vtv_storage import ObjectStoreAdapter, UploadIntegrityError, UploadNotFoundError
 
 from .config import get_settings
@@ -1334,6 +1335,71 @@ def create_app(
             return {"invalidated_count": 0}
         count = await cache.invalidate()
         return {"invalidated_count": count}
+
+    # --- Webhook endpoints (in-memory) ---
+
+    _webhooks: dict[UUID, WebhookConfig] = {}
+
+    @app.post(
+        "/v1/webhooks",
+        response_model=WebhookConfig,
+        status_code=status.HTTP_201_CREATED,
+        tags=["webhooks"],
+    )
+    async def register_webhook(
+        payload: WebhookCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> WebhookConfig:
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        cfg = WebhookConfig(
+            webhook_id=uuid4(),
+            workspace_id=workspace,
+            url=payload.url,
+            secret=payload.secret,
+            event_types=payload.event_types,
+            created_at=datetime.now(UTC),
+        )
+        _webhooks[cfg.webhook_id] = cfg
+        return cfg
+
+    @app.get(
+        "/v1/webhooks",
+        response_model=list[WebhookConfig],
+        tags=["webhooks"],
+    )
+    async def list_webhooks(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[WebhookConfig]:
+        return [w for w in _webhooks.values() if w.workspace_id == workspace]
+
+    @app.delete(
+        "/v1/webhooks/{webhook_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+        tags=["webhooks"],
+    )
+    async def delete_webhook(
+        webhook_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> None:
+        cfg = _webhooks.get(webhook_id)
+        if cfg is None or cfg.workspace_id != workspace:
+            raise HTTPException(status_code=404, detail="webhook not found")
+        del _webhooks[webhook_id]
+
+    @app.post(
+        "/v1/webhooks/{webhook_id}:test",
+        response_model=dict,
+        tags=["webhooks"],
+    )
+    async def test_webhook(
+        webhook_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> dict:
+        cfg = _webhooks.get(webhook_id)
+        if cfg is None or cfg.workspace_id != workspace:
+            raise HTTPException(status_code=404, detail="webhook not found")
+        return {"pinged": True, "webhook_id": str(webhook_id)}
 
     return app
 
