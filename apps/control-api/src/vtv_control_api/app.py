@@ -6,9 +6,10 @@ from math import ceil
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from vtv_db.repository import (
     AnalysisNotReadyError,
@@ -120,12 +121,59 @@ def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUI
     return x_workspace_id or DEFAULT_LOCAL_WORKSPACE_ID
 
 
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def require_api_key(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer_scheme)] = None,
+) -> None:
+    """Validate Bearer token when VTV_API_KEY is set.
+
+    When ``VTV_API_KEY`` is empty (the default for local development), auth is
+    disabled and every request is allowed.  In non-local environments, set a
+    strong random value via the Modal Secret / env var.
+    """
+    from .config import get_settings  # local import to avoid circular deps
+    expected = get_settings().api_key
+    if not expected:
+        return  # auth disabled (local dev)
+    if credentials is None or credentials.credentials != expected:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
+
+
 def create_app(
     repository: ProjectRepository | None = None,
     object_store: ObjectStoreAdapter | None = None,
 ) -> FastAPI:
     settings = get_settings()
-    app = FastAPI(title=settings.api_title, version=settings.api_version)
+
+    # P9-B: configure structured logging at app startup
+    from .logging import configure_logging
+    configure_logging()
+
+    # P9-D: instrument FastAPI with OpenTelemetry when SDK is available
+    try:
+        from opentelemetry import trace
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+        _provider = TracerProvider()
+        _provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+        trace.set_tracer_provider(_provider)
+        _otel_available = True
+    except ImportError:
+        _otel_available = False
+
+    # P9-A: attach require_api_key as a global dependency (no-op when VTV_API_KEY is empty)
+    app = FastAPI(
+        title=settings.api_title,
+        version=settings.api_version,
+        dependencies=[Depends(require_api_key)],
+    )
+
+    if _otel_available:
+        FastAPIInstrumentor.instrument_app(app)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -136,7 +184,7 @@ def create_app(
         ],
         allow_credentials=False,
         allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type", "X-Workspace-Id"],
+        allow_headers=["Content-Type", "X-Workspace-Id", "Authorization"],
     )
     repo = repository or create_repository(settings)
     storage = object_store or create_object_store(settings)

@@ -12,6 +12,9 @@ dependencies = [
   "vtv-schemas",
   "vtv-storage",
   "vtv-delivery",
+  "structlog>=26.1.0",
+  "opentelemetry-sdk>=1.44.0",
+  "opentelemetry-instrumentation-fastapi>=0.65b0",
 ]
 
 [tool.uv.sources]
