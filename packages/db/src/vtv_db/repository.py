@@ -255,6 +255,27 @@ class EpisodeSummary(BaseModel):
     generated_at: datetime
 
 
+class EpisodeProductionRollback(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+    actor_id: str = Field(min_length=1, max_length=200)
+    reset_to_route: str | None = None
+
+
+class EpisodeRollbackResult(BaseModel):
+    episode_id: UUID
+    stages_reset: int = Field(ge=0)
+    candidates_rejected: int = Field(ge=0)
+    reason: str
+    actor_id: str
+    rolled_back_at: datetime
+
+
+class ModelPromoteRequest(BaseModel):
+    expected_state_version: int = Field(ge=1)
+    actor_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(default="promoted-from-canary", min_length=1)
+
+
 TTS_REQUIRED_QC_METRICS = frozenset(
     {
         "tts_intelligibility",
@@ -747,6 +768,21 @@ class ProjectRepository(Protocol):
         project_id: UUID,
     ) -> QualitySnapshot: ...
 
+    async def rollback_episode_production(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+        payload: EpisodeProductionRollback,
+    ) -> EpisodeRollbackResult: ...
+
+    async def promote_model_to_active(
+        self,
+        workspace_id: UUID,
+        model_release_id: UUID,
+        payload: ModelPromoteRequest,
+    ) -> ModelReleaseRead: ...
+
 
 class MemoryRepository:
     """Lightweight in-memory repository for unit tests.
@@ -912,6 +948,33 @@ class MemoryRepository:
             top_failure_reasons=[],
             generated_at=datetime.now(UTC),
         )
+
+    async def rollback_episode_production(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+        payload: EpisodeProductionRollback,
+    ) -> EpisodeRollbackResult:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return EpisodeRollbackResult(
+            episode_id=episode_id,
+            stages_reset=0,
+            candidates_rejected=0,
+            reason=payload.reason,
+            actor_id=payload.actor_id,
+            rolled_back_at=datetime.now(UTC),
+        )
+
+    async def promote_model_to_active(
+        self,
+        workspace_id: UUID,
+        model_release_id: UUID,
+        payload: ModelPromoteRequest,
+    ) -> ModelReleaseRead:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        raise ProjectNotFoundError(model_release_id)
 
 
 class SqlAlchemyProjectRepository:
@@ -1188,6 +1251,88 @@ class SqlAlchemyProjectRepository:
             release.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
             _add_model_release_event(
                 session, workspace_id, release, "model_release.automation_changed"
+            )
+            await session.flush()
+            return _model_release_read(release)
+
+    async def promote_model_to_active(
+        self,
+        workspace_id: UUID,
+        model_release_id: UUID,
+        payload: ModelPromoteRequest,
+    ) -> ModelReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, model_release_id)
+            if release.automation_status != "CANARY":
+                raise ModelReleaseConflictError(
+                    f"only CANARY releases can be promoted, got {release.automation_status}"
+                )
+            approved_benchmark = await session.scalar(
+                select(BenchmarkRelease.id).where(
+                    BenchmarkRelease.id == release.approved_benchmark_release_id,
+                    BenchmarkRelease.workspace_id == workspace_id,
+                    BenchmarkRelease.model_release_id == release.id,
+                    BenchmarkRelease.approved.is_(True),
+                )
+            )
+            if approved_benchmark is None:
+                raise ModelReleaseConflictError(
+                    "model release has no valid approved benchmark release"
+                )
+            others = list(
+                await session.scalars(
+                    select(ModelRelease)
+                    .where(
+                        ModelRelease.workspace_id == workspace_id,
+                        ModelRelease.model_key == release.model_key,
+                        ModelRelease.id != release.id,
+                        ModelRelease.automation_status == "ACTIVE",
+                    )
+                    .with_for_update()
+                )
+            )
+            if len(others) > 1:
+                raise ModelReleaseConflictError("model registry has conflicting traffic state")
+            if others:
+                previous = others[0]
+                disabled = set_automation_status(
+                    _model_release_state(previous),
+                    target=AutomationStatus.DISABLED,
+                    traffic_percent=0,
+                    expected_state_version=previous.state_version,
+                )
+                _apply_model_release_state(previous, disabled)
+                previous.updated_at = datetime.now(UTC)
+                _add_model_release_event(
+                    session, workspace_id, previous, "model_release.automation_changed"
+                )
+            try:
+                changed = set_automation_status(
+                    _model_release_state(release),
+                    target=AutomationStatus.ACTIVE,
+                    traffic_percent=100,
+                    expected_state_version=payload.expected_state_version,
+                )
+            except InvalidModelReleaseTransitionError as exc:
+                raise ModelReleaseConflictError(str(exc)) from exc
+            _apply_model_release_state(release, changed)
+            release.updated_at = datetime.now(UTC)
+            _add_model_release_event(
+                session, workspace_id, release, "model_release.automation_changed"
+            )
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="model_release",
+                    aggregate_id=release.id,
+                    event_type="model_release.promoted_to_active",
+                    payload={
+                        "release_id": str(release.id),
+                        "model_key": release.model_key,
+                        "actor_id": payload.actor_id,
+                        "reason": payload.reason,
+                    },
+                )
             )
             await session.flush()
             return _model_release_read(release)
@@ -5217,6 +5362,111 @@ class SqlAlchemyProjectRepository:
                 circuit_breaker_active=circuit_breaker_active,
                 top_failure_reasons=top_failure_reasons,
                 generated_at=now,
+            )
+
+    async def rollback_episode_production(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+        payload: EpisodeProductionRollback,
+    ) -> EpisodeRollbackResult:
+        """Reset all VISUAL_* stages for an episode to EXECUTION_FAILED.
+
+        - FOR UPDATE lock on all VISUAL_* stage runs
+        - Reject all ADOPTED render variants for this episode
+        - Write Outbox production.episode_rolled_back
+        - Return count of stages reset and candidates rejected
+        """
+        async with self._sessions.begin() as session:
+            project_exists = await session.scalar(
+                select(Project.id).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project_exists is None:
+                raise ProjectNotFoundError(project_id)
+            episode_exists = await session.scalar(
+                select(Episode.id).where(
+                    Episode.id == episode_id,
+                    Episode.project_id == project_id,
+                )
+            )
+            if episode_exists is None:
+                raise ProjectNotFoundError(episode_id)
+            visual_runs = list(
+                await session.scalars(
+                    select(StageRun)
+                    .where(
+                        StageRun.project_id == project_id,
+                        StageRun.episode_id == episode_id,
+                        StageRun.stage_type.like("VISUAL_%"),
+                    )
+                    .with_for_update()
+                )
+            )
+            stages_reset = 0
+            for run in visual_runs:
+                if run.status != "EXECUTION_FAILED":
+                    run.status = "EXECUTION_FAILED"
+                    stages_reset += 1
+                if payload.reset_to_route is not None and run.params:
+                    run.params = {**run.params, "route": payload.reset_to_route}
+            visual_run_ids = [run.id for run in visual_runs]
+            candidates_rejected = 0
+            if visual_run_ids:
+                adopted_variants = list(
+                    await session.scalars(
+                        select(RenderVariant)
+                        .join(
+                            CandidateGroup,
+                            CandidateGroup.id == RenderVariant.candidate_group_id,
+                        )
+                        .where(
+                            CandidateGroup.project_id == project_id,
+                            RenderVariant.stage_run_id.in_(visual_run_ids),
+                            RenderVariant.status == "ADOPTED",
+                        )
+                        .with_for_update()
+                    )
+                )
+                for variant in adopted_variants:
+                    variant.status = "REJECTED"
+                    candidates_rejected += 1
+                    group = await session.get(
+                        CandidateGroup, variant.candidate_group_id, with_for_update=True
+                    )
+                    if group is not None and group.status == "ADOPTED":
+                        group.status = "OPEN"
+                        group.state_version += 1
+                        group.adopted_variant_id = None
+            now = datetime.now(UTC)
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="episode",
+                    aggregate_id=episode_id,
+                    event_type="production.episode_rolled_back",
+                    payload={
+                        "episode_id": str(episode_id),
+                        "project_id": str(project_id),
+                        "reason": payload.reason,
+                        "actor_id": payload.actor_id,
+                        "stages_reset": stages_reset,
+                        "candidates_rejected": candidates_rejected,
+                        "reset_to_route": payload.reset_to_route,
+                    },
+                )
+            )
+            await session.flush()
+            return EpisodeRollbackResult(
+                episode_id=episode_id,
+                stages_reset=stages_reset,
+                candidates_rejected=candidates_rejected,
+                reason=payload.reason,
+                actor_id=payload.actor_id,
+                rolled_back_at=now,
             )
 
 

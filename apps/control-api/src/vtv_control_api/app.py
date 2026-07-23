@@ -17,10 +17,13 @@ from vtv_db.repository import (
     BatchRetryResult,
     CandidateConflictError,
     DeliveryConflictError,
+    EpisodeProductionRollback,
+    EpisodeRollbackResult,
     EpisodeSummary,
     EvaluatorConflictError,
     FailedStageRead,
     MediaAssetRead,
+    ModelPromoteRequest,
     ModelReleaseConflictError,
     OutboxEventRead,
     ProductionNotReadyError,
@@ -1397,6 +1400,43 @@ def create_app(
             return {"invalidated_count": 0}
         count = await cache.invalidate()
         return {"invalidated_count": count}
+
+    @app.post(
+        "/v1/projects/{project_id}/episodes/{episode_id}:rollback-production",
+        response_model=EpisodeRollbackResult,
+        status_code=status.HTTP_200_OK,
+    )
+    async def rollback_episode_production(
+        project_id: UUID,
+        episode_id: UUID,
+        payload: EpisodeProductionRollback,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> EpisodeRollbackResult:
+        try:
+            return await repo.rollback_episode_production(
+                workspace, project_id, episode_id, payload
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail="project or episode not found"
+            ) from exc
+
+    @app.post(
+        "/v1/model-releases/{release_id}:promote-to-active",
+        response_model=ModelReleaseRead,
+        status_code=status.HTTP_200_OK,
+    )
+    async def promote_model_to_active(
+        release_id: UUID,
+        payload: ModelPromoteRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelReleaseRead:
+        try:
+            return await repo.promote_model_to_active(workspace, release_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     # --- Webhook endpoints (in-memory) ---
 

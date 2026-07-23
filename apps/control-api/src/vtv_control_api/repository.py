@@ -27,9 +27,12 @@ from vtv_db.repository import (
     BatchRetryResult,
     CandidateConflictError,
     DeliveryConflictError,
+    EpisodeProductionRollback,
+    EpisodeRollbackResult,
     EpisodeSummary,
     EvaluatorConflictError,
     FailedStageRead,
+    ModelPromoteRequest,
     ModelReleaseConflictError,
     ProductionNotReadyError,
     ProjectArchivedError,
@@ -2533,6 +2536,39 @@ class MemoryRepository:
             circuit_breaker_active=circuit_breaker_active,
             top_failure_reasons=top_failure_reasons,
             generated_at=now,
+        )
+
+    async def rollback_episode_production(
+        self,
+        workspace_id: UUID,
+        project_id: UUID,
+        episode_id: UUID,
+        payload: EpisodeProductionRollback,
+    ) -> EpisodeRollbackResult:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return EpisodeRollbackResult(
+            episode_id=episode_id,
+            stages_reset=0,
+            candidates_rejected=0,
+            reason=payload.reason,
+            actor_id=payload.actor_id,
+            rolled_back_at=datetime.now(UTC),
+        )
+
+    async def promote_model_to_active(
+        self,
+        workspace_id: UUID,
+        model_release_id: UUID,
+        payload: ModelPromoteRequest,
+    ) -> ModelReleaseRead:
+        # MemoryRepository stub — delegates to update_model_automation
+        return await self.update_model_automation(
+            workspace_id,
+            model_release_id,
+            target="ACTIVE",
+            traffic_percent=100,
+            expected_state_version=payload.expected_state_version,
         )
 
 
