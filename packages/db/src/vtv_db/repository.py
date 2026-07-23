@@ -59,6 +59,7 @@ from vtv_schemas.candidates import (
 from vtv_schemas.cost_report import ModelCostEntry, ProjectCostReport, StageCostEntry
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
+from vtv_schemas.health import SystemMetrics
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import (
@@ -165,6 +166,10 @@ class StageNotReadyError(ValueError):
 
 
 class EvaluatorConflictError(ValueError):
+    pass
+
+
+class ProjectArchivedError(ValueError):
     pass
 
 
@@ -465,7 +470,19 @@ class ProjectRepository(Protocol):
 
     async def get_project(self, workspace_id: UUID, project_id: UUID) -> ProjectRead: ...
 
-    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]: ...
+    async def list_projects(
+        self, workspace_id: UUID, include_archived: bool = False
+    ) -> list[ProjectRead]: ...
+
+    async def archive_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead: ...
+
+    async def unarchive_project(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectRead: ...
+
+    async def get_system_metrics(self, workspace_id: UUID) -> SystemMetrics: ...
 
     async def list_episodes(self, workspace_id: UUID, project_id: UUID) -> list[EpisodeRead]: ...
 
@@ -942,16 +959,143 @@ class SqlAlchemyProjectRepository:
                 raise ProjectNotFoundError(project_id)
             return _project_read(project)
 
-    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]:
+    async def list_projects(
+        self, workspace_id: UUID, include_archived: bool = False
+    ) -> list[ProjectRead]:
         async with self._sessions() as session:
-            projects = list(
-                await session.scalars(
-                    select(Project)
-                    .where(Project.workspace_id == workspace_id)
-                    .order_by(Project.updated_at.desc())
+            q = select(Project).where(Project.workspace_id == workspace_id)
+            if not include_archived:
+                q = q.where(Project.archived_at.is_(None))
+            projects = list(await session.scalars(q.order_by(Project.updated_at.desc())))
+            return [_project_read(project) for project in projects]
+
+    async def archive_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
                 )
             )
-            return [_project_read(project) for project in projects]
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("project is already archived")
+            now = datetime.now(UTC)
+            project.archived_at = now
+            project.archive_reason = reason
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    event_type="project.archived",
+                    payload={"project_id": str(project.id), "reason": reason},
+                )
+            )
+            await session.flush()
+            return _project_read(project)
+
+    async def unarchive_project(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectRead:
+        async with self._sessions.begin() as session:
+            project = await session.scalar(
+                select(Project).where(
+                    Project.id == project_id,
+                    Project.workspace_id == workspace_id,
+                )
+            )
+            if project is None:
+                raise ProjectNotFoundError(project_id)
+            project.archived_at = None
+            project.archive_reason = None
+            project.state_version += 1
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="project",
+                    aggregate_id=project.id,
+                    event_type="project.unarchived",
+                    payload={"project_id": str(project.id)},
+                )
+            )
+            await session.flush()
+            return _project_read(project)
+
+    async def get_system_metrics(self, workspace_id: UUID) -> SystemMetrics:
+        from sqlalchemy import func as sa_func  # noqa: PLC0415
+
+        async with self._sessions() as session:
+            now = datetime.now(UTC)
+
+            active_projects, archived_projects = (
+                await session.execute(
+                    select(
+                        sa_func.count(Project.id).filter(Project.archived_at.is_(None)),
+                        sa_func.count(Project.id).filter(Project.archived_at.isnot(None)),
+                    ).where(Project.workspace_id == workspace_id)
+                )
+            ).one()
+
+            total_episodes = await session.scalar(
+                select(sa_func.count(Episode.id)).where(
+                    Episode.project_id.in_(
+                        select(Project.id).where(Project.workspace_id == workspace_id)
+                    )
+                )
+            ) or 0
+
+            stage_counts = (
+                await session.execute(
+                    select(
+                        sa_func.count(StageRun.id),
+                        sa_func.count(StageRun.id).filter(StageRun.status == "PENDING"),
+                        sa_func.count(StageRun.id).filter(StageRun.status == "RUNNING"),
+                        sa_func.count(StageRun.id).filter(
+                            StageRun.status == "EXECUTION_FAILED"
+                        ),
+                    ).where(
+                        StageRun.project_id.in_(
+                            select(Project.id).where(Project.workspace_id == workspace_id)
+                        )
+                    )
+                )
+            ).one()
+
+            delivery_counts = (
+                await session.execute(
+                    select(
+                        sa_func.count(Delivery.id),
+                        sa_func.count(Delivery.id).filter(Delivery.status == "APPROVED"),
+                    ).where(Delivery.workspace_id == workspace_id)
+                )
+            ).one()
+
+            orphan_count = await session.scalar(
+                select(sa_func.count(OrphanAsset.id)).where(
+                    OrphanAsset.project_id.in_(
+                        select(Project.id).where(Project.workspace_id == workspace_id)
+                    )
+                )
+            ) or 0
+
+            return SystemMetrics(
+                active_projects=active_projects or 0,
+                archived_projects=archived_projects or 0,
+                total_episodes=int(total_episodes),
+                total_stage_runs=stage_counts[0] or 0,
+                pending_stage_runs=stage_counts[1] or 0,
+                running_stage_runs=stage_counts[2] or 0,
+                failed_stage_runs=stage_counts[3] or 0,
+                total_deliveries=delivery_counts[0] or 0,
+                approved_deliveries=delivery_counts[1] or 0,
+                orphan_asset_count=int(orphan_count),
+                generated_at=now,
+            )
 
     async def list_episodes(
         self, workspace_id: UUID, project_id: UUID
@@ -1020,6 +1164,8 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("archived projects cannot start new jobs")
             control = await session.get(ExecutionControl, project_id)
             if control is None:
                 raise RuntimeError("project execution control is missing")
@@ -1166,6 +1312,8 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("archived projects cannot start new jobs")
             if project.state_version != payload.expected_project_state_version:
                 raise ProductionNotReadyError(
                     f"project state version mismatch: "
@@ -1596,6 +1744,8 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("archived projects cannot start new jobs")
             idempotency_key = f"episode-dubbing:{payload.fingerprint}"
             existing = await session.scalar(
                 select(Job).where(
@@ -1788,6 +1938,8 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("archived projects cannot start new jobs")
             idempotency_key = f"episode-lipsync:{payload.fingerprint}"
             existing = await session.scalar(
                 select(Job).where(
@@ -2042,6 +2194,8 @@ class SqlAlchemyProjectRepository:
             )
             if project is None:
                 raise ProjectNotFoundError(project_id)
+            if project.archived_at is not None:
+                raise ProjectArchivedError("archived projects cannot start new jobs")
             idempotency_key = f"episode-assembly:{payload.fingerprint}"
             existing = await session.scalar(
                 select(Job).where(
@@ -4364,6 +4518,8 @@ def _project_read(project: Project) -> ProjectRead:
         state_version=project.state_version,
         created_at=project.created_at or datetime.now(UTC),
         updated_at=project.updated_at or datetime.now(UTC),
+        archived_at=project.archived_at,
+        archive_reason=project.archive_reason,
     )
 
 

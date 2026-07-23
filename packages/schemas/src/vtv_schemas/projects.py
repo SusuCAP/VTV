@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime
 from decimal import Decimal
 from typing import Literal
@@ -26,7 +28,7 @@ class Budget(BaseModel):
     hard_limit: Decimal = Field(default=Decimal("350.00"), gt=0)
 
     @model_validator(mode="after")
-    def warning_must_not_exceed_limit(self) -> "Budget":
+    def warning_must_not_exceed_limit(self) -> Budget:
         if self.warning_at > self.hard_limit:
             raise ValueError("warning_at must not exceed hard_limit")
         return self
@@ -51,3 +53,5 @@ class ProjectRead(ProjectCreate):
     state_version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+    archived_at: datetime | None = None
+    archive_reason: str | None = Field(default=None, max_length=500)

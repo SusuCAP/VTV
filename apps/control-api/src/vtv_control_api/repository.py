@@ -29,6 +29,7 @@ from vtv_db.repository import (
     FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
+    ProjectArchivedError,
     ProjectNotFoundError,
     RightsReleaseConflictError,
     StageRunRead,
@@ -67,6 +68,7 @@ from vtv_schemas.candidates import (
 from vtv_schemas.cost_report import ProjectCostReport
 from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
+from vtv_schemas.health import SystemMetrics
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
 from vtv_schemas.production import DubbingJobCreate, LipSyncJobCreate
@@ -358,13 +360,78 @@ class MemoryRepository:
             raise ProjectNotFoundError(project_id)
         return project
 
-    async def list_projects(self, workspace_id: UUID) -> list[ProjectRead]:
+    async def list_projects(
+        self, workspace_id: UUID, include_archived: bool = False
+    ) -> list[ProjectRead]:
         with self._lock:
             return [
                 project
                 for project in self._projects.values()
                 if project.workspace_id == workspace_id
+                and (include_archived or project.archived_at is None)
             ]
+
+    async def archive_project(
+        self, workspace_id: UUID, project_id: UUID, reason: str
+    ) -> ProjectRead:
+        project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("project is already archived")
+        now = datetime.now(UTC)
+        updated = project.model_copy(
+            update={
+                "archived_at": now,
+                "archive_reason": reason,
+                "state_version": project.state_version + 1,
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._projects[project_id] = updated
+        return updated
+
+    async def unarchive_project(
+        self, workspace_id: UUID, project_id: UUID
+    ) -> ProjectRead:
+        project = await self.get_project(workspace_id, project_id)
+        now = datetime.now(UTC)
+        updated = project.model_copy(
+            update={
+                "archived_at": None,
+                "archive_reason": None,
+                "state_version": project.state_version + 1,
+                "updated_at": now,
+            }
+        )
+        with self._lock:
+            self._projects[project_id] = updated
+        return updated
+
+    async def get_system_metrics(self, workspace_id: UUID) -> SystemMetrics:
+        with self._lock:
+            projects = [p for p in self._projects.values() if p.workspace_id == workspace_id]
+            project_ids = {p.id for p in projects}
+            active_projects = sum(1 for p in projects if p.archived_at is None)
+            archived_projects = sum(1 for p in projects if p.archived_at is not None)
+            total_episodes = sum(
+                len(ep_list)
+                for pid, ep_list in self._episodes.items()
+                if pid in project_ids
+            )
+            deliveries = [d for d in self._deliveries.values() if d.workspace_id == workspace_id]
+        return SystemMetrics(
+            active_projects=active_projects,
+            archived_projects=archived_projects,
+            total_episodes=total_episodes,
+            total_stage_runs=0,
+            pending_stage_runs=0,
+            running_stage_runs=0,
+            failed_stage_runs=0,
+            total_deliveries=len(deliveries),
+            approved_deliveries=sum(1 for d in deliveries if d.status == "APPROVED"),
+            orphan_asset_count=0,
+            generated_at=datetime.now(UTC),
+        )
 
     async def list_episodes(
         self, workspace_id: UUID, project_id: UUID
@@ -380,6 +447,8 @@ class MemoryRepository:
 
     async def create_analysis_job(self, workspace_id: UUID, project_id: UUID) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("archived projects cannot start new jobs")
         with self._lock:
             episodes = list(self._episodes.get(project_id, []))
         if not episodes:
@@ -408,6 +477,8 @@ class MemoryRepository:
         self, workspace_id: UUID, project_id: UUID, payload: ProduceRequest
     ) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("archived projects cannot start new jobs")
         if project.state_version != payload.expected_project_state_version:
             raise ProductionNotReadyError(
                 f"project state version mismatch: "
@@ -447,6 +518,8 @@ class MemoryRepository:
         self, workspace_id: UUID, project_id: UUID, payload: DubbingJobCreate
     ) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("archived projects cannot start new jobs")
         idempotency_key = f"episode-dubbing:{payload.fingerprint}"
         with self._lock:
             existing_id = self._job_idempotency.get((project_id, idempotency_key))
@@ -581,6 +654,8 @@ class MemoryRepository:
         self, workspace_id: UUID, project_id: UUID, payload: LipSyncJobCreate
     ) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("archived projects cannot start new jobs")
         idempotency_key = f"episode-lipsync:{payload.fingerprint}"
         with self._lock:
             existing_id = self._job_idempotency.get((project_id, idempotency_key))
@@ -776,6 +851,8 @@ class MemoryRepository:
         self, workspace_id: UUID, project_id: UUID, payload: EpisodeAssemblyJobCreate
     ) -> JobRead:
         project = await self.get_project(workspace_id, project_id)
+        if project.archived_at is not None:
+            raise ProjectArchivedError("archived projects cannot start new jobs")
         idempotency_key = f"episode-assembly:{payload.fingerprint}"
         with self._lock:
             existing_id = self._job_idempotency.get((project_id, idempotency_key))

@@ -67,6 +67,8 @@ class Project(TimestampMixin, Base):
     budget_warning_at: Mapped[Decimal] = mapped_column(Numeric(14, 4))
     budget_hard_limit: Mapped[Decimal] = mapped_column(Numeric(14, 4))
     output_spec: Mapped[dict] = mapped_column(JSONB)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archive_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class Episode(TimestampMixin, Base):

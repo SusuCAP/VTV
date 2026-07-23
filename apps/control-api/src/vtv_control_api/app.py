@@ -16,6 +16,7 @@ from vtv_db.repository import (
     FailedStageRead,
     ModelReleaseConflictError,
     ProductionNotReadyError,
+    ProjectArchivedError,
     ProjectNotFoundError,
     ProjectRepository,
     RightsReleaseConflictError,
@@ -43,6 +44,7 @@ from vtv_schemas.candidates import (
 )
 from vtv_schemas.cost_report import ProjectCostReport
 from vtv_schemas.episodes import EpisodeRead
+from vtv_schemas.health import HealthCheckResult, HealthReport, SystemMetrics
 from vtv_schemas.jobs import JobAccepted, JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_hotupdate import ModelHotUpdateConfig
 from vtv_schemas.model_releases import (
@@ -93,6 +95,10 @@ class ShotRouteOverride(BaseModel):
     force_rerun: bool = False
 
 
+class ArchiveRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
 def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUID:
     return x_workspace_id or DEFAULT_LOCAL_WORKSPACE_ID
 
@@ -121,8 +127,78 @@ def create_app(
     app.state.object_store = storage
 
     @app.get("/healthz", tags=["system"])
-    def health() -> dict[str, str]:
+    def health_simple() -> dict[str, str]:
         return {"status": "ok", "environment": settings.environment}
+
+    @app.get("/v1/health", response_model=HealthReport, tags=["system"])
+    async def health_report() -> HealthReport:
+        import importlib
+        import time
+
+        checks: dict[str, HealthCheckResult] = {}
+
+        # database check
+        t0 = time.monotonic()
+        try:
+            await repo.list_projects(DEFAULT_LOCAL_WORKSPACE_ID, include_archived=True)
+            checks["database"] = HealthCheckResult(
+                status="ok", latency_ms=round((time.monotonic() - t0) * 1000, 2)
+            )
+        except Exception as exc:  # noqa: BLE001
+            checks["database"] = HealthCheckResult(
+                status="error",
+                message=str(exc),
+                latency_ms=round((time.monotonic() - t0) * 1000, 2),
+            )
+
+        # storage check
+        try:
+            storage_ok = storage is not None
+            checks["storage"] = HealthCheckResult(status="ok" if storage_ok else "warn")
+        except Exception as exc:  # noqa: BLE001
+            checks["storage"] = HealthCheckResult(status="warn", message=str(exc))
+
+        # modal check (import only)
+        try:
+            importlib.import_module("modal")
+            checks["modal"] = HealthCheckResult(status="ok")
+        except ImportError:
+            checks["modal"] = HealthCheckResult(
+                status="warn", message="modal package not importable"
+            )
+
+        # schema_version check (latest known migration)
+        checks["schema_version"] = HealthCheckResult(status="ok", message="0013")
+
+        error_count = sum(1 for c in checks.values() if c.status == "error")
+        warn_count = sum(1 for c in checks.values() if c.status == "warn")
+        if error_count:
+            overall = "error"
+        elif warn_count:
+            overall = "degraded"
+        else:
+            overall = "ok"
+
+        from datetime import UTC, datetime  # noqa: PLC0415
+
+        from fastapi.responses import JSONResponse  # noqa: PLC0415
+
+        report = HealthReport(
+            status=overall,
+            version=settings.api_version,
+            checks=checks,
+            timestamp=datetime.now(UTC),
+        )
+        http_status = (
+            status.HTTP_503_SERVICE_UNAVAILABLE if overall != "ok" else status.HTTP_200_OK
+        )
+        return JSONResponse(content=report.model_dump(mode="json"), status_code=http_status)
+
+    @app.get("/v1/metrics", response_model=SystemMetrics, tags=["system"])
+    async def get_metrics(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> SystemMetrics:
+        return await repo.get_system_metrics(workspace)
 
     @app.post("/v1/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
     async def create_project(
@@ -225,8 +301,32 @@ def create_app(
     @app.get("/v1/projects", response_model=list[ProjectRead])
     async def list_projects(
         workspace: Annotated[UUID, Depends(workspace_id)],
+        include_archived: Annotated[bool, Query()] = False,
     ) -> list[ProjectRead]:
-        return await repo.list_projects(workspace)
+        return await repo.list_projects(workspace, include_archived=include_archived)
+
+    @app.post("/v1/projects/{project_id}:archive", response_model=ProjectRead)
+    async def archive_project(
+        project_id: UUID,
+        payload: ArchiveRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        try:
+            return await repo.archive_project(workspace, project_id, payload.reason)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/projects/{project_id}:unarchive", response_model=ProjectRead)
+    async def unarchive_project(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        try:
+            return await repo.unarchive_project(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     @app.get("/v1/projects/{project_id}", response_model=ProjectRead)
     async def get_project(
@@ -252,6 +352,8 @@ def create_app(
             job = await repo.create_analysis_job(workspace, project_id)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except AnalysisNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         status_url = f"/v1/jobs/{job.id}"
@@ -275,6 +377,8 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="project, episode, or rights release not found"
             ) from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         status_url = f"/v1/jobs/{job.id}"
@@ -298,6 +402,8 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="project, episode, or shot not found"
             ) from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         status_url = f"/v1/jobs/{job.id}"
@@ -323,6 +429,8 @@ def create_app(
             raise HTTPException(
                 status_code=404, detail="project or episode not found"
             ) from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         status_url = f"/v1/jobs/{job.id}"
@@ -344,6 +452,8 @@ def create_app(
             job = await repo.create_production_job(workspace, project_id, payload)
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ProductionNotReadyError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         response.headers["Location"] = f"/v1/jobs/{job.id}"
