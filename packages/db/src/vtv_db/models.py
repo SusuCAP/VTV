@@ -696,3 +696,9 @@ class EvaluatorRelease(TimestampMixin, Base):
     metric_definitions: Mapped[list] = mapped_column(JSONB, default=list)
     thresholds: Mapped[dict] = mapped_column(JSONB, default=dict)
     state_version: Mapped[int] = mapped_column(BigInteger, default=1)
+
+
+# Register migration-owned governance tables in Base.metadata for schema
+# inspection and future repository mappings. Importing at the end avoids a
+# circular dependency while DeclarativeBase and all operational models exist.
+from . import governance_tables as _governance_tables  # noqa: E402,F401
