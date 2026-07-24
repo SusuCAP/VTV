@@ -75,6 +75,8 @@ SECRET_KEYS = {
     "VTV_S3_REGION":     os.environ.get("VTV_S3_REGION", "us-east-1"),
     # 数据库（Modal 容器一般不直连本地 DB，但留着备用）
     "VTV_DATABASE_URL":  os.environ.get("VTV_DATABASE_URL", ""),
+    # 控制面鉴权
+    "VTV_API_KEY":       os.environ.get("VTV_API_KEY", ""),
     # HuggingFace（pyannote 等门控模型需要）
     "VTV_HF_TOKEN":      os.environ.get("VTV_HF_TOKEN", ""),
     # 模型适配器模式（运行时注入）
@@ -132,7 +134,7 @@ SECRET_KEYS = {
     "VTV_MATANYONE2_DEVICE":   os.environ.get("VTV_MATANYONE2_DEVICE", "cuda"),
     # 日志
     "VTV_LOG_LEVEL":     os.environ.get("VTV_LOG_LEVEL", "INFO"),
-    "VTV_ENVIRONMENT":   os.environ.get("VTV_ENVIRONMENT", "dev"),
+    "VTV_ENVIRONMENT":   os.environ.get("VTV_ENVIRONMENT", "production"),
 }
 
 
