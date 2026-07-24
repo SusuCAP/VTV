@@ -43,8 +43,14 @@ def create_worker_with_benchmark_check(
         ValueError: If ``passthrough=False`` and ``benchmark_approved`` is not
             True, indicating that unapproved model weights must not be used.
     """
-    is_passthrough: bool = bool(adapter_kwargs.get("passthrough", True))
+    is_passthrough: bool = bool(adapter_kwargs.get("passthrough", False))
+    contract_test = bool(adapter_kwargs.get("contract_test", False))
 
+    if is_passthrough and not contract_test:
+        raise ValueError(
+            "passthrough visual adapters are test-only; select a benchmark-approved "
+            "production adapter"
+        )
     if not is_passthrough and not benchmark_approved:
         raise ValueError(
             "Real visual generation adapters require benchmark_approved=True. "
@@ -74,8 +80,10 @@ def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
         adapter_mode (visual generation): "passthrough" | "wan_animate"
     """
     runtime: dict = job.params.get("model_runtime") or {}
-    seg_mode = runtime.get("segmentation_adapter_mode", "passthrough")
-    gen_mode = runtime.get("adapter_mode", "passthrough")
+    if not runtime:
+        raise ValueError("visual production requires a registry-selected model runtime")
+    seg_mode = runtime.get("segmentation_adapter_mode")
+    gen_mode = runtime.get("adapter_mode")
 
     # -- segmentation adapter --------------------------------------------------
     if seg_mode == "sam3":
@@ -85,7 +93,7 @@ def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
         from vtv_production.matanyone2_adapter import MatAnyone2Adapter
         segmentation = MatAnyone2Adapter()
     else:
-        segmentation = PassthroughSegmentationAdapter()
+        raise ValueError(f"unsupported segmentation adapter mode: {seg_mode}")
 
     # -- visual generation adapters -------------------------------------------
     if gen_mode == "wan_animate":
@@ -115,15 +123,12 @@ def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
         background_replace = LTX23Adapter()
         full_regen = LTX23Adapter()
     else:
-        character_replace = PassthroughVisualGenerationAdapter(route_handled="C")
-        background_replace = PassthroughVisualGenerationAdapter(route_handled="D")
-        full_regen = PassthroughVisualGenerationAdapter(route_handled="F")
+        raise ValueError(f"unsupported visual generation adapter mode: {gen_mode}")
 
     return VisualProductionWorker(
         segmentation=segmentation,
         character_replace=character_replace,
         background_replace=background_replace,
         full_regen=full_regen,
-        subtitle_clean=PassthroughSubtitleCleanAdapter(),
+        subtitle_clean=None,
     )
-

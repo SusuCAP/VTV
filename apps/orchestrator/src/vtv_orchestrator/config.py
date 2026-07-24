@@ -7,7 +7,8 @@ class ModelRuntimeSettings(BaseSettings):
     """Per-stage adapter mode selection.
 
     Each field maps to the ``adapter_mode`` key injected into ``StageJob.params["model_runtime"]``.
-    Defaults to deterministic/passthrough stubs so local development requires no GPU.
+    Production defaults require a registry-selected real runtime. Explicit
+    deterministic/passthrough modes are reserved for isolated contract tests.
     Override via environment variables (e.g. ``VTV_ASR_ADAPTER_MODE=local_models``) or
     by loading a configs/environments/*.yaml file before starting the orchestrator.
     """
@@ -18,17 +19,17 @@ class ModelRuntimeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VTV_", extra="ignore")
 
     # ASR / VAD  ── "deterministic" | "local_models" | "remote"
-    asr_adapter_mode: str = "deterministic"
+    asr_adapter_mode: str = "remote"
     # Vision analysis ── "deterministic" | "qwen3_vl" | "remote"
-    vision_adapter_mode: str = "deterministic"
+    vision_adapter_mode: str = "remote"
     # Segmentation ── "passthrough" | "sam3" | "remote"
-    segmentation_adapter_mode: str = "passthrough"
+    segmentation_adapter_mode: str = "sam3"
     # Visual generation (char/bg replace, full regen) ── "passthrough" | "wan_animate" | "remote"
-    visual_generation_adapter_mode: str = "passthrough"
+    visual_generation_adapter_mode: str = "wan_animate"
     # TTS synthesis ── "passthrough" | "cosyvoice3" | "remote_tts"
-    tts_adapter_mode: str = "passthrough"
+    tts_adapter_mode: str = "remote_tts"
     # Lipsync ── "passthrough" | "latentsync" | "remote_lipsync"
-    lipsync_adapter_mode: str = "passthrough"
+    lipsync_adapter_mode: str = "remote_lipsync"
 
 
 class Settings(BaseSettings):
