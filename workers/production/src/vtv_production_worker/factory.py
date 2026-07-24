@@ -72,6 +72,9 @@ def create_production_worker_for_job(
     if adapter_mode == "fish_audio":
         from vtv_production.fish_audio_adapter import FishAudioS2ProAdapter
         return ProductionWorker(tts=FishAudioS2ProAdapter())
+    if adapter_mode == "indextts2":
+        from vtv_production.indextts2_adapter import IndexTTS2Adapter
+        return ProductionWorker(tts=IndexTTS2Adapter())
     if adapter_mode == "passthrough":
         raise ValueError(
             "TTS_GENERATE passthrough is not supported. "

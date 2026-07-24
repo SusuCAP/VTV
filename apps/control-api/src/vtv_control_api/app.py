@@ -117,6 +117,21 @@ class ArchiveRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
+class EpisodeRegisterItem(BaseModel):
+    episode_no: int = Field(ge=1)
+    filename: str = Field(min_length=1, max_length=500)
+    duration_ms: int | None = Field(default=None, ge=0)
+    source_sha256: str = Field(min_length=64, max_length=64)
+
+
+class AssetGenerateRequest(BaseModel):
+    quality_profile: str | None = Field(default=None, max_length=100)
+
+
+class AssetApproveRequest(BaseModel):
+    release_ids: list[UUID]
+
+
 def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUID:
     return x_workspace_id or DEFAULT_LOCAL_WORKSPACE_ID
 
@@ -1526,6 +1541,72 @@ def create_app(
             raise HTTPException(status_code=404, detail="model release not found") from exc
         except ModelReleaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/episodes:register",
+        response_model=list[EpisodeRead],
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def register_episodes(
+        project_id: UUID,
+        payload: list[EpisodeRegisterItem],
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[EpisodeRead]:
+        try:
+            return await repo.register_episodes(workspace, project_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/projects/{project_id}/assets:generate",
+        response_model=JobRead,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def generate_assets(
+        project_id: UUID,
+        response: Response,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        payload: AssetGenerateRequest | None = None,
+    ) -> JobRead:
+        try:
+            job = await repo.create_analysis_job(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AnalysisNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        response.headers["Location"] = f"/v1/jobs/{job.id}"
+        return job
+
+    @app.post(
+        "/v1/projects/{project_id}/assets:approve",
+        response_model=ProjectRead,
+    )
+    async def approve_assets(
+        project_id: UUID,
+        payload: AssetApproveRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ProjectRead:
+        try:
+            return await repo.approve_assets(workspace, project_id, payload.release_ids)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
+    @app.get(
+        "/v1/projects/{project_id}/deliverables",
+        response_model=list[DeliveryRead],
+    )
+    async def list_deliverables(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[DeliveryRead]:
+        try:
+            return await repo.list_deliveries(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
 
     # --- Webhook endpoints (in-memory) ---
 

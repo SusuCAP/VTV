@@ -559,6 +559,14 @@ class ProjectRepository(Protocol):
         self, workspace_id: UUID, project_id: UUID
     ) -> ProjectRead: ...
 
+    async def register_episodes(
+        self, workspace_id: UUID, project_id: UUID, payloads: list
+    ) -> list[EpisodeRead]: ...
+
+    async def approve_assets(
+        self, workspace_id: UUID, project_id: UUID, release_ids: list[UUID]
+    ) -> ProjectRead: ...
+
     async def pause_project(
         self, workspace_id: UUID, project_id: UUID, reason: str
     ) -> ProjectRead: ...
@@ -987,6 +995,19 @@ class MemoryRepository:
     ) -> ModelReleaseRead:
         # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
         raise ProjectNotFoundError(model_release_id)
+
+    async def register_episodes(
+        self, workspace_id: UUID, project_id: UUID, payloads: list
+    ) -> list[EpisodeRead]:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        await self.get_project(workspace_id, project_id)
+        return []
+
+    async def approve_assets(
+        self, workspace_id: UUID, project_id: UUID, release_ids: list[UUID]
+    ) -> ProjectRead:
+        # MemoryRepository stub — full logic lives in SqlAlchemyProjectRepository
+        return await self.get_project(workspace_id, project_id)
 
 
 class SqlAlchemyProjectRepository:
