@@ -56,6 +56,9 @@ app = modal.App(APP_NAME)
     timeout=7200,
     retries=2,
     secrets=runtime_secrets,
+    max_containers=8,       # CPU-only, cheapest — allow more parallelism
+    scaledown_window=300,
+    buffer_containers=0,    # CPU pool: zero warm — cost not justified
 )
 def execute_assemble_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     """Execute one assembly stage: SUBTITLE_RENDER, AUDIO_MIX, PICTURE_CONFORM, ASSEMBLE_EPISODE,

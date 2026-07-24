@@ -73,6 +73,9 @@ except Exception:
     retries=2,
     secrets=runtime_secrets,
     volumes=volume_mounts,
+    max_containers=8,       # visual generation is the heaviest pool
+    scaledown_window=300,
+    buffer_containers=1,
 )
 def execute_visual_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     """Execute one visual production stage (VISUAL_CHARACTER_REPLACE, VISUAL_FULL_REGEN, etc.)."""

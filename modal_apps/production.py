@@ -69,6 +69,9 @@ except Exception:
     retries=2,
     secrets=runtime_secrets,
     volumes=volume_mounts,
+    max_containers=4,
+    scaledown_window=300,
+    buffer_containers=1,
 )
 def execute_production_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     """Execute one production stage (TTS_GENERATE or LIPSYNC_GENERATE)."""

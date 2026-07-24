@@ -61,6 +61,9 @@ app = modal.App(APP_NAME)
     timeout=3600,
     retries=2,
     secrets=runtime_secrets,
+    max_containers=4,       # §8.2: prevent single project from exhausting quota
+    scaledown_window=300,   # §8.2: 5-min idle → scale to zero
+    buffer_containers=1,    # keep one warm to reduce cold-start latency
 )
 def execute_analysis_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     """Execute one authenticated analysis stage inside the Modal compute plane."""

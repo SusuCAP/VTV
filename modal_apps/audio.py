@@ -57,6 +57,9 @@ app = modal.App(APP_NAME)
     timeout=3600,
     retries=2,
     secrets=runtime_secrets,
+    max_containers=4,
+    scaledown_window=300,
+    buffer_containers=1,
 )
 def execute_audio_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     """Execute one audio stage (ASR_ALIGN or AUDIO_STEM_SEPARATION) on Modal."""
