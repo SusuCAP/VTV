@@ -595,6 +595,7 @@ export default function App() {
   const [connection, setConnection] = useState<"loading" | "live" | "offline" | "empty">("loading");
   const [project, setProject] = useState<ApiProject | null>(null);
   const [jobs, setJobs] = useState<ApiJob[]>([]);
+  const [episodeCount, setEpisodeCount] = useState(0);
   const [analysisState, setAnalysisState] = useState("开始分析");
   const [uploadState, setUploadState] = useState("上传剧集");
   const [error, setError] = useState<string | null>(null);
@@ -604,9 +605,14 @@ export default function App() {
     setConnection("loading");
     loadLatestProject()
       .then(snap => {
-        if (!snap) { setConnection("empty"); return; }
+        if (!snap) {
+          setEpisodeCount(0);
+          setConnection("empty");
+          return;
+        }
         setProject(snap.project);
         setJobs(snap.jobs);
+        setEpisodeCount(snap.episodes.length);
         setConnection("live");
       })
       .catch(() => setConnection("offline"));
@@ -632,7 +638,7 @@ export default function App() {
     setError(null); setUploadState("选择文件…");
     try {
       const result = await uploadEpisodeFromDialog(
-        project.id, jobs.length + 1,
+        project.id, episodeCount + 1,
         p => setUploadState(`上传 ${Math.round(100 * p.uploadedBytes / p.totalBytes)}%`),
       );
       if (!result) { setUploadState("上传剧集"); return; }

@@ -1,6 +1,11 @@
+mod local_agent;
+
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use tauri::Manager;
+
+use local_agent::{list_pending_uploads, pick_media_files, resume_upload, upload_episode};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,13 +21,13 @@ struct MediaProbe {
 }
 
 #[tauri::command]
-fn probe_media(path: String) -> Result<MediaProbe, String> {
+fn probe_media(app: tauri::AppHandle, path: String) -> Result<MediaProbe, String> {
     let source = Path::new(&path);
     if !source.is_file() {
         return Err(format!("media file does not exist: {path}"));
     }
 
-    let output = Command::new("ffprobe")
+    let output = Command::new(media_tool(&app, "ffprobe"))
         .args([
             "-v",
             "error",
@@ -82,10 +87,39 @@ fn probe_media(path: String) -> Result<MediaProbe, String> {
     })
 }
 
+fn media_tool(app: &tauri::AppHandle, name: &str) -> PathBuf {
+    let env_name = format!("VTV_{}_PATH", name.to_ascii_uppercase());
+    if let Some(configured) = std::env::var_os(env_name) {
+        let path = PathBuf::from(configured);
+        if path.is_file() {
+            return path;
+        }
+    }
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let bundled = resource_dir.join("bin").join(name);
+        if bundled.is_file() {
+            return bundled;
+        }
+    }
+    for directory in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] {
+        let candidate = Path::new(directory).join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    PathBuf::from(name)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![probe_media])
+        .invoke_handler(tauri::generate_handler![
+            probe_media,
+            pick_media_files,
+            list_pending_uploads,
+            upload_episode,
+            resume_upload
+        ])
         .run(tauri::generate_context!())
         .expect("error while running VTV Mac client");
 }
