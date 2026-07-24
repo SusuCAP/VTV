@@ -17,6 +17,21 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P12 — 大模型适配器 + Staging + 签名 + 引入流程
+- 提交：`d24735f`
+- 改动：
+  - `mocha_adapter.py` / `hunyuan_custom_adapter.py` / `vace_adapter.py` / `ltx23_adapter.py`：4 个大模型视觉适配器（lazy import，VisualGenerationAdapter 协议）
+  - `cotracker3_adapter.py`：CoTracker3 点轨迹工具（独立 track() 方法）
+  - `factory.py`：mocha/hunyuan_custom/vace/ltx23 dispatcher 接入
+  - `configs/environments/staging-modal.yaml`：Staging 环境全量真实模型配置
+  - `.github/workflows/ci.yml`：新增 staging-check job
+  - `docs/MODEL_ONBOARDING.md`：6 步模型引入流程（含数值验收标准）
+  - `docs/model-cards/TEMPLATE.md`：模型卡片模板
+  - `docs/runbooks/MAC_SIGNING.md`：Mac 签名/公证运行手册
+  - `apps/mac-client/src-tauri/tauri.conf.json`：bundle.macOS 签名字段
+- 验收：449 tests pass；ruff clean；vite build ✓
+- 文档勾选：P12-A ✅  P12-C ✅  P12-D ✅  P12-E ✅  P12-F ✅
+
 ### 2026-07-24 P11-D — Vision Golden Dataset 测试 + 计划勾选
 - 提交：`f26bcc8`
 - 改动：`tests/golden/test_vision_golden.py`：VisionAnalysisPipeline 回归测试，Qwen 适配器，person_count ±1 容差，无素材时自动跳过
