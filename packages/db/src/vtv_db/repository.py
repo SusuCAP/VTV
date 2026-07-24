@@ -80,7 +80,7 @@ from vtv_schemas.rights import (
 )
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
-from .dag import EPISODE_BASELINE_DAG, build_project_analysis_dag
+from .dag import EPISODE_INGEST_DAG, build_project_analysis_dag
 from .model_registry import (
     AutomationStatus,
     InvalidModelReleaseTransitionError,
@@ -1778,8 +1778,19 @@ class SqlAlchemyProjectRepository:
                     "AUDIO_STEM_SEPARATION",
                     "AUDIO_ANALYSIS",
                     "VISION_ANALYSIS",
+                    "PROJECT_SYNTHESIS",
                 )
             }
+            missing_model_releases = [
+                model_key
+                for model_key, release in selected_releases.items()
+                if release is None
+            ]
+            if missing_model_releases:
+                raise ProductionNotReadyError(
+                    "project analysis requires approved model releases: "
+                    + ", ".join(sorted(missing_model_releases))
+                )
             runs: dict[str, StageRun] = {}
             for definition in definitions:
                 episode = episode_by_id.get(definition.episode_id)
@@ -1800,6 +1811,7 @@ class SqlAlchemyProjectRepository:
                     "AUDIO_STEM_SEPARATION": "AUDIO_STEM_SEPARATION",
                     "ASR_ALIGN": "AUDIO_ANALYSIS",
                     "VISION_ANALYSIS": "VISION_ANALYSIS",
+                    "PROJECT_SYNTHESIS": "PROJECT_SYNTHESIS",
                 }.get(definition.stage_type)
                 selected_release = selected_releases.get(model_key) if model_key else None
                 if selected_release is not None:
@@ -4186,13 +4198,13 @@ class SqlAlchemyProjectRepository:
                 kind="EPISODE_INGEST",
                 status=JobStatus.QUEUED,
                 idempotency_key=f"episode-ingest:{upload.id}",
-                total_stages=len(EPISODE_BASELINE_DAG),
+                total_stages=len(EPISODE_INGEST_DAG),
             )
             session.add_all([episode, asset, job])
             await session.flush()
             episode.source_asset_id = asset.id
             runs: dict[str, StageRun] = {}
-            for definition in EPISODE_BASELINE_DAG:
+            for definition in EPISODE_INGEST_DAG:
                 run = StageRun(
                     id=self._id_factory(),
                     job_id=job.id,
@@ -4206,13 +4218,12 @@ class SqlAlchemyProjectRepository:
                     params={
                         "source_asset_id": str(asset.id),
                         "episode_id": str(episode.id),
-                        "mock_baseline": True,
                     },
                 )
                 runs[definition.key] = run
                 session.add(run)
             await session.flush()
-            for definition in EPISODE_BASELINE_DAG:
+            for definition in EPISODE_INGEST_DAG:
                 for dependency in definition.depends_on:
                     session.add(
                         StageDependency(
