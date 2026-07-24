@@ -1543,6 +1543,17 @@ class SqlAlchemyProjectRepository:
             now = datetime.now(UTC)
             control.paused = False
             control.control_version += 1
+            await session.execute(
+                update(StageRun)
+                .where(
+                    StageRun.project_id == project_id,
+                    StageRun.status.in_(["PENDING", "READY"]),
+                )
+                .values(
+                    observed_control_version=control.control_version,
+                    state_version=StageRun.state_version + 1,
+                )
+            )
             project.state_version += 1
             project.updated_at = now
             session.add(

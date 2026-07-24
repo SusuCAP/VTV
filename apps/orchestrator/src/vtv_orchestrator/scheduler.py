@@ -63,12 +63,22 @@ class Scheduler:
         self._sessions = sessions
         self._settings = settings or get_settings()
 
-    async def claim_one(self, worker_id: str, lease_seconds: int = 300) -> ClaimedStage | None:
+    async def claim_one(
+        self,
+        worker_id: str,
+        lease_seconds: int = 300,
+        *,
+        dispatch_via_outbox: bool = False,
+    ) -> ClaimedStage | None:
         async with self._sessions.begin() as session:
             row = (
                 await session.execute(
                     CLAIM_READY_STAGE,
-                    {"lease_owner": worker_id, "lease_seconds": lease_seconds},
+                    {
+                        "lease_owner": worker_id,
+                        "lease_seconds": lease_seconds,
+                        "modal_only": dispatch_via_outbox,
+                    },
                 )
             ).mappings().first()
             if row is None:
@@ -85,7 +95,7 @@ class Scheduler:
                 stage_run_id=row["id"],
                 attempt_no=attempt_no,
                 worker_id=worker_id,
-                status="RUNNING",
+                status="DISPATCH_PENDING" if dispatch_via_outbox else "RUNNING",
             )
             session.add(attempt)
             workspace_id = await session.scalar(
@@ -100,7 +110,7 @@ class Scheduler:
                     .values(status="RUNNING")
                 )
             await session.flush()
-            return ClaimedStage(
+            claim = ClaimedStage(
                 stage_run_id=row["id"],
                 stage_attempt_id=attempt.id,
                 lease_token=attempt.lease_token,
@@ -118,6 +128,71 @@ class Scheduler:
                 runtime_profile_uuid=row["runtime_profile_uuid"],
                 model_release_id=row["model_release_id"],
                 params=row["params"],
+            )
+            if dispatch_via_outbox:
+                session.add(
+                    OutboxEvent(
+                        workspace_id=workspace_id,
+                        aggregate_type="stage_run",
+                        aggregate_id=claim.stage_run_id,
+                        event_type="stage.dispatch.requested",
+                        dedupe_key=f"stage.dispatch:{claim.stage_attempt_id}",
+                        payload={
+                            "workspace_id": str(claim.workspace_id),
+                            "project_id": str(claim.project_id),
+                            "stage_run_id": str(claim.stage_run_id),
+                            "stage_attempt_id": str(claim.stage_attempt_id),
+                        },
+                    )
+                )
+            return claim
+
+    async def enqueue_one(
+        self,
+        dispatcher_id: str,
+        lease_seconds: int = 3600,
+    ) -> ClaimedStage | None:
+        """Atomically claim a READY stage and persist its Modal dispatch intent."""
+        return await self.claim_one(
+            dispatcher_id,
+            lease_seconds,
+            dispatch_via_outbox=True,
+        )
+
+    async def load_claim(self, stage_attempt_id: UUID) -> ClaimedStage:
+        """Rebuild an immutable claim after a dispatcher or collector restart."""
+        async with self._sessions() as session:
+            row = (
+                await session.execute(
+                    select(StageRun, StageAttempt, Project.workspace_id)
+                    .join(StageAttempt, StageAttempt.stage_run_id == StageRun.id)
+                    .join(Project, Project.id == StageRun.project_id)
+                    .where(StageAttempt.id == stage_attempt_id)
+                )
+            ).one_or_none()
+            if row is None:
+                raise ValueError("stage attempt not found")
+            run, attempt, workspace_id = row
+            if run.status != "RUNNING":
+                raise ValueError(f"stage run is not dispatchable: {run.status}")
+            return ClaimedStage(
+                stage_run_id=run.id,
+                stage_attempt_id=attempt.id,
+                lease_token=attempt.lease_token,
+                state_version=run.state_version,
+                observed_control_version=run.observed_control_version,
+                stage_type=run.stage_type,
+                project_id=run.project_id,
+                workspace_id=workspace_id,
+                episode_id=run.episode_id,
+                shot_id=run.shot_id,
+                candidate_group_id=run.candidate_group_id,
+                job_id=run.job_id,
+                idempotency_key=run.idempotency_key,
+                runtime_profile_id=run.runtime_profile_id,
+                runtime_profile_uuid=run.runtime_profile_uuid,
+                model_release_id=run.model_release_id,
+                params=run.params,
             )
 
     async def build_job(self, claim: ClaimedStage) -> StageJob:
