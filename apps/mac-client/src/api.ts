@@ -74,23 +74,27 @@ export type ApiSnapshot = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const workspaceId = import.meta.env.VITE_WORKSPACE_ID;
-  if (!workspaceId) throw new Error("VITE_WORKSPACE_ID is required");
-  const apiKey = import.meta.env.VITE_CONTROL_API_KEY;
+  const headers = controlHeaders();
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Workspace-Id": workspaceId,
-      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      ...init?.headers,
-    },
+    headers: { ...headers, ...init?.headers },
   });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`${response.status} ${detail}`);
   }
   return response.json() as Promise<T>;
+}
+
+export function controlHeaders(): Record<string, string> {
+  const workspaceId = import.meta.env.VITE_WORKSPACE_ID;
+  if (!workspaceId) throw new Error("VITE_WORKSPACE_ID is required");
+  const apiKey = import.meta.env.VITE_CONTROL_API_KEY;
+  return {
+    "Content-Type": "application/json",
+    "X-Workspace-Id": workspaceId,
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  };
 }
 
 export async function loadLatestProject(): Promise<ApiSnapshot | null> {
