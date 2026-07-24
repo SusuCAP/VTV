@@ -479,6 +479,19 @@ def create_app(
         response.headers["Location"] = status_url
         return JobAccepted(job_id=job.id, status=job.status, status_url=status_url)
 
+    @app.post("/v1/projects/{project_id}:analyze", response_model=JobAccepted, status_code=202)
+    async def analyze_project_alias(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> JobAccepted:
+        """Alias for /analysis-jobs — matches v3.2 spec path."""
+        try:
+            return await repo.create_analysis_job(workspace, project_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+        except ProjectArchivedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post(
         "/v1/projects/{project_id}/dubbing-jobs",
         response_model=JobAccepted,
