@@ -81,6 +81,9 @@ def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
     if seg_mode == "sam3":
         from vtv_production.sam3_adapter import Sam31SegmentationAdapter
         segmentation = Sam31SegmentationAdapter()
+    elif seg_mode == "matanyone2":
+        from vtv_production.matanyone2_adapter import MatAnyone2Adapter
+        segmentation = MatAnyone2Adapter()
     else:
         segmentation = PassthroughSegmentationAdapter()
 

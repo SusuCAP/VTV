@@ -17,6 +17,16 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P10-C — 缺失数据库迁移（characters / locations / continuity / governance）
+- 提交：`5e86b27`
+- 改动：新增 4 个迁移文件（0014–0017）共 7 张表
+  - `characters` + `character_releases` + `look_states`
+  - `locations` + `location_releases`
+  - `anchor_assets` + `continuity_snapshots`
+  - `audit_logs` + `cost_events` + `runtime_profiles`（含5条 GPU profile seed）
+- 验收：ruff clean；SQL 语法校验通过；449 tests pass
+- 文档勾选：`docs/REMAINING_WORK.md` P10-C ✅
+
 ### 2026-07-24 P10-B — Modal 并发控制
 - 提交：`657ea4c`
 - 改动：5 个 Modal App 均加入 `max_containers` / `scaledown_window=300` / `buffer_containers`

@@ -66,12 +66,16 @@ def create_production_worker_for_job(
     if adapter_mode == "cosyvoice3":
         from vtv_production.cosyvoice3_adapter import CosyVoice3Adapter
         return ProductionWorker(tts=CosyVoice3Adapter())
+    if adapter_mode == "voxcpm2":
+        from vtv_production.voxcpm2_adapter import VoxCPM2Adapter
+        return ProductionWorker(tts=VoxCPM2Adapter())
+    if adapter_mode == "fish_audio":
+        from vtv_production.fish_audio_adapter import FishAudioS2ProAdapter
+        return ProductionWorker(tts=FishAudioS2ProAdapter())
     if adapter_mode == "passthrough":
-        # Passthrough TTS: return a minimal worker; stage will produce silence
-        # For TTS passthrough we raise to force an explicit L0 decision at routing time
         raise ValueError(
             "TTS_GENERATE passthrough is not supported. "
-            "Set VTV_TTS_ADAPTER_MODE=cosyvoice3 or remote_tts."
+            "Set VTV_TTS_ADAPTER_MODE to cosyvoice3, voxcpm2, fish_audio, or remote_tts."
         )
     if adapter_mode != "remote_tts":
         raise ValueError("TTS_GENERATE registry release must select remote_tts")
