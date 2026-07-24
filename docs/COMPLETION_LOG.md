@@ -17,6 +17,15 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P11-C — Mac 客户端 4 个缺失页面
+- 提交：`8fd44eb`
+- 改动：
+  - `App.tsx`：加入页面路由（React state）；新增 `NewProjectPage`（新建项目表单）、`AssetConfirmationPage`（资产确认列表）、`ProductionMonitorPage`（任务进度 + pause/resume/cancel 按钮）、`DeliveryPage`（交付列表 + 批准 + 下载）
+  - `api.ts`：加入 `createProject`、`pauseProject`、`resumeProject`、`cancelProject`、`listDeliveries`、`approveDelivery`、`getDeliveryPackage` 等 8 个新 API 方法
+  - Sidebar 按钮接入页面路由，加"新建项目"快捷按钮
+- 验收：`tsc -b && vite build ✓`（220 kB JS）；449 Python tests pass
+- 文档勾选：P11-C ✅
+
 ### 2026-07-24 P11-A/B — VoxCPM2 + Fish Audio TTS + MatAnyone2 分割适配器
 - 提交：`54666b2`
 - 改动：
