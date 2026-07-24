@@ -60,9 +60,7 @@ class AnalysisWorker:
             geometry=DeterministicGeometryAdapter(),
         )
     )
-    synthesizer: DeterministicProjectSynthesizer = field(
-        default_factory=DeterministicProjectSynthesizer
-    )
+    synthesizer: DeterministicProjectSynthesizer | None = None
 
     def execute(self, job: StageJob) -> StageResult:
         if job.stage_type == "PROJECT_SYNTHESIS":
@@ -142,6 +140,11 @@ class AnalysisWorker:
         )
 
     def _execute_project_synthesis(self, job: StageJob) -> StageResult:
+        if self.synthesizer is None:
+            raise RuntimeError(
+                "PROJECT_SYNTHESIS requires a configured project synthesis adapter; "
+                "deterministic synthesis is test-only"
+            )
         json_assets = [
             asset for asset in job.input_assets if asset.media_type == "application/json"
         ]

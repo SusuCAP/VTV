@@ -9,12 +9,6 @@ from typing import Any
 from uuid import UUID
 
 from vtv_evaluation.contracts import BenchmarkEvidence, BenchmarkPolicy
-from vtv_evaluation.visual_generation_metrics import (
-    background_preservation_score,
-    character_identity_score,
-    lipsync_alignment_score,
-    temporal_smoothness,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +44,7 @@ class VisualGoldenBenchmarkRunner:
 
     adapter: Any  # VisualGenerationAdapter protocol
     evaluator_key: str = "visual_technical"
+    metric_evaluator: Any | None = None
 
     def run_sample(
         self,
@@ -104,12 +99,11 @@ class VisualGoldenBenchmarkRunner:
             output_dir = workdir / "output" / sample.sample_id
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            # No pre-staged file — write synthetic to a per-sample path so
-            # multiple samples sharing the same source_sha256 prefix never
-            # collide and falsely trigger the contamination guard.
             if not source_path.exists():
-                synth_path = workdir / "_synth" / f"{sample.sample_id}.mp4"
-                source_path = _create_synthetic_video(synth_path, sample.duration_seconds)
+                raise FileNotFoundError(
+                    "Golden Dataset source media is missing; "
+                    "benchmark admission never fabricates synthetic inputs"
+                )
 
             candidates = self.adapter.generate(request, source_path, output_dir)
 
@@ -118,16 +112,17 @@ class VisualGoldenBenchmarkRunner:
 
             _ = candidates[0]  # trigger adapter validation
 
-            # Compute passthrough metrics using fixed embeddings
-            _ref = [1.0, 0.0, 0.0]
-            _cand = [0.95, 0.1, 0.0]
-            metric_scores["character_identity_score"] = character_identity_score(_ref, _cand)
-            metric_scores["temporal_smoothness"] = temporal_smoothness([0.05, 0.03, 0.04])
-            metric_scores["background_preservation_score"] = background_preservation_score(
-                _ref, _cand
-            )
-            metric_scores["lipsync_alignment_score"] = lipsync_alignment_score(
-                [0.0, 0.5, 1.0], [0.01, 0.51, 1.01]
+            if self.metric_evaluator is None:
+                raise RuntimeError(
+                    "Golden benchmark requires a real evaluator; "
+                    "synthetic fixed metric scores are not admissible"
+                )
+            metric_scores.update(
+                self.metric_evaluator.evaluate(
+                    sample=sample,
+                    source_path=source_path,
+                    candidate=candidates[0],
+                )
             )
 
             # Detect critical failure from thresholds
@@ -176,13 +171,16 @@ class VisualGoldenBenchmarkRunner:
                 results.append(result)
                 latencies.append(latency)
 
+        weights_sha256 = getattr(self.adapter, "weights_sha256", None)
+        if not isinstance(weights_sha256, str) or len(weights_sha256) != 64:
+            raise RuntimeError("benchmark adapter must expose verified weights_sha256")
         evidence = BenchmarkEvidence(
             technical_access_gate="PASS",
             rollback_test="PASS",
             reproducibility_test="PASS",
             calibration_complete=True,
-            weights_sha256="a" * 64,
-            runtime_fingerprint="vtv.passthrough-visual@1",
+            weights_sha256=weights_sha256,
+            runtime_fingerprint=str(getattr(self.adapter, "runtime_fingerprint", "")),
         )
 
         approved = _evaluate_policy(results, latencies, policy)
@@ -243,33 +241,3 @@ def _evaluate_policy(
             return False
 
     return True
-
-
-def _create_synthetic_video(path: Path, duration_seconds: float) -> Path:
-    """Create a tiny synthetic video for testing when no source file exists."""
-    import subprocess
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-y",
-            "-f",
-            "lavfi",
-            "-i",
-            f"color=black:s=64x64:r=25:d={duration_seconds:.3f}",
-            "-f",
-            "lavfi",
-            "-i",
-            f"anullsrc=r=44100:cl=mono:d={duration_seconds:.3f}",
-            "-c:v",
-            "libx264",
-            "-c:a",
-            "aac",
-            "-shortest",
-            str(path),
-        ],
-        capture_output=True,
-        check=True,
-    )
-    return path

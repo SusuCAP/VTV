@@ -13,16 +13,20 @@ from vtv_schemas.jobs import AssetRef, DomainArtifact, StageJob, StageResult, Va
 
 @dataclass(frozen=True, slots=True)
 class C2paWorker:
-    """Passthrough C2PA signing worker.
+    """C2PA signing boundary.
 
-    Does not invoke a real C2PA SDK. Generates a placeholder content-credentials
-    JSON that records the delivery fingerprint and signer identity.
+    The repository does not vendor a C2PA implementation. Refusing execution
+    is safer than emitting JSON that falsely claims to be a signed credential.
+    A deployment must inject a real SDK-backed worker before enabling this stage.
     """
 
     def execute(self, job: StageJob) -> StageResult:
         if job.stage_type != "C2PA_SIGN":
             raise ValueError(f"unsupported stage type: {job.stage_type}")
-        return self._sign(job)
+        raise RuntimeError(
+            "C2PA_SIGN is unavailable: configure a real C2PA SDK-backed signer "
+            "before enabling provenance credentials"
+        )
 
     def _sign(self, job: StageJob) -> StageResult:
         try:

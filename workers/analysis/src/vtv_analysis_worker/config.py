@@ -8,7 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VTV_", env_file=".env", extra="ignore")
 
-    analysis_adapter_mode: Literal["deterministic", "local_models", "remote"] = "deterministic"
+    # Production requires an explicitly configured remote or local model stack.
+    # Deterministic adapters remain available only when deliberately selected
+    # by isolated tests.
+    analysis_adapter_mode: Literal["deterministic", "local_models", "remote"] = "remote"
     allow_model_fallback: bool = False
     audio_analysis_endpoint: str | None = None
     audio_analysis_release: str | None = None

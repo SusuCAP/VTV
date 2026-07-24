@@ -1,6 +1,7 @@
 from vtv_analysis import (
     AudioAnalysisPipeline,
     CachedVisionBackend,
+    DeterministicProjectSynthesizer,
     FasterWhisperAsrAdapter,
     FasterWhisperVadAdapter,
     LazyFasterWhisperBackend,
@@ -29,9 +30,14 @@ from .worker import AnalysisWorker
 
 def create_analysis_worker(settings: Settings | None = None) -> AnalysisWorker:
     settings = settings or get_settings()
-    deterministic = AnalysisWorker()
     if settings.analysis_adapter_mode == "deterministic":
-        return deterministic
+        deterministic = AnalysisWorker()
+        return AnalysisWorker(
+            pipeline=deterministic.pipeline,
+            vision_pipeline=deterministic.vision_pipeline,
+            synthesizer=DeterministicProjectSynthesizer(),
+        )
+    deterministic = AnalysisWorker()
     if settings.analysis_adapter_mode == "local_models":
         return _local_model_worker(settings, {})
     transport = HttpxInferenceTransport()
@@ -69,7 +75,7 @@ def create_analysis_worker(settings: Settings | None = None) -> AnalysisWorker:
     return AnalysisWorker(
         pipeline=audio,
         vision_pipeline=vision,
-        synthesizer=deterministic.synthesizer,
+        synthesizer=None,
     )
 
 
@@ -109,7 +115,7 @@ def create_analysis_worker_for_job(
         return AnalysisWorker(
             pipeline=audio,
             vision_pipeline=deterministic.vision_pipeline,
-            synthesizer=deterministic.synthesizer,
+            synthesizer=None,
         )
     if job.stage_type == "VISION_ANALYSIS":
         vision = RemoteVisionAnalysisPipeline(endpoint, transport)
@@ -118,7 +124,7 @@ def create_analysis_worker_for_job(
         return AnalysisWorker(
             pipeline=deterministic.pipeline,
             vision_pipeline=vision,
-            synthesizer=deterministic.synthesizer,
+            synthesizer=None,
         )
     raise ValueError(f"model runtime cannot be assigned to stage {job.stage_type}")
 
@@ -151,7 +157,7 @@ def _local_model_worker(settings: Settings, config: dict) -> AnalysisWorker:
     return AnalysisWorker(
         pipeline=audio,
         vision_pipeline=deterministic.vision_pipeline,
-        synthesizer=deterministic.synthesizer,
+        synthesizer=None,
     )
 
 
@@ -173,7 +179,7 @@ def _local_vision_worker(settings: Settings, config: dict, release: str) -> Anal
     return AnalysisWorker(
         pipeline=deterministic.pipeline,
         vision_pipeline=vision,
-        synthesizer=deterministic.synthesizer,
+        synthesizer=None,
     )
 
 

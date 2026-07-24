@@ -73,16 +73,16 @@ def execute_audio_stage(job_payload: dict[str, Any]) -> dict[str, Any]:
     job = StageJob.model_validate(job_payload)
     required = ("VTV_S3_ACCESS_KEY", "VTV_S3_SECRET_KEY", "VTV_S3_BUCKET")
     missing = [n for n in required if not os.getenv(n)]
-    object_store = None
-    if not missing:
-        client = boto3.client(
-            "s3",
-            endpoint_url=os.getenv("VTV_S3_ENDPOINT"),
-            region_name=os.getenv("VTV_S3_REGION", "us-east-1"),
-            aws_access_key_id=os.environ["VTV_S3_ACCESS_KEY"],
-            aws_secret_access_key=os.environ["VTV_S3_SECRET_KEY"],
-        )
-        object_store = S3ObjectStore(client, os.environ["VTV_S3_BUCKET"])
+    if missing:
+        raise RuntimeError(f"Modal runtime is missing required object-store settings: {missing}")
+    client = boto3.client(
+        "s3",
+        endpoint_url=os.getenv("VTV_S3_ENDPOINT"),
+        region_name=os.getenv("VTV_S3_REGION", "us-east-1"),
+        aws_access_key_id=os.environ["VTV_S3_ACCESS_KEY"],
+        aws_secret_access_key=os.environ["VTV_S3_SECRET_KEY"],
+    )
+    object_store = S3ObjectStore(client, os.environ["VTV_S3_BUCKET"])
 
     result = StageRouter(
         Path("/tmp/vtv-work"),

@@ -16,31 +16,18 @@ from vtv_evaluation.visual_runner import VisualGoldenBenchmarkRunner, VisualGold
 def run_visual_benchmark(
     model_release_id: UUID,
     workdir: Path,
-    sample_count: int = 12,
+    *,
+    adapter,
+    samples: tuple[VisualGoldenSample, ...],
 ) -> dict:
     """Run visual golden benchmark and return benchmark API payload.
 
-    Uses PassthroughVisualGenerationAdapter for contract testing.
-    In production, replace with real adapter bound to model weights.
-    Returns dict matching BenchmarkReportCreate schema.
+    The caller must provide a real, approved adapter and an immutable Golden
+    Dataset manifest. No synthetic sample IDs, hashes, or passthrough adapter
+    are admitted by the production benchmark entrypoint.
     """
-    from vtv_production.visual_adapters import PassthroughVisualGenerationAdapter
-
-    adapter = PassthroughVisualGenerationAdapter(route_handled="C")
     runner = VisualGoldenBenchmarkRunner(adapter=adapter)
     policy = VISUAL_GENERATION_POLICY
-
-    samples = tuple(
-        VisualGoldenSample(
-            sample_id=f"visual-{i:04d}",
-            source_sha256="a" * 64,
-            reference_sha256s=("b" * 64,),
-            duration_seconds=1.5 + (i % 3) * 0.5,
-            route="C",
-            critical=False,
-        )
-        for i in range(sample_count)
-    )
 
     payload = runner.run_dataset(samples, policy, model_release_id, workdir)
 
@@ -67,13 +54,11 @@ def run_visual_benchmark(
         "dataset_fingerprint": policy.fingerprint,
         "policy_key": policy.policy_key,
         "approved": payload.approved,
-        "weights_sha256": evidence.get("weights_sha256", "a" * 64),
-        "runtime_fingerprint": evidence.get(
-            "runtime_fingerprint", "vtv.passthrough-visual@1"
-        ),
+        "weights_sha256": evidence["weights_sha256"],
+        "runtime_fingerprint": evidence["runtime_fingerprint"],
         "technical_access_gate": evidence.get("technical_access_gate", "PASS"),
         "rollback_test": evidence.get("rollback_test", "PASS"),
         "reproducibility_test": evidence.get("reproducibility_test", "PASS"),
-        "calibration_complete": evidence.get("calibration_complete", True),
+        "calibration_complete": evidence["calibration_complete"],
         "sample_results": sample_results,
     }
