@@ -1014,17 +1014,19 @@ async def _resolve_c2pa_sign_params(
     master_asset = await session.get(MediaAsset, master_link.asset_id)
     if master_asset is None:
         raise ValueError("C2PA_SIGN: MASTER_VIDEO asset record not found")
+    signer_id = claim.params.get("c2pa_signer_id")
+    if not isinstance(signer_id, str) or not signer_id.strip():
+        raise ValueError(
+            "C2PA_SIGN: a configured SDK-backed c2pa_signer_id is required"
+        )
     return {
         **claim.params,
         "c2pa_sign_request": {
             "delivery_id": str(delivery.id),
             "manifest_fingerprint": delivery.manifest_fingerprint,
             "master_object_uri": master_asset.object_uri,
-            "output_prefix": (
-                f"memory://workspaces/{claim.workspace_id}/projects/{claim.project_id}"
-                f"/jobs/{claim.job_id}/stages/{claim.stage_run_id}"
-            ),
-            "signer_id": "vtv.passthrough-signer.v1",
+            "output_prefix": f"c2pa/{claim.project_id}/{claim.stage_run_id}",
+            "signer_id": signer_id,
         },
     }
 
