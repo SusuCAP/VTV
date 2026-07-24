@@ -144,7 +144,11 @@ CLAIM_STAGE_DISPATCH_EVENT = text(
 COMMIT_OUTPUT_READY = text(
     """
     UPDATE stage_runs sr
-    SET status = 'OUTPUT_READY', state_version = state_version + 1, updated_at = now()
+    SET status = 'OUTPUT_READY',
+        state_version = state_version + 1,
+        lease_owner = NULL,
+        lease_expires_at = NULL,
+        updated_at = now()
     FROM stage_attempts sa, execution_controls ec
     WHERE sr.id = :stage_run_id
       AND sa.id = :stage_attempt_id

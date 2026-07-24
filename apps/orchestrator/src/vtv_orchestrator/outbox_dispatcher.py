@@ -55,6 +55,7 @@ class OutboxDispatcher:
         stale_dispatch_seconds: int = 120,
         max_dispatch_attempts: int = 5,
         max_stage_attempts: int = 3,
+        attempt_lease_seconds: int = 3600,
     ) -> None:
         self._sessions = sessions
         self._scheduler = scheduler
@@ -62,12 +63,14 @@ class OutboxDispatcher:
         self._stale_dispatch_seconds = stale_dispatch_seconds
         self._max_dispatch_attempts = max_dispatch_attempts
         self._max_stage_attempts = max_stage_attempts
+        self._attempt_lease_seconds = attempt_lease_seconds
 
     async def dispatch_one(self) -> bool:
+        reaped = await self.reap_stale_attempts()
         await self._cancel_tombstoned_dispatches()
         claim = await self._claim_event()
         if claim is None:
-            return False
+            return reaped > 0
         try:
             stage_claim = await self._scheduler.load_claim(claim.stage_attempt_id)
             job = await self._scheduler.build_job(stage_claim)
@@ -83,6 +86,7 @@ class OutboxDispatcher:
         return True
 
     async def collect_one(self) -> bool:
+        await self.reap_stale_attempts()
         await self._cancel_tombstoned_calls()
         collected = await self._claim_dispatched_attempt()
         if collected is None:
@@ -104,7 +108,15 @@ class OutboxDispatcher:
                 },
             )
         if result is None:
-            await self._release_collection(collected.stage_attempt_id)
+            claim = await self._scheduler.load_claim(collected.stage_attempt_id)
+            renewed = await self._scheduler.heartbeat(
+                claim,
+                lease_seconds=self._attempt_lease_seconds,
+            )
+            if renewed:
+                await self._release_collection(collected.stage_attempt_id)
+            else:
+                await self.reap_stale_attempts()
             return False
 
         claim = await self._scheduler.load_claim(collected.stage_attempt_id)
@@ -151,6 +163,85 @@ class OutboxDispatcher:
             raise RuntimeError("outbox event limit reached before dispatcher became quiet")
         return dispatched, collected
 
+    async def reap_stale_attempts(self, limit: int = 100) -> int:
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        modal_calls: list[str] = []
+        reaped = 0
+        async with self._sessions.begin() as session:
+            now = datetime.now(UTC)
+            rows = (
+                await session.execute(
+                    select(StageAttempt, StageRun)
+                    .join(StageRun, StageRun.id == StageAttempt.stage_run_id)
+                    .where(
+                        StageRun.status == "RUNNING",
+                        StageAttempt.finished_at.is_(None),
+                        StageAttempt.status.in_(
+                            [
+                                "RUNNING",
+                                "DISPATCH_PENDING",
+                                "DISPATCHING",
+                                "DISPATCHED",
+                                "COLLECTING",
+                            ]
+                        ),
+                        StageAttempt.lease_expires_at.is_not(None),
+                        StageAttempt.lease_expires_at <= now,
+                    )
+                    .order_by(StageAttempt.lease_expires_at)
+                    .with_for_update(
+                        of=(StageAttempt, StageRun),
+                        skip_locked=True,
+                    )
+                    .limit(limit)
+                )
+            ).all()
+            for attempt, run in rows:
+                attempt.status = "TIMED_OUT"
+                attempt.termination_reason = "LEASE_EXPIRED"
+                attempt.error_class = "AttemptLeaseExpired"
+                attempt.error_detail = {
+                    "message": "attempt heartbeat lease expired",
+                    "retryable": True,
+                }
+                attempt.finished_at = now
+                if attempt.modal_call_id:
+                    modal_calls.append(attempt.modal_call_id)
+                await session.execute(
+                    update(OutboxEvent)
+                    .where(
+                        OutboxEvent.aggregate_id == run.id,
+                        OutboxEvent.event_type == "stage.dispatch.requested",
+                        OutboxEvent.status.in_(["PENDING", "DISPATCHING", "DISPATCHED"]),
+                        OutboxEvent.payload["stage_attempt_id"].astext
+                        == str(attempt.id),
+                    )
+                    .values(
+                        status="CANCELLED",
+                        published_at=func.coalesce(OutboxEvent.published_at, now),
+                        last_error={"reason": "ATTEMPT_LEASE_EXPIRED"},
+                    )
+                )
+                attempt_count = await session.scalar(
+                    select(func.count(StageAttempt.id)).where(
+                        StageAttempt.stage_run_id == run.id
+                    )
+                )
+                run.lease_owner = None
+                run.lease_expires_at = None
+                run.state_version += 1
+                if (attempt_count or 0) < self._max_stage_attempts:
+                    run.status = "READY"
+                    run.available_at = now + timedelta(seconds=30)
+                else:
+                    run.status = "EXECUTION_FAILED"
+                reaped += 1
+        for modal_call_id in modal_calls:
+            with suppress(Exception):
+                self._gateway.cancel(modal_call_id)
+        return reaped
+
     async def _claim_event(self) -> DispatchEventClaim | None:
         async with self._sessions.begin() as session:
             row = (
@@ -193,6 +284,7 @@ class OutboxDispatcher:
                 event.status = "CANCELLED"
                 event.last_error = {"reason": "CONTROL_OR_DELETION_GATE"}
                 attempt.status = "CANCELLED"
+                attempt.termination_reason = "CONTROL_OR_DELETION_GATE"
                 attempt.finished_at = datetime.now(UTC)
                 if run is not None:
                     _cancel_run(run)
@@ -228,6 +320,7 @@ class OutboxDispatcher:
                 event.status = "CANCELLED"
                 event.last_error = {"reason": "CONTROL_OR_DELETION_GATE", **error}
                 attempt.status = "CANCELLED"
+                attempt.termination_reason = "CONTROL_OR_DELETION_GATE"
                 attempt.finished_at = datetime.now(UTC)
                 _cancel_run(run)
                 return
@@ -240,6 +333,7 @@ class OutboxDispatcher:
                 return
 
             attempt.status = "DISPATCH_FAILED"
+            attempt.termination_reason = "DISPATCH_FAILED"
             attempt.error_class = type(exc).__name__
             attempt.error_detail = {"message": str(exc), "retryable": True}
             attempt.finished_at = datetime.now(UTC)
@@ -307,6 +401,7 @@ class OutboxDispatcher:
                 .where(StageAttempt.id == stage_attempt_id)
                 .values(
                     status="COMMIT_REJECTED",
+                    termination_reason="CONDITIONAL_COMMIT_REJECTED",
                     error_class="ConditionalCommitRejected",
                     error_detail={
                         "message": "stage result failed lease/control/deletion CAS",
@@ -348,6 +443,7 @@ class OutboxDispatcher:
                 event.status = "CANCELLED"
                 event.last_error = {"reason": "PROJECT_DELETION_TOMBSTONE"}
                 attempt.status = "CANCELLED"
+                attempt.termination_reason = "PROJECT_DELETION_TOMBSTONE"
                 attempt.finished_at = datetime.now(UTC)
                 if run.status == "RUNNING":
                     _cancel_run(run)
@@ -384,7 +480,11 @@ class OutboxDispatcher:
                 await session.execute(
                     update(StageAttempt)
                     .where(StageAttempt.id == attempt_id)
-                    .values(status="CANCELLED", finished_at=func.now())
+                    .values(
+                        status="CANCELLED",
+                        termination_reason="PROJECT_DELETION_TOMBSTONE",
+                        finished_at=func.now(),
+                    )
                 )
                 await session.execute(
                     update(StageRun)

@@ -257,6 +257,15 @@ class StageAttempt(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), default="RUNNING")
     modal_call_id: Mapped[str | None] = mapped_column(String(200))
     worker_id: Mapped[str | None] = mapped_column(String(200))
+    runtime_profile_id: Mapped[UUID] = mapped_column(
+        ForeignKey("runtime_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
+    gpu_type: Mapped[str | None] = mapped_column(String(64))
+    lease_owner: Mapped[str | None] = mapped_column(String(200))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    termination_reason: Mapped[str | None] = mapped_column(String(100))
+    billed_gpu_seconds: Mapped[Decimal | None] = mapped_column(Numeric(14, 3))
     lease_token: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), default=uuid4)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

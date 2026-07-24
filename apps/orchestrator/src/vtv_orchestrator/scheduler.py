@@ -1,6 +1,6 @@
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from uuid import UUID, uuid4
@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from vtv_db.governance_tables import runtime_profiles
 from vtv_db.models import (
     AnalysisDocument,
     ArtifactRelease,
@@ -95,6 +96,10 @@ class Scheduler:
                 stage_run_id=row["id"],
                 attempt_no=attempt_no,
                 worker_id=worker_id,
+                runtime_profile_id=row["runtime_profile_uuid"],
+                lease_owner=worker_id,
+                lease_expires_at=row["lease_expires_at"],
+                heartbeat_at=datetime.now(UTC),
                 status="DISPATCH_PENDING" if dispatch_via_outbox else "RUNNING",
             )
             session.add(attempt)
@@ -194,6 +199,56 @@ class Scheduler:
                 model_release_id=run.model_release_id,
                 params=run.params,
             )
+
+    async def heartbeat(
+        self,
+        claim: ClaimedStage,
+        *,
+        lease_seconds: int = 300,
+        gpu_type: str | None = None,
+    ) -> bool:
+        if lease_seconds < 1:
+            raise ValueError("lease_seconds must be positive")
+        async with self._sessions.begin() as session:
+            run = await session.get(StageRun, claim.stage_run_id, with_for_update=True)
+            attempt = await session.get(
+                StageAttempt, claim.stage_attempt_id, with_for_update=True
+            )
+            now = datetime.now(UTC)
+            if (
+                run is None
+                or attempt is None
+                or run.status != "RUNNING"
+                or run.state_version != claim.state_version
+                or attempt.stage_run_id != run.id
+                or attempt.lease_token != claim.lease_token
+                or attempt.status
+                not in {
+                    "RUNNING",
+                    "DISPATCH_PENDING",
+                    "DISPATCHING",
+                    "DISPATCHED",
+                    "COLLECTING",
+                }
+                or run.lease_expires_at is None
+                or run.lease_expires_at <= now
+            ):
+                return False
+            if gpu_type is not None:
+                supported_gpu_types = await session.scalar(
+                    select(runtime_profiles.c.supported_gpu_types).where(
+                        runtime_profiles.c.id == attempt.runtime_profile_id
+                    )
+                )
+                if supported_gpu_types is None or gpu_type not in supported_gpu_types:
+                    raise ValueError("GPU type is incompatible with the runtime profile")
+                attempt.gpu_type = gpu_type
+            expires_at = now + timedelta(seconds=lease_seconds)
+            run.lease_expires_at = expires_at
+            attempt.lease_owner = run.lease_owner
+            attempt.lease_expires_at = expires_at
+            attempt.heartbeat_at = now
+            return True
 
     async def build_job(self, claim: ClaimedStage) -> StageJob:
         async with self._sessions() as session:
@@ -327,6 +382,7 @@ class Scheduler:
                         status="EXECUTION_FAILED",
                         error_class="RIGHTS_BLOCKED",
                         error_detail={"reason": rights_failure, "retryable": False},
+                        termination_reason="RIGHTS_BLOCKED",
                         usage=result.attempt_usage,
                         finished_at=func.now(),
                     )
@@ -419,7 +475,12 @@ class Scheduler:
             await session.execute(
                 update(StageAttempt)
                 .where(StageAttempt.id == claim.stage_attempt_id)
-                .values(status="OUTPUT_READY", usage=result.attempt_usage, finished_at=func.now())
+                .values(
+                    status="OUTPUT_READY",
+                    termination_reason="COMPLETED",
+                    usage=result.attempt_usage,
+                    finished_at=func.now(),
+                )
             )
         # After a successful visual stage commit, check the project-level circuit breaker.
         _VISUAL_ROUTE_STAGES = frozenset({
@@ -736,7 +797,12 @@ class Scheduler:
             await session.execute(
                 update(StageRun)
                 .where(StageRun.id == claim.stage_run_id, StageRun.status == "RUNNING")
-                .values(status="EXECUTION_FAILED", state_version=StageRun.state_version + 1)
+                .values(
+                    status="EXECUTION_FAILED",
+                    state_version=StageRun.state_version + 1,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                )
             )
             await session.execute(
                 update(StageAttempt)
@@ -745,6 +811,7 @@ class Scheduler:
                     status="EXECUTION_FAILED",
                     error_class=result.error_class,
                     error_detail=result.error_detail,
+                    termination_reason=result.error_class or "EXECUTION_FAILED",
                     usage=result.attempt_usage,
                     finished_at=func.now(),
                 )
