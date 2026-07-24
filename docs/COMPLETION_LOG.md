@@ -17,6 +17,15 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P12-B — DINOv3 视觉检索 + Gemini/Qwen3-VL-235B VLM 项目理解
+- 提交：`00ea921`
+- 改动：
+  - `dino_adapter.py`：DINOv3Adapter（embed_image / similarity / retrieve / consistency_score）
+  - `gemini_vlm_adapter.py`：GeminiVLMAdapter，双后端（Gemini 3.1 Pro / Qwen3-VL-235B vLLM），输出 character_relationships / cultural_exposures / entities / plot_events
+  - `__init__.py`：导出两个新适配器
+- 验收：449 tests pass；ruff clean
+- 文档勾选：P12-B ✅
+
 ### 2026-07-24 P12 — 大模型适配器 + Staging + 签名 + 引入流程
 - 提交：`d24735f`
 - 改动：
