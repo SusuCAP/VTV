@@ -7,6 +7,7 @@ import httpx
 from vtv_analysis import (
     AudioAnalysis,
     AudioAnalysisPipeline,
+    ProjectSynthesis,
     VisionAnalysis,
     VisionAnalysisPipeline,
 )
@@ -48,19 +49,29 @@ class InferenceTransport(Protocol):
         payload: dict[str, Any],
     ) -> dict[str, Any]: ...
 
+    def post_json(
+        self,
+        config: ModelEndpoint,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]: ...
+
 
 class HttpxInferenceTransport:
+    @staticmethod
+    def _headers(config: ModelEndpoint) -> dict[str, str]:
+        return (
+            {"Authorization": f"Bearer {config.bearer_token}"}
+            if config.bearer_token
+            else {}
+        )
+
     def post_media(
         self,
         config: ModelEndpoint,
         media: Path,
         payload: dict[str, Any],
     ) -> dict[str, Any]:
-        headers = (
-            {"Authorization": f"Bearer {config.bearer_token}"}
-            if config.bearer_token
-            else {}
-        )
+        headers = self._headers(config)
         try:
             with media.open("rb") as handle:
                 response = httpx.post(
@@ -76,6 +87,28 @@ class HttpxInferenceTransport:
             raise RemoteInferenceError(f"remote inference failed: {type(exc).__name__}") from exc
         if not isinstance(body, dict):
             raise RemoteInferenceError("remote inference response must be a JSON object")
+        return body
+
+    def post_json(
+        self,
+        config: ModelEndpoint,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            response = httpx.post(
+                config.endpoint,
+                headers=self._headers(config),
+                json=payload,
+                timeout=config.timeout_seconds,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise RemoteInferenceError(
+                f"remote synthesis failed: {type(exc).__name__}"
+            ) from exc
+        if not isinstance(body, dict):
+            raise RemoteInferenceError("remote synthesis response must be a JSON object")
         return body
 
 
@@ -137,6 +170,87 @@ class RemoteVisionAnalysisPipeline:
         if abs(analysis.duration_seconds - duration_seconds) > 0.05:
             raise RemoteInferenceError("remote vision analysis duration does not match input")
         return analysis
+
+
+class RemoteProjectSynthesizer:
+    def __init__(self, config: ModelEndpoint, transport: InferenceTransport) -> None:
+        self._config = config
+        self._transport = transport
+
+    @property
+    def model_release(self) -> str:
+        return self._config.release
+
+    def synthesize_series(
+        self,
+        project_id: str,
+        source_locale: str,
+        target_locale: str,
+        episodes: tuple[tuple[str, AudioAnalysis, VisionAnalysis], ...],
+        bible_version: int = 1,
+        anchor_pack_version: int = 1,
+    ) -> ProjectSynthesis:
+        self._config.assert_allowed()
+        if not episodes:
+            raise ValueError("project synthesis requires at least one episode")
+        response = self._transport.post_json(
+            self._config,
+            {
+                "project_id": project_id,
+                "source_locale": source_locale,
+                "target_locale": target_locale,
+                "bible_version": bible_version,
+                "anchor_pack_version": anchor_pack_version,
+                "episodes": [
+                    {
+                        "episode_id": episode_id,
+                        "audio_analysis": audio.model_dump(mode="json"),
+                        "vision_analysis": vision.model_dump(mode="json"),
+                    }
+                    for episode_id, audio, vision in episodes
+                ],
+                "requirements": {
+                    "evidence_required": True,
+                    "allowed_evidence_types": [
+                        "TRANSCRIPT",
+                        "PERSON_TRACK",
+                        "SCENE",
+                        "OCR",
+                        "GEOMETRY",
+                    ],
+                },
+            },
+        )
+        try:
+            synthesis = ProjectSynthesis.model_validate(response["synthesis"])
+        except (KeyError, ValueError) as exc:
+            raise RemoteInferenceError("invalid remote project synthesis response") from exc
+        missing = [
+            f"character:{item.character_id}"
+            for item in synthesis.bible.characters
+            if not item.evidence
+        ]
+        missing.extend(
+            f"location:{item.location_id}"
+            for item in synthesis.bible.locations
+            if not item.evidence
+        )
+        missing.extend(
+            f"glossary:{item.source}"
+            for item in synthesis.bible.glossary
+            if not item.evidence
+        )
+        missing.extend(
+            f"continuity:{item.snapshot_id}"
+            for item in synthesis.continuity
+            if not item.evidence
+        )
+        if missing:
+            raise RemoteInferenceError(
+                "project synthesis contains facts without source evidence: "
+                + ", ".join(missing[:20])
+            )
+        return synthesis
 
 
 class FallbackAudioAnalysisPipeline:

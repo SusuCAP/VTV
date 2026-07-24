@@ -45,6 +45,8 @@ from .synthesis import (
     LocalizationBible,
     LocationProfile,
     ProjectSynthesis,
+    ProjectSynthesisAdapter,
+    SynthesisEvidence,
 )
 from .vision import (
     DeterministicGeometryAdapter,
@@ -102,6 +104,8 @@ __all__ = [
     "PersonAdapter",
     "PersonObservation",
     "ProjectSynthesis",
+    "ProjectSynthesisAdapter",
+    "SynthesisEvidence",
     "PyannoteDiarizationAdapter",
     "RawSpeakerTurn",
     "RawSpeech",

@@ -23,6 +23,7 @@ from .runtime import (
     HttpxInferenceTransport,
     ModelEndpoint,
     RemoteAudioAnalysisPipeline,
+    RemoteProjectSynthesizer,
     RemoteVisionAnalysisPipeline,
 )
 from .worker import AnalysisWorker
@@ -69,13 +70,27 @@ def create_analysis_worker(settings: Settings | None = None) -> AnalysisWorker:
         ),
         transport,
     )
+    synthesis = RemoteProjectSynthesizer(
+        _endpoint(
+            "project synthesis",
+            settings.project_synthesis_endpoint,
+            settings.project_synthesis_release,
+            settings.project_synthesis_license_id,
+            settings.project_synthesis_approved,
+            settings.project_synthesis_token.get_secret_value()
+            if settings.project_synthesis_token
+            else None,
+            settings.model_timeout_seconds,
+        ),
+        transport,
+    )
     if settings.allow_model_fallback:
         audio = FallbackAudioAnalysisPipeline(audio, deterministic.pipeline)
         vision = FallbackVisionAnalysisPipeline(vision, deterministic.vision_pipeline)
     return AnalysisWorker(
         pipeline=audio,
         vision_pipeline=vision,
-        synthesizer=None,
+        synthesizer=synthesis,
     )
 
 
@@ -102,6 +117,8 @@ def create_analysis_worker_for_job(
             if job.stage_type == "ASR_ALIGN" and settings.audio_analysis_token
             else settings.vision_analysis_token.get_secret_value()
             if job.stage_type == "VISION_ANALYSIS" and settings.vision_analysis_token
+            else settings.project_synthesis_token.get_secret_value()
+            if job.stage_type == "PROJECT_SYNTHESIS" and settings.project_synthesis_token
             else None
         ),
         timeout_seconds=settings.model_timeout_seconds,
@@ -125,6 +142,12 @@ def create_analysis_worker_for_job(
             pipeline=deterministic.pipeline,
             vision_pipeline=vision,
             synthesizer=None,
+        )
+    if job.stage_type == "PROJECT_SYNTHESIS":
+        return AnalysisWorker(
+            pipeline=deterministic.pipeline,
+            vision_pipeline=deterministic.vision_pipeline,
+            synthesizer=RemoteProjectSynthesizer(endpoint, transport),
         )
     raise ValueError(f"model runtime cannot be assigned to stage {job.stage_type}")
 

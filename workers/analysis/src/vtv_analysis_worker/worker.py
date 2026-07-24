@@ -12,7 +12,7 @@ from vtv_analysis import (
     DeterministicGeometryAdapter,
     DeterministicOcrAdapter,
     DeterministicPersonAdapter,
-    DeterministicProjectSynthesizer,
+    ProjectSynthesisAdapter,
     DeterministicSceneAdapter,
     DeterministicVad,
     ShotSpan,
@@ -60,7 +60,7 @@ class AnalysisWorker:
             geometry=DeterministicGeometryAdapter(),
         )
     )
-    synthesizer: DeterministicProjectSynthesizer | None = None
+    synthesizer: ProjectSynthesisAdapter | None = None
 
     def execute(self, job: StageJob) -> StageResult:
         if job.stage_type == "PROJECT_SYNTHESIS":

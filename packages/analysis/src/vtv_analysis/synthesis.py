@@ -1,11 +1,28 @@
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .contracts import AudioAnalysis
 from .vision import VisionAnalysis
+
+
+class SynthesisEvidence(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    episode_id: str = Field(min_length=1)
+    source_type: Literal["TRANSCRIPT", "PERSON_TRACK", "SCENE", "OCR", "GEOMETRY"]
+    source_id: str = Field(min_length=1)
+    start_seconds: float = Field(ge=0)
+    end_seconds: float = Field(gt=0)
+    excerpt: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_span(self) -> "SynthesisEvidence":
+        if self.end_seconds <= self.start_seconds:
+            raise ValueError("evidence end_seconds must be after start_seconds")
+        return self
 
 
 class CharacterProfile(BaseModel):
@@ -16,6 +33,7 @@ class CharacterProfile(BaseModel):
     localized_name: str = Field(min_length=1)
     voice_profile_id: str | None = None
     visual_constraints: tuple[str, ...] = ()
+    evidence: tuple[SynthesisEvidence, ...] = ()
 
 
 class LocationProfile(BaseModel):
@@ -25,6 +43,7 @@ class LocationProfile(BaseModel):
     source_scene_ids: tuple[str, ...] = Field(min_length=1)
     localized_name: str = Field(min_length=1)
     visual_constraints: tuple[str, ...] = ()
+    evidence: tuple[SynthesisEvidence, ...] = ()
 
 
 class GlossaryEntry(BaseModel):
@@ -33,6 +52,7 @@ class GlossaryEntry(BaseModel):
     source: str = Field(min_length=1)
     target: str = Field(min_length=1)
     note: str | None = None
+    evidence: tuple[SynthesisEvidence, ...] = ()
 
 
 class LocalizationBible(BaseModel):
@@ -100,6 +120,7 @@ class ContinuitySnapshot(BaseModel):
     location_id: str | None = None
     time_of_day: str | None = None
     characters: tuple[CharacterContinuity, ...] = ()
+    evidence: tuple[SynthesisEvidence, ...] = ()
 
 
 class ProjectSynthesis(BaseModel):
@@ -108,6 +129,21 @@ class ProjectSynthesis(BaseModel):
     bible: LocalizationBible
     anchor_pack: AnchorPack
     continuity: tuple[ContinuitySnapshot, ...]
+
+
+class ProjectSynthesisAdapter(Protocol):
+    @property
+    def model_release(self) -> str: ...
+
+    def synthesize_series(
+        self,
+        project_id: str,
+        source_locale: str,
+        target_locale: str,
+        episodes: tuple[tuple[str, AudioAnalysis, VisionAnalysis], ...],
+        bible_version: int = 1,
+        anchor_pack_version: int = 1,
+    ) -> ProjectSynthesis: ...
 
 
 @dataclass(frozen=True, slots=True)

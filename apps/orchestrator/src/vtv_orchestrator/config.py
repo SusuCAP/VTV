@@ -22,6 +22,8 @@ class ModelRuntimeSettings(BaseSettings):
     asr_adapter_mode: str = "remote"
     # Vision analysis ── "deterministic" | "qwen3_vl" | "remote"
     vision_adapter_mode: str = "remote"
+    # Project-wide evidence-backed localization synthesis
+    project_synthesis_adapter_mode: str = "remote"
     # Segmentation ── "passthrough" | "sam3" | "remote"
     segmentation_adapter_mode: str = "sam3"
     # Visual generation (char/bg replace, full regen) ── "passthrough" | "wan_animate" | "remote"
@@ -66,6 +68,7 @@ def model_runtime_for_stage(stage_type: str, settings: Settings | None = None) -
     _map: dict[str, dict[str, str]] = {
         "ASR_ALIGN": {"adapter_mode": rt.asr_adapter_mode},
         "VISION_ANALYSIS": {"adapter_mode": rt.vision_adapter_mode},
+        "PROJECT_SYNTHESIS": {"adapter_mode": rt.project_synthesis_adapter_mode},
         "VISUAL_CHARACTER_REPLACE": {
             "adapter_mode": rt.visual_generation_adapter_mode,
             "segmentation_adapter_mode": rt.segmentation_adapter_mode,

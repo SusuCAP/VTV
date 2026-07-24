@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     vision_analysis_license_id: str | None = None
     vision_analysis_approved: bool = False
     vision_analysis_token: SecretStr | None = None
+    project_synthesis_endpoint: str | None = None
+    project_synthesis_release: str | None = None
+    project_synthesis_license_id: str | None = None
+    project_synthesis_approved: bool = False
+    project_synthesis_token: SecretStr | None = None
     model_timeout_seconds: float = 600
     whisper_model_name: str = "large-v3"
     whisper_device: str = "cuda"
