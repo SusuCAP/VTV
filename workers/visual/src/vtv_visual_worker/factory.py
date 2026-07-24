@@ -94,6 +94,26 @@ def create_worker_for_job(job: StageJob) -> VisualProductionWorker:
         character_replace = WanAnimateAdapter()
         background_replace = WanAnimateAdapter()  # also handles D until a VACE adapter ships
         full_regen = WanAnimateAdapter()
+    elif gen_mode == "mocha":
+        from vtv_production.mocha_adapter import MoChaAdapter
+        character_replace = MoChaAdapter()
+        background_replace = MoChaAdapter()
+        full_regen = MoChaAdapter()
+    elif gen_mode == "hunyuan_custom":
+        from vtv_production.hunyuan_custom_adapter import HunyuanCustomAdapter
+        character_replace = HunyuanCustomAdapter()
+        background_replace = HunyuanCustomAdapter()
+        full_regen = HunyuanCustomAdapter()
+    elif gen_mode == "vace":
+        from vtv_production.vace_adapter import VACEAdapter
+        character_replace = VACEAdapter()
+        background_replace = VACEAdapter()
+        full_regen = VACEAdapter()
+    elif gen_mode == "ltx23":
+        from vtv_production.ltx23_adapter import LTX23Adapter
+        character_replace = LTX23Adapter()
+        background_replace = LTX23Adapter()
+        full_regen = LTX23Adapter()
     else:
         character_replace = PassthroughVisualGenerationAdapter(route_handled="C")
         background_replace = PassthroughVisualGenerationAdapter(route_handled="D")

@@ -89,6 +89,26 @@ jobs:
       - name: Integration tests
         run: uv run pytest tests/integration -q --tb=short
 
+  staging-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python dependencies
+        run: uv sync --all-packages --locked
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Unit tests (no DB)
+        run: uv run pytest tests/unit -q --tb=short
+    # Placeholder: real staging deploy requires Modal secrets configured in repo settings
+
   mac-client-web:
     runs-on: ubuntu-latest
     steps:
