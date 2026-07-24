@@ -220,6 +220,9 @@ class StageRun(TimestampMixin, Base):
         ForeignKey("model_releases.id", ondelete="SET NULL")
     )
     runtime_profile_id: Mapped[str] = mapped_column(String(100))
+    runtime_profile_uuid: Mapped[UUID] = mapped_column(
+        ForeignKey("runtime_profiles.id", ondelete="RESTRICT"), nullable=False
+    )
     state_version: Mapped[int] = mapped_column(BigInteger, default=1)
     observed_control_version: Mapped[int] = mapped_column(BigInteger)
     priority: Mapped[int] = mapped_column(Integer, default=0)
