@@ -11,11 +11,18 @@ ok()  { echo -e "${G}✓${D} $*"; }
 bad() { echo -e "${R}✗${D} $*" >&2; exit 1; }
 log() { echo -e "${C}▶${D} $*"; }
 
-DB_URL="${VTV_DATABASE_URL:-postgresql+asyncpg://vtv:vtv@127.0.0.1:5432/vtv}"
-S3_EP="${VTV_S3_ENDPOINT:-http://127.0.0.1:9000}"
-S3_KEY="${VTV_S3_ACCESS_KEY:-vtv}"
-S3_SEC="${VTV_S3_SECRET_KEY:-change-me-in-non-local-environments}"
-S3_BKT="${VTV_S3_BUCKET:-vtv-local}"
+: "${VTV_DATABASE_URL:?Set VTV_DATABASE_URL before starting VTV}"
+: "${VTV_S3_ENDPOINT:?Set VTV_S3_ENDPOINT before starting VTV}"
+: "${VTV_S3_ACCESS_KEY:?Set VTV_S3_ACCESS_KEY before starting VTV}"
+: "${VTV_S3_SECRET_KEY:?Set VTV_S3_SECRET_KEY before starting VTV}"
+: "${VTV_S3_BUCKET:?Set VTV_S3_BUCKET before starting VTV}"
+: "${VTV_API_KEY:?Set VTV_API_KEY before starting VTV}"
+: "${VITE_WORKSPACE_ID:?Set VITE_WORKSPACE_ID before starting VTV}"
+DB_URL="$VTV_DATABASE_URL"
+S3_EP="$VTV_S3_ENDPOINT"
+S3_KEY="$VTV_S3_ACCESS_KEY"
+S3_SEC="$VTV_S3_SECRET_KEY"
+S3_BKT="$VTV_S3_BUCKET"
 export MODAL_DISABLE_API_PROXY=1
 
 echo ""
@@ -30,8 +37,7 @@ ok "PostgreSQL :5432  MinIO :9000"
 
 # ── 2. 迁移 ──────────────────────────────────────────────────────────────────
 log "数据库迁移"
-uv run python scripts/apply_migrations.py "$DB_URL" 2>&1 \
-  | grep -v "already exists" | grep -v "^$" | tail -3 || true
+uv run python scripts/apply_migrations.py "$DB_URL"
 ok "迁移完成"
 
 # ── 3. MinIO Bucket ───────────────────────────────────────────────────────────
@@ -47,7 +53,7 @@ log "控制 API"
 pkill -f "vtv_control_api.app:app" 2>/dev/null || true
 # 找可用端口
 for PORT in 8001 8002 8003; do
-  python3 -c "import socket; s=socket.socket(); s.bind(('',${PORT})); s.close()" 2>/dev/null && break
+  uv run python -c "import socket; s=socket.socket(); s.bind(('',${PORT})); s.close()" 2>/dev/null && break
 done
 nohup uv run uvicorn vtv_control_api.app:app \
   --host 127.0.0.1 --port "$PORT" --log-level warning \
@@ -101,9 +107,16 @@ ok "编排器已启动"
 # ── 7. Web 前端 ───────────────────────────────────────────────────────────────
 log "Web 前端"
 pkill -f "vite.*mac-client\|vite.*5173\|vite.*5174" 2>/dev/null || true; sleep 0.3
-VITE_CONTROL_API_BASE_URL="http://127.0.0.1:${PORT}" \
-  nohup npm --workspace @vtv/mac-client run dev \
-  > /tmp/vtv-frontend.log 2>&1 & echo $! > /tmp/vtv-frontend.pid
+PACKAGE_MANAGER="npm"
+command -v cnpm >/dev/null 2>&1 && PACKAGE_MANAGER="cnpm"
+if [[ "$PACKAGE_MANAGER" == "cnpm" ]]; then
+  (cd apps/mac-client && VITE_CONTROL_API_BASE_URL="http://127.0.0.1:${PORT}" \
+    nohup cnpm run dev > /tmp/vtv-frontend.log 2>&1 & echo $! > /tmp/vtv-frontend.pid)
+else
+  VITE_CONTROL_API_BASE_URL="http://127.0.0.1:${PORT}" \
+    nohup npm --workspace @vtv/mac-client run dev \
+    > /tmp/vtv-frontend.log 2>&1 & echo $! > /tmp/vtv-frontend.pid
+fi
 printf "  等待就绪"
 FPORT=""
 for i in $(seq 20); do
