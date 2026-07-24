@@ -13,6 +13,57 @@ CLAIM_READY_STAGE = text(
         AND NOT ec.cancel_requested
         AND NOT ec.hard_budget_blocked
         AND ec.control_version = sr.observed_control_version
+        AND (
+          sr.model_release_id IS NULL
+          OR EXISTS (
+            SELECT 1
+            FROM model_releases mr
+            JOIN model_access_profiles map ON map.model_release_id = mr.id
+            JOIN runtime_profiles rp ON rp.id = map.runtime_profile_id
+            JOIN benchmark_releases br
+              ON br.id = mr.approved_benchmark_release_id
+             AND br.model_release_id = mr.id
+             AND br.approved
+            WHERE mr.id = sr.model_release_id
+              AND mr.license_status = 'APPROVED'
+              AND mr.lifecycle_status IN ('APPROVED_PRIMARY', 'APPROVED_STABLE')
+              AND map.profile_version = (
+                SELECT max(latest.profile_version)
+                FROM model_access_profiles latest
+                WHERE latest.model_release_id = mr.id
+              )
+              AND map.availability_status = 'AVAILABLE'
+              AND map.self_test_status = 'PASS'
+              AND map.rollback_verified
+              AND map.verified_at IS NOT NULL
+              AND map.source_url IS NOT NULL
+              AND btrim(map.source_url) <> ''
+              AND map.launch_command IS NOT NULL
+              AND btrim(map.launch_command) <> ''
+              AND map.runtime_profile_id = sr.runtime_profile_uuid
+              AND map.image_digest = rp.image_digest
+              AND rp.image_digest IS NOT NULL
+              AND rp.validated_at IS NOT NULL
+              AND rp.framework_versions <> '{}'::jsonb
+              AND map.required_packages <> '[]'::jsonb
+              AND map.reproducibility_config ->> 'runtime_fingerprint'
+                    = br.runtime_fingerprint
+              AND (
+                (
+                  map.access_kind = 'LOCAL_WEIGHTS'
+                  AND map.code_commit IS NOT NULL
+                  AND map.weight_download_url IS NOT NULL
+                  AND map.weight_sha256 = br.weights_sha256
+                  AND map.checkpoint_filename IS NOT NULL
+                )
+                OR (
+                  map.access_kind = 'REMOTE_API'
+                  AND map.provider_model_id IS NOT NULL
+                  AND map.provider_lifecycle IN ('PREVIEW', 'GA', 'DEPRECATED')
+                )
+              )
+          )
+        )
         AND NOT EXISTS (
           SELECT 1 FROM deletion_tombstones dt
           WHERE dt.resource_type = 'project' AND dt.resource_id = sr.project_id

@@ -63,7 +63,13 @@ from vtv_schemas.enums import JobStatus, ProjectStatus
 from vtv_schemas.episodes import EpisodeRead
 from vtv_schemas.health import SystemMetrics
 from vtv_schemas.jobs import JobProgress, JobRead, JobSummary, ProduceRequest
-from vtv_schemas.model_releases import ModelReleaseCreate, ModelReleaseRead
+from vtv_schemas.model_releases import (
+    ModelAccessProfileCreate,
+    ModelAccessProfileRead,
+    ModelLifecycleUpdate,
+    ModelReleaseCreate,
+    ModelReleaseRead,
+)
 from vtv_schemas.production import (
     DubbingJobCreate,
     DubbingUtteranceCreate,
@@ -81,6 +87,7 @@ from vtv_schemas.rights import (
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_INGEST_DAG, build_project_analysis_dag
+from .governance_tables import model_access_profiles, runtime_profiles
 from .model_registry import (
     AutomationStatus,
     InvalidModelReleaseTransitionError,
@@ -524,6 +531,26 @@ class ProjectRepository(Protocol):
     async def list_model_releases(
         self, workspace_id: UUID, model_key: str | None = None
     ) -> list[ModelReleaseRead]: ...
+
+    async def create_model_access_profile(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        payload: ModelAccessProfileCreate,
+    ) -> ModelAccessProfileRead: ...
+
+    async def list_model_access_profiles(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+    ) -> list[ModelAccessProfileRead]: ...
+
+    async def update_model_lifecycle(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        payload: ModelLifecycleUpdate,
+    ) -> ModelReleaseRead: ...
 
     async def review_model_license(
         self,
@@ -1176,6 +1203,182 @@ class SqlAlchemyProjectRepository:
             )
             return [_model_release_read(release) for release in releases]
 
+    async def create_model_access_profile(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        payload: ModelAccessProfileCreate,
+    ) -> ModelAccessProfileRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, release_id)
+            runtime = (
+                await session.execute(
+                    select(runtime_profiles).where(
+                        runtime_profiles.c.id == payload.runtime_profile_id
+                    )
+                )
+            ).mappings().one_or_none()
+            if runtime is None:
+                raise ProjectNotFoundError(payload.runtime_profile_id)
+            if (
+                payload.image_digest is not None
+                and runtime["image_digest"] is not None
+                and payload.image_digest != runtime["image_digest"]
+            ):
+                raise ModelReleaseConflictError(
+                    "access profile image digest does not match runtime profile"
+                )
+            profile_id = self._id_factory()
+            values = {
+                "id": profile_id,
+                "model_release_id": release.id,
+                "profile_version": payload.profile_version,
+                "access_kind": payload.access_kind,
+                "source_url": str(payload.source_url),
+                "code_commit": payload.code_commit,
+                "runtime_profile_id": payload.runtime_profile_id,
+                "image_digest": payload.image_digest,
+                "weight_download_url": (
+                    str(payload.weight_download_url)
+                    if payload.weight_download_url is not None
+                    else None
+                ),
+                "weight_sha256": payload.weight_sha256,
+                "checkpoint_filename": payload.checkpoint_filename,
+                "launch_command": payload.launch_command,
+                "provider_model_id": payload.provider_model_id,
+                "provider_lifecycle": payload.provider_lifecycle,
+                "required_packages": payload.required_packages,
+                "min_cuda_version": payload.min_cuda_version,
+                "min_vram_gib": payload.min_vram_gib,
+                "reproducibility_config": payload.reproducibility_config,
+                "availability_status": payload.availability_status,
+                "self_test_status": payload.self_test_status,
+                "rollback_verified": payload.rollback_verified,
+                "verified_at": payload.verified_at,
+            }
+            try:
+                row = (
+                    await session.execute(
+                        insert(model_access_profiles).values(**values).returning(
+                            model_access_profiles
+                        )
+                    )
+                ).mappings().one()
+            except IntegrityError as exc:
+                raise ModelReleaseConflictError(
+                    "model access profile version already exists"
+                ) from exc
+            if payload.availability_status == "AVAILABLE":
+                reasons = await _model_access_gate_reasons(session, release)
+                if reasons:
+                    raise ModelReleaseConflictError(
+                        "model access profile failed reproducibility gate: "
+                        + ", ".join(reasons)
+                    )
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="model_release",
+                    aggregate_id=release.id,
+                    event_type="model_access_profile.created",
+                    dedupe_key=(
+                        f"model_access_profile.created:{release.id}:"
+                        f"v{payload.profile_version}"
+                    ),
+                    payload={
+                        "release_id": str(release.id),
+                        "access_profile_id": str(profile_id),
+                        "profile_version": payload.profile_version,
+                        "availability_status": payload.availability_status,
+                    },
+                )
+            )
+            return _model_access_profile_read(row)
+
+    async def list_model_access_profiles(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+    ) -> list[ModelAccessProfileRead]:
+        async with self._sessions() as session:
+            release_exists = await session.scalar(
+                select(ModelRelease.id).where(
+                    ModelRelease.id == release_id,
+                    ModelRelease.workspace_id == workspace_id,
+                )
+            )
+            if release_exists is None:
+                raise ProjectNotFoundError(release_id)
+            rows = (
+                await session.execute(
+                    select(model_access_profiles)
+                    .where(model_access_profiles.c.model_release_id == release_id)
+                    .order_by(model_access_profiles.c.profile_version.desc())
+                )
+            ).mappings()
+            return [_model_access_profile_read(row) for row in rows]
+
+    async def update_model_lifecycle(
+        self,
+        workspace_id: UUID,
+        release_id: UUID,
+        payload: ModelLifecycleUpdate,
+    ) -> ModelReleaseRead:
+        async with self._sessions.begin() as session:
+            release = await _locked_model_release(session, workspace_id, release_id)
+            if release.state_version != payload.expected_state_version:
+                raise ModelReleaseConflictError("model release state version mismatch")
+            allowed = {
+                "EXPERIMENTAL": {"CANDIDATE", "RETIRED"},
+                "CANDIDATE": {
+                    "APPROVED_PRIMARY",
+                    "APPROVED_STABLE",
+                    "RETIRED",
+                },
+                "APPROVED_PRIMARY": {"APPROVED_STABLE", "RETIRED"},
+                "APPROVED_STABLE": {"RETIRED"},
+                "RETIRED": set(),
+            }
+            if payload.target not in allowed[release.lifecycle_status]:
+                raise ModelReleaseConflictError(
+                    "invalid model lifecycle transition "
+                    f"{release.lifecycle_status} -> {payload.target}"
+                )
+            if payload.target == "CANDIDATE":
+                profile = await _latest_model_access_profile(session, release.id)
+                if profile is None:
+                    raise ModelReleaseConflictError(
+                        "candidate model requires an access profile snapshot"
+                    )
+            if payload.target in {"APPROVED_PRIMARY", "APPROVED_STABLE"}:
+                if release.license_status != "APPROVED":
+                    raise ModelReleaseConflictError("model license is not approved")
+                if release.approved_benchmark_release_id is None:
+                    raise ModelReleaseConflictError(
+                        "model release has no approved benchmark"
+                    )
+                reasons = await _model_access_gate_reasons(session, release)
+                if reasons:
+                    raise ModelReleaseConflictError(
+                        "model reproducibility gate failed: " + ", ".join(reasons)
+                    )
+            release.lifecycle_status = payload.target
+            release.state_version += 1
+            if payload.target == "RETIRED":
+                release.automation_status = "DISABLED"
+                release.traffic_percent = 0
+            release.updated_at = datetime.now(UTC)  # prevent lazy-load of onupdate column
+            _add_model_release_event(
+                session,
+                workspace_id,
+                release,
+                "model_release.lifecycle_changed",
+                {"actor_id": str(payload.actor_id)},
+            )
+            await session.flush()
+            return _model_release_read(release)
+
     async def review_model_license(
         self,
         workspace_id: UUID,
@@ -1213,6 +1416,13 @@ class SqlAlchemyProjectRepository:
             release = await _locked_model_release(session, workspace_id, release_id)
             target_status = AutomationStatus(target)
             if target_status in {AutomationStatus.CANARY, AutomationStatus.ACTIVE}:
+                if release.lifecycle_status not in {
+                    "APPROVED_PRIMARY",
+                    "APPROVED_STABLE",
+                }:
+                    raise ModelReleaseConflictError(
+                        "model lifecycle is not approved for automated traffic"
+                    )
                 approved_benchmark = await session.scalar(
                     select(BenchmarkRelease.id).where(
                         BenchmarkRelease.id == release.approved_benchmark_release_id,
@@ -1224,6 +1434,12 @@ class SqlAlchemyProjectRepository:
                 if approved_benchmark is None:
                     raise ModelReleaseConflictError(
                         "model release has no valid approved benchmark release"
+                    )
+                access_failures = await _model_access_gate_reasons(session, release)
+                if access_failures:
+                    raise ModelReleaseConflictError(
+                        "model reproducibility gate failed: "
+                        + ", ".join(access_failures)
                     )
             others = list(
                 await session.scalars(
@@ -1311,6 +1527,19 @@ class SqlAlchemyProjectRepository:
             if approved_benchmark is None:
                 raise ModelReleaseConflictError(
                     "model release has no valid approved benchmark release"
+                )
+            if release.lifecycle_status not in {
+                "APPROVED_PRIMARY",
+                "APPROVED_STABLE",
+            }:
+                raise ModelReleaseConflictError(
+                    "model lifecycle is not approved for automated traffic"
+                )
+            access_failures = await _model_access_gate_reasons(session, release)
+            if access_failures:
+                raise ModelReleaseConflictError(
+                    "model reproducibility gate failed: "
+                    + ", ".join(access_failures)
                 )
             others = list(
                 await session.scalars(
@@ -6025,6 +6254,7 @@ def _model_release_read(release: ModelRelease) -> ModelReleaseRead:
         license_id=release.license_id,
         license_status=release.license_status,
         automation_status=release.automation_status,
+        lifecycle_status=release.lifecycle_status,
         traffic_percent=release.traffic_percent,
         state_version=release.state_version,
         model_card_uri=release.model_card_uri,
@@ -6064,6 +6294,7 @@ def _add_model_release_event(
     workspace_id: UUID,
     release: ModelRelease,
     event_type: str,
+    extra: dict | None = None,
 ) -> None:
     session.add(
         OutboxEvent(
@@ -6071,12 +6302,15 @@ def _add_model_release_event(
             aggregate_type="model_release",
             aggregate_id=release.id,
             event_type=event_type,
+            dedupe_key=f"{event_type}:{release.id}:v{release.state_version}",
             payload={
                 "release_id": str(release.id),
                 "model_key": release.model_key,
                 "license_status": str(release.license_status),
                 "automation_status": str(release.automation_status),
+                "lifecycle_status": str(release.lifecycle_status),
                 "traffic_percent": release.traffic_percent,
+                **(extra or {}),
             },
         )
     )
@@ -6095,6 +6329,9 @@ async def _select_model_release(
                 ModelRelease.workspace_id == workspace_id,
                 ModelRelease.model_key == model_key,
                 ModelRelease.license_status == "APPROVED",
+                ModelRelease.lifecycle_status.in_(
+                    ("APPROVED_PRIMARY", "APPROVED_STABLE")
+                ),
                 ModelRelease.automation_status.in_(("CANARY", "ACTIVE")),
             )
             .with_for_update()
@@ -6106,9 +6343,181 @@ async def _select_model_release(
     canary = [item for item in candidates if item.automation_status == "CANARY"]
     if len(active) > 1 or len(canary) > 1:
         raise ModelReleaseConflictError(f"conflicting traffic releases exist for {model_key}")
-    if canary and canary_receives_job(job_id, model_key, canary[0].traffic_percent):
-        return canary[0]
-    return active[0] if active else None
+    selected = (
+        canary[0]
+        if canary and canary_receives_job(job_id, model_key, canary[0].traffic_percent)
+        else (active[0] if active else None)
+    )
+    if selected is None:
+        return None
+    if not await _model_access_gate_reasons(session, selected):
+        return selected
+    if (
+        selected.automation_status == "CANARY"
+        and active
+        and not await _model_access_gate_reasons(session, active[0])
+    ):
+        return active[0]
+    visited: set[UUID] = {selected.id}
+    fallback_id = selected.fallback_release_id
+    while fallback_id is not None and fallback_id not in visited:
+        visited.add(fallback_id)
+        fallback = await session.scalar(
+            select(ModelRelease).where(
+                ModelRelease.id == fallback_id,
+                ModelRelease.workspace_id == workspace_id,
+                ModelRelease.model_key == model_key,
+                ModelRelease.license_status == "APPROVED",
+                ModelRelease.lifecycle_status.in_(
+                    ("APPROVED_PRIMARY", "APPROVED_STABLE")
+                ),
+            )
+        )
+        if fallback is None:
+            return None
+        if not await _model_access_gate_reasons(session, fallback):
+            return fallback
+        fallback_id = fallback.fallback_release_id
+    return None
+
+
+async def _latest_model_access_profile(
+    session: AsyncSession,
+    model_release_id: UUID,
+):
+    return (
+        await session.execute(
+            select(model_access_profiles)
+            .where(model_access_profiles.c.model_release_id == model_release_id)
+            .order_by(model_access_profiles.c.profile_version.desc())
+            .limit(1)
+        )
+    ).mappings().one_or_none()
+
+
+async def _model_access_gate_reasons(
+    session: AsyncSession,
+    release: ModelRelease,
+) -> list[str]:
+    profile = await _latest_model_access_profile(session, release.id)
+    if profile is None:
+        return ["ACCESS_PROFILE_MISSING"]
+    failures: list[str] = []
+    if profile["availability_status"] != "AVAILABLE":
+        failures.append("MODEL_NOT_AVAILABLE")
+    if profile["self_test_status"] != "PASS":
+        failures.append("SELF_TEST_NOT_PASSED")
+    if not profile["rollback_verified"]:
+        failures.append("ROLLBACK_NOT_VERIFIED")
+    if profile["verified_at"] is None:
+        failures.append("ACCESS_PROFILE_NOT_VERIFIED")
+    if not profile["source_url"]:
+        failures.append("SOURCE_URL_MISSING")
+    if not profile["launch_command"]:
+        failures.append("LAUNCH_COMMAND_MISSING")
+    if not profile["required_packages"]:
+        failures.append("DEPENDENCY_LOCK_MISSING")
+    runtime_fingerprint = (profile["reproducibility_config"] or {}).get(
+        "runtime_fingerprint"
+    )
+    if not runtime_fingerprint:
+        failures.append("RUNTIME_FINGERPRINT_MISSING")
+
+    runtime = None
+    if profile["runtime_profile_id"] is None:
+        failures.append("RUNTIME_PROFILE_MISSING")
+    else:
+        runtime = (
+            await session.execute(
+                select(runtime_profiles).where(
+                    runtime_profiles.c.id == profile["runtime_profile_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        if runtime is None:
+            failures.append("RUNTIME_PROFILE_MISSING")
+        else:
+            if not runtime["image_digest"]:
+                failures.append("RUNTIME_IMAGE_DIGEST_MISSING")
+            elif profile["image_digest"] != runtime["image_digest"]:
+                failures.append("RUNTIME_IMAGE_DIGEST_MISMATCH")
+            if runtime["validated_at"] is None:
+                failures.append("RUNTIME_PROFILE_NOT_VALIDATED")
+            if not runtime["framework_versions"]:
+                failures.append("FRAMEWORK_LOCK_MISSING")
+            if _version_tuple(runtime["minimum_cuda_version"]) < _version_tuple(
+                profile["min_cuda_version"]
+            ):
+                failures.append("CUDA_VERSION_INCOMPATIBLE")
+
+    if profile["access_kind"] == "LOCAL_WEIGHTS":
+        for field, reason in (
+            ("code_commit", "CODE_COMMIT_MISSING"),
+            ("weight_download_url", "WEIGHT_URL_MISSING"),
+            ("weight_sha256", "WEIGHT_SHA256_MISSING"),
+            ("checkpoint_filename", "CHECKPOINT_FILENAME_MISSING"),
+        ):
+            if not profile[field]:
+                failures.append(reason)
+    elif profile["access_kind"] == "REMOTE_API":
+        if not profile["provider_model_id"]:
+            failures.append("PROVIDER_MODEL_ID_MISSING")
+        if not profile["provider_lifecycle"]:
+            failures.append("PROVIDER_LIFECYCLE_MISSING")
+    else:
+        failures.append("ACCESS_KIND_INVALID")
+
+    benchmark = None
+    if release.approved_benchmark_release_id is not None:
+        benchmark = await session.get(
+            BenchmarkRelease, release.approved_benchmark_release_id
+        )
+    if benchmark is None or not benchmark.approved:
+        failures.append("APPROVED_BENCHMARK_MISSING")
+    else:
+        if (
+            profile["access_kind"] == "LOCAL_WEIGHTS"
+            and profile["weight_sha256"] != benchmark.weights_sha256
+        ):
+            failures.append("BENCHMARK_WEIGHT_MISMATCH")
+        if runtime_fingerprint != benchmark.runtime_fingerprint:
+            failures.append("BENCHMARK_RUNTIME_MISMATCH")
+    return failures
+
+
+def _model_access_profile_read(row) -> ModelAccessProfileRead:
+    return ModelAccessProfileRead(
+        id=row["id"],
+        model_release_id=row["model_release_id"],
+        profile_version=row["profile_version"],
+        access_kind=row["access_kind"],
+        source_url=row["source_url"],
+        code_commit=row["code_commit"],
+        runtime_profile_id=row["runtime_profile_id"],
+        image_digest=row["image_digest"],
+        weight_download_url=row["weight_download_url"],
+        weight_sha256=row["weight_sha256"],
+        checkpoint_filename=row["checkpoint_filename"],
+        provider_model_id=row["provider_model_id"],
+        provider_lifecycle=row["provider_lifecycle"],
+        required_packages=row["required_packages"],
+        min_cuda_version=row["min_cuda_version"],
+        min_vram_gib=row["min_vram_gib"],
+        launch_command=row["launch_command"],
+        reproducibility_config=row["reproducibility_config"],
+        availability_status=row["availability_status"],
+        self_test_status=row["self_test_status"],
+        rollback_verified=row["rollback_verified"],
+        verified_at=row["verified_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in value.split("."))
+    except ValueError:
+        return (0,)
 
 
 async def _invalidate_release_graph(

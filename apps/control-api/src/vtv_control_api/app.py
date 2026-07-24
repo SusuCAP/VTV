@@ -64,7 +64,10 @@ from vtv_schemas.health import HealthCheckResult, HealthReport, SystemMetrics
 from vtv_schemas.jobs import JobAccepted, JobProgress, JobRead, JobSummary, ProduceRequest
 from vtv_schemas.model_hotupdate import ModelHotUpdateConfig
 from vtv_schemas.model_releases import (
+    ModelAccessProfileCreate,
+    ModelAccessProfileRead,
     ModelAutomationUpdate,
+    ModelLifecycleUpdate,
     ModelLicenseReview,
     ModelReleaseCreate,
     ModelReleaseRead,
@@ -331,6 +334,55 @@ def create_app(
         model_key: Annotated[str | None, Query(max_length=64)] = None,
     ) -> list[ModelReleaseRead]:
         return await repo.list_model_releases(workspace, model_key)
+
+    @app.post(
+        "/v1/model-releases/{release_id}/access-profiles",
+        response_model=ModelAccessProfileRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_model_access_profile(
+        release_id: UUID,
+        payload: ModelAccessProfileCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelAccessProfileRead:
+        try:
+            return await repo.create_model_access_profile(workspace, release_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(
+                status_code=404,
+                detail="model release or runtime profile not found",
+            ) from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(
+        "/v1/model-releases/{release_id}/access-profiles",
+        response_model=list[ModelAccessProfileRead],
+    )
+    async def list_model_access_profiles(
+        release_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> list[ModelAccessProfileRead]:
+        try:
+            return await repo.list_model_access_profiles(workspace, release_id)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+
+    @app.post(
+        "/v1/model-releases/{release_id}/lifecycle",
+        response_model=ModelReleaseRead,
+    )
+    async def update_model_lifecycle(
+        release_id: UUID,
+        payload: ModelLifecycleUpdate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> ModelReleaseRead:
+        try:
+            return await repo.update_model_lifecycle(workspace, release_id, payload)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="model release not found") from exc
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(
         "/v1/model-releases/{release_id}/benchmarks",

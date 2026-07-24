@@ -546,6 +546,13 @@ class ModelRelease(TimestampMixin, Base):
             name="ck_model_releases_automation_status",
         ),
         CheckConstraint(
+            "lifecycle_status IN ("
+            "'EXPERIMENTAL', 'CANDIDATE', 'APPROVED_PRIMARY', "
+            "'APPROVED_STABLE', 'RETIRED'"
+            ")",
+            name="ck_model_releases_lifecycle_status",
+        ),
+        CheckConstraint(
             "traffic_percent BETWEEN 0 AND 100",
             name="ck_model_releases_traffic_percent",
         ),
@@ -568,6 +575,7 @@ class ModelRelease(TimestampMixin, Base):
     license_id: Mapped[str] = mapped_column(String(200))
     license_status: Mapped[str] = mapped_column(String(32), default="REVIEW")
     automation_status: Mapped[str] = mapped_column(String(32), default="OBSERVE")
+    lifecycle_status: Mapped[str] = mapped_column(String(32), default="EXPERIMENTAL")
     traffic_percent: Mapped[int] = mapped_column(Integer, default=0)
     state_version: Mapped[int] = mapped_column(BigInteger, default=1)
     model_card_uri: Mapped[str] = mapped_column(Text)
