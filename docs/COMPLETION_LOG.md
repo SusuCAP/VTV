@@ -17,7 +17,14 @@
 
 <!-- 新记录追加到此处以下 -->
 
-### 2026-07-24 P10-A — 项目暂停 / 恢复 / 取消端点
+### 2026-07-24 P10-B — Modal 并发控制
+- 提交：`657ea4c`
+- 改动：5 个 Modal App 均加入 `max_containers` / `scaledown_window=300` / `buffer_containers`
+  - analysis/audio/production：max_containers=4, buffer=1（L4/L40S GPU）
+  - visual：max_containers=8, buffer=1（视觉生成最重池）
+  - assemble：max_containers=8, buffer=0（CPU-only，无需保温）
+- 验收：ruff clean；449 tests pass；`modal deploy` 后 Dashboard 可见并发上限
+- 文档勾选：`docs/REMAINING_WORK.md` P10-B ✅
 - 提交：`23092ce`
 - 改动：
   - `repository.py`：Protocol stubs + `SqlAlchemyProjectRepository` 实现 `pause_project` / `resume_project` / `cancel_project`；更新 `ExecutionControl.paused` / `cancel_requested` / `control_version`；写 Outbox 事件
