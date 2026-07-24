@@ -94,7 +94,12 @@ from vtv_schemas.uploads import (
     UploadRead,
 )
 from vtv_schemas.webhook import WebhookConfig, WebhookCreate
-from vtv_storage import ObjectStoreAdapter, UploadIntegrityError, UploadNotFoundError
+from vtv_storage import (
+    MemoryObjectStore,
+    ObjectStoreAdapter,
+    UploadIntegrityError,
+    UploadNotFoundError,
+)
 
 from .config import get_settings
 from .database import create_repository
@@ -211,7 +216,9 @@ def create_app(
         allow_headers=["Content-Type", "X-Workspace-Id", "Authorization"],
     )
     repo = repository or create_repository(settings)
-    storage = object_store or create_object_store(settings)
+    storage = object_store or (
+        MemoryObjectStore() if repository is not None else create_object_store(settings)
+    )
     app.state.repository = repo
     app.state.object_store = storage
     # In-memory repositories are only an explicit test/contract injection.
@@ -701,7 +708,10 @@ def create_app(
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> DeliveryPackage:
         try:
-            return await repo.get_delivery_package(workspace, delivery_id)
+            package = await repo.get_delivery_package(workspace, delivery_id)
+            for asset in package.assets:
+                asset.download_url = storage.presign_download(object_uri=asset.object_uri)
+            return package
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="delivery not found") from exc
         except DeliveryConflictError as exc:

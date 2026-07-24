@@ -30,6 +30,8 @@ class StoredObject:
 class ObjectStoreAdapter(Protocol):
     def uri_for(self, object_key: str) -> str: ...
 
+    def presign_download(self, *, object_uri: str) -> str: ...
+
     def create_multipart(
         self,
         *,

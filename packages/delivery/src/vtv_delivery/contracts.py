@@ -278,7 +278,7 @@ class DeliveryPackageAsset(BaseModel):
     sha256: str
     size_bytes: int
     content_type: str
-    download_url: str  # 15-minute presigned URL (passthrough: object_uri itself)
+    download_url: str  # short-lived presigned URL
 
 
 class DeliveryPackage(BaseModel):

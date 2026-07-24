@@ -6,7 +6,10 @@ from .config import Settings
 
 def create_object_store(settings: Settings) -> ObjectStoreAdapter:
     if not settings.s3_endpoint:
-        return MemoryObjectStore()
+        raise RuntimeError(
+            "VTV_S3_ENDPOINT is required; configure an S3-compatible object store "
+            "before starting the control API"
+        )
     if not settings.s3_access_key or not settings.s3_secret_key:
         raise ValueError("S3 access key and secret key are required when VTV_S3_ENDPOINT is set")
     client = boto3.client(

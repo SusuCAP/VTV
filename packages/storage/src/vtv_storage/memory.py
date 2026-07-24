@@ -14,6 +14,9 @@ class MemoryObjectStore:
     def uri_for(self, object_key: str) -> str:
         return f"memory://{object_key}"
 
+    def presign_download(self, *, object_uri: str) -> str:
+        return object_uri
+
     def create_multipart(
         self,
         *,

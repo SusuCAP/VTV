@@ -21,6 +21,13 @@ class S3ObjectStore:
     def uri_for(self, object_key: str) -> str:
         return f"s3://{self._bucket}/{object_key}"
 
+    def presign_download(self, *, object_uri: str) -> str:
+        return self._client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": self._bucket, "Key": self._key_from_uri(object_uri)},
+            ExpiresIn=self._presign_ttl_seconds,
+        )
+
     def create_multipart(
         self,
         *,
