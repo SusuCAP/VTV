@@ -15,6 +15,33 @@ export type UploadResult = {
   sha256: string;
 };
 
+export type MediaProbe = {
+  filename: string;
+  durationSeconds: number | null;
+  width: number | null;
+  height: number | null;
+  frameRate: string | null;
+  videoCodec: string | null;
+  audioCodec: string | null;
+  audioStreams: number;
+};
+
+type TauriWindow = Window & {
+  __TAURI__?: {
+    core: {
+      invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+    };
+  };
+};
+
+export async function probeMediaPath(path: string): Promise<MediaProbe> {
+  const tauri = (window as TauriWindow).__TAURI__;
+  if (!tauri) {
+    throw new Error("本地媒体探测仅在 VTV Tauri 客户端中可用");
+  }
+  return tauri.core.invoke<MediaProbe>("probe_media", { path });
+}
+
 /** 浏览器端：用 <input type="file"> 选文件，分片上传到 VTV 控制 API */
 export async function uploadEpisodeFromDialog(
   projectId: string,
