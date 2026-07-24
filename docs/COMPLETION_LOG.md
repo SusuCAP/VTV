@@ -17,6 +17,26 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 v3.2 全量补完 — API端点 / DB迁移 / VGGT / IndexTTS2
+- 提交：`8dc1a57`
+- API 端点（Ch 7）：
+  - `POST /v1/projects/{id}/episodes:register` — 多集文件元数据注册
+  - `POST /v1/projects/{id}/assets:generate` — 触发资产生成任务
+  - `POST /v1/projects/{id}/assets:approve` — 锁定资产版本
+  - `GET /v1/projects/{id}/deliverables` — deliveries 路径别名
+  - `AssetGenerateRequest` / `AssetApproveRequest` schema
+  - `register_episodes` / `approve_assets` Protocol stubs + Memory 实现
+- DB 迁移（Ch 13）：
+  - `0018_workflow_plans.sql`：`workflow_plans`（镜头路由+DAG）+ `review_tasks`（人工审核队列）
+  - `0019_localization_releases.sql`：`localization_releases`（全剧本土化规则版本）
+  - `0020_provenance.sql`：`provenance_manifests` + `benchmark_runs` + `provider_usage`
+  - `0021_model_profiles.sql`：`model_capability_profiles` + `model_access_profiles`
+- 模型适配器（Ch 9）：
+  - `vggt_adapter.py`：VGGTOmegaAdapter — 相机位姿/深度图/场景重建
+  - `indextts2_adapter.py`：IndexTTS2Adapter — 精确时长TTS，≤4% 偏差
+  - 工厂接入：`adapter_mode=indextts2` dispatch
+- 验收：449 tests pass；ruff clean；已推送 main
+
 ### 2026-07-24 P12-B — DINOv3 视觉检索 + Gemini/Qwen3-VL-235B VLM 项目理解
 - 提交：`00ea921`
 - 改动：
