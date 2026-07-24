@@ -41,6 +41,13 @@ def _asset(path: Path, stem_kind: str, model_release: str) -> AssetRef:
 class AudioWorker:
     adapter: StemSeparationAdapter = field(default_factory=PassthroughDialogueAdapter)
 
+    def preload(self) -> None:
+        """Preload local separator weights when the adapter supports it."""
+        backend = getattr(self.adapter, "backend", None)
+        preload = getattr(backend, "preload", None)
+        if callable(preload):
+            preload()
+
     def execute(self, job: StageJob) -> StageResult:
         if job.stage_type != "AUDIO_STEM_SEPARATION":
             raise ValueError(f"unsupported audio stage: {job.stage_type}")

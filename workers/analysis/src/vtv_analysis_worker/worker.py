@@ -12,9 +12,9 @@ from vtv_analysis import (
     DeterministicGeometryAdapter,
     DeterministicOcrAdapter,
     DeterministicPersonAdapter,
-    ProjectSynthesisAdapter,
     DeterministicSceneAdapter,
     DeterministicVad,
+    ProjectSynthesisAdapter,
     ShotSpan,
     VisionAnalysis,
     VisionAnalysisPipeline,
@@ -61,6 +61,28 @@ class AnalysisWorker:
         )
     )
     synthesizer: ProjectSynthesisAdapter | None = None
+
+    def preload(self) -> None:
+        """Preload every unique local model backend owned by this worker."""
+        seen: set[int] = set()
+        adapters = (
+            self.pipeline.vad,
+            self.pipeline.asr,
+            self.pipeline.diarization,
+            self.vision_pipeline.people,
+            self.vision_pipeline.scenes,
+            self.vision_pipeline.ocr,
+            self.vision_pipeline.geometry,
+            self.synthesizer,
+        )
+        for adapter in adapters:
+            backend = getattr(adapter, "backend", adapter)
+            if backend is None or id(backend) in seen:
+                continue
+            seen.add(id(backend))
+            preload = getattr(backend, "preload", None)
+            if callable(preload):
+                preload()
 
     def execute(self, job: StageJob) -> StageResult:
         if job.stage_type == "PROJECT_SYNTHESIS":

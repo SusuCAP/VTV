@@ -13,6 +13,7 @@ import hashlib
 import os
 import subprocess
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import VisualCandidate, VisualGenerationRequest
@@ -33,6 +34,16 @@ class MoChaAdapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self) -> None:
+        """Load and cache the immutable model during worker startup."""
+        import torch
+
+        checkpoint = os.environ.get("VTV_MOCHA_CHECKPOINT")
+        device = os.environ.get(
+            "VTV_MOCHA_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        _load_mocha_model(checkpoint, device)
 
     def generate(
         self,
@@ -93,6 +104,7 @@ class MoChaAdapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=2)
 def _load_mocha_model(checkpoint: str | None, device: str):
     """Load MoCha model (lazy)."""
     try:

@@ -61,6 +61,10 @@ class LazyQwen3VlBackend:
             self._processor = AutoProcessor.from_pretrained(self.model_name)
         return self._model, self._processor
 
+    def preload(self) -> None:
+        """Load model and processor before the first inference request."""
+        self._load()
+
     def analyze(self, media: Path, shots: tuple[ShotSpan, ...]) -> VisionBackendOutput:
         try:
             from qwen_vl_utils import process_vision_info
@@ -107,6 +111,12 @@ class CachedVisionBackend:
     )
     _value: VisionBackendOutput | None = field(default=None, init=False)
     _lock: Lock = field(default_factory=Lock, init=False)
+
+    def preload(self) -> None:
+        """Preload the wrapped backend when it supports eager initialization."""
+        preload = getattr(self.backend, "preload", None)
+        if callable(preload):
+            preload()
 
     def analyze(self, media_uri: str, shots: tuple[ShotSpan, ...]) -> VisionBackendOutput:
         media = _media_path(media_uri)

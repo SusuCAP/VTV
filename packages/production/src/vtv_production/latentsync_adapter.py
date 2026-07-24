@@ -18,6 +18,7 @@ import hashlib
 import os
 import subprocess
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import (
@@ -49,6 +50,33 @@ class LatentSync16Adapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self, level: LipSyncLevel | str | None) -> None:
+        """Load only the model selected for this immutable lipsync task pool."""
+        if level is None:
+            raise LipSyncInferenceError("lipsync workload is missing its routing level")
+        selected = LipSyncLevel(level)
+        if selected is LipSyncLevel.L0_NONE:
+            return
+        if selected is LipSyncLevel.L1_FAST:
+            if os.environ.get("VTV_MUSETALKS_CHECKPOINT"):
+                try:
+                    _load_musetalk()
+                except ImportError:
+                    _load_latentsync16()
+            else:
+                _load_latentsync16()
+            return
+        if selected in (
+            LipSyncLevel.L3_GENERATIVE_FACE,
+            LipSyncLevel.L4_FULL_BODY,
+        ):
+            try:
+                _load_infinitetalk()
+            except ImportError:
+                _load_latentsync16()
+            return
+        _load_latentsync16()
 
     def render(
         self,
@@ -115,33 +143,8 @@ def _render_latentsync16(
 ) -> None:
     """Run LatentSync 1.6 inference on the source video face region."""
     import torch
-
-    checkpoint = os.environ.get("VTV_LATENTSYNC_CHECKPOINT")
-    if not checkpoint:
-        raise LipSyncInferenceError(
-            "VTV_LATENTSYNC_CHECKPOINT is not set. "
-            "Point it to the latentsync_1.6_unet.pt file."
-        )
-
-    device = os.environ.get("VTV_LATENTSYNC_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-    face_res = int(os.environ.get("VTV_LATENTSYNC_FACE_RES", "512"))
-    steps = int(os.environ.get("VTV_LATENTSYNC_STEPS", "20"))
-
-    try:
-        from latentsync.inference import LatentSyncInference  # type: ignore[import]
-    except ImportError:
-        raise LipSyncInferenceError(
-            "LatentSync is not installed. "
-            "Install from https://github.com/bytedance/LatentSync"
-        ) from None
-
     torch.manual_seed(seed)
-    inference = LatentSyncInference(
-        unet_path=checkpoint,
-        device=device,
-        face_resolution=face_res,
-        num_inference_steps=steps,
-    )
+    inference = _load_latentsync16()
     inference.run(
         video_path=str(source_video),
         audio_path=str(audio),
@@ -159,25 +162,22 @@ def _render_musetalks(
     seed: int,
 ) -> None:
     """Run MuseTalk 1.5 (fast face-region lipsync)."""
-    import torch
-
     checkpoint = os.environ.get("VTV_MUSETALKS_CHECKPOINT")
     if not checkpoint:
         # Fall back to LatentSync if MuseTalk checkpoint not available
         _render_latentsync16(request, source_video, audio, output, seed)
         return
 
-    device = os.environ.get("VTV_LATENTSYNC_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-
     try:
-        from musetalk.inference import MuseTalkInference  # type: ignore[import]
+        inference = _load_musetalk()
     except ImportError:
         # MuseTalk not installed, fall back to LatentSync
         _render_latentsync16(request, source_video, audio, output, seed)
         return
 
+    import torch
     torch.manual_seed(seed)
-    MuseTalkInference(checkpoint, device=device).run(
+    inference.run(
         video_path=str(source_video),
         audio_path=str(audio),
         output_path=str(output),
@@ -194,20 +194,16 @@ def _render_infinitetalk(
     seed: int,
 ) -> None:
     """Run InfiniteTalk (full-body expression lipsync)."""
-    import torch
-
-    model_id = os.environ.get("VTV_INFINITETALK_MODEL_ID", "InfiniteTalk/InfiniteTalk-v1")
-    device = os.environ.get("VTV_LATENTSYNC_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
-
     try:
-        from infinitetalk.inference import InfiniteTalkInference  # type: ignore[import]
+        inference = _load_infinitetalk()
     except ImportError:
         # Fall back to LatentSync L2 if InfiniteTalk not installed
         _render_latentsync16(request, source_video, audio, output, seed)
         return
 
+    import torch
     torch.manual_seed(seed)
-    InfiniteTalkInference.from_pretrained(model_id).to(device).run(
+    inference.run(
         video_path=str(source_video),
         audio_path=str(audio),
         output_path=str(output),
@@ -215,6 +211,59 @@ def _render_infinitetalk(
 
 
 # ── shared ────────────────────────────────────────────────────────────────────
+
+def _device() -> str:
+    import torch
+
+    return os.environ.get(
+        "VTV_LATENTSYNC_DEVICE",
+        "cuda" if torch.cuda.is_available() else "cpu",
+    )
+
+
+@lru_cache(maxsize=2)
+def _load_latentsync16():
+    checkpoint = os.environ.get("VTV_LATENTSYNC_CHECKPOINT")
+    if not checkpoint:
+        raise LipSyncInferenceError(
+            "VTV_LATENTSYNC_CHECKPOINT is not set. "
+            "Point it to the latentsync_1.6_unet.pt file."
+        )
+    try:
+        from latentsync.inference import LatentSyncInference  # type: ignore[import]
+    except ImportError:
+        raise LipSyncInferenceError(
+            "LatentSync is not installed. "
+            "Install from https://github.com/bytedance/LatentSync"
+        ) from None
+    return LatentSyncInference(
+        unet_path=checkpoint,
+        device=_device(),
+        face_resolution=int(os.environ.get("VTV_LATENTSYNC_FACE_RES", "512")),
+        num_inference_steps=int(os.environ.get("VTV_LATENTSYNC_STEPS", "20")),
+    )
+
+
+@lru_cache(maxsize=2)
+def _load_musetalk():
+    checkpoint = os.environ.get("VTV_MUSETALKS_CHECKPOINT")
+    if not checkpoint:
+        raise LipSyncInferenceError("VTV_MUSETALKS_CHECKPOINT is not set")
+    from musetalk.inference import MuseTalkInference  # type: ignore[import]
+
+    return MuseTalkInference(checkpoint, device=_device())
+
+
+@lru_cache(maxsize=2)
+def _load_infinitetalk():
+    from infinitetalk.inference import InfiniteTalkInference  # type: ignore[import]
+
+    model_id = os.environ.get(
+        "VTV_INFINITETALK_MODEL_ID",
+        "InfiniteTalk/InfiniteTalk-v1",
+    )
+    return InfiniteTalkInference.from_pretrained(model_id).to(_device())
+
 
 def _probe_duration(path: Path) -> float:
     result = subprocess.run(

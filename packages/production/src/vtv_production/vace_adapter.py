@@ -12,6 +12,7 @@ import hashlib
 import os
 import subprocess
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import VisualCandidate, VisualGenerationRequest
@@ -33,6 +34,16 @@ class VACEAdapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self) -> None:
+        """Load and cache the immutable model pipeline during worker startup."""
+        import torch
+
+        model_id = os.environ.get("VTV_VACE_MODEL_ID", "ali-vilab/VACE")
+        device = os.environ.get(
+            "VTV_VACE_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        _load_vace_pipeline(model_id, device)
 
     def generate(
         self,
@@ -105,6 +116,7 @@ class VACEAdapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=2)
 def _load_vace_pipeline(model_id: str, device: str):
     """Load VACE pipeline via diffusers (lazy)."""
     from diffusers import AutoPipelineForVideo  # type: ignore[import]

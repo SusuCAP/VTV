@@ -19,6 +19,7 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import SegmentationRequest, SegmentationResult
@@ -38,6 +39,17 @@ class MatAnyone2Adapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self) -> None:
+        """Load and cache the immutable matting model during worker startup."""
+        import torch
+
+        model_id = os.environ.get("VTV_MATANYONE2_MODEL_ID", "pq-yang/MatAnyone2")
+        device = os.environ.get(
+            "VTV_MATANYONE2_DEVICE",
+            "cuda" if torch.cuda.is_available() else "cpu",
+        )
+        _load_matanyone2(model_id, device)
 
     def segment(
         self,
@@ -93,6 +105,7 @@ class MatAnyone2Adapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=2)
 def _load_matanyone2(model_id: str, device: str):
     try:
         from matanyone import MatAnyone2  # type: ignore[import]

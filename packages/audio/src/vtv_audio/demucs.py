@@ -28,6 +28,10 @@ class LazyDemucsBackend:
             self._separator = Separator(model=self.model_name, device=self.device)
         return self._separator
 
+    def preload(self) -> None:
+        """Load separator weights before the first inference request."""
+        self._load()
+
     def separate(self, source: Path, output_directory: Path) -> dict[str, Path]:
         try:
             from demucs.api import save_audio

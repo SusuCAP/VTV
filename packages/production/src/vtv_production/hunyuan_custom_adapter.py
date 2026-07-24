@@ -12,6 +12,7 @@ import hashlib
 import os
 import subprocess
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import VisualCandidate, VisualGenerationRequest
@@ -35,6 +36,25 @@ class HunyuanCustomAdapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self) -> None:
+        """Load and cache the immutable model pipeline during worker startup."""
+        import torch
+
+        model_id = os.environ.get("VTV_HUNYUAN_MODEL_ID", "tencent/HunyuanCustom")
+        device = os.environ.get(
+            "VTV_HUNYUAN_DEVICE",
+            "cuda" if torch.cuda.is_available() else "cpu",
+        )
+        dtype = {
+            "bfloat16": torch.bfloat16,
+            "float16": torch.float16,
+            "float32": torch.float32,
+        }.get(
+            os.environ.get("VTV_HUNYUAN_DTYPE", "bfloat16"),
+            torch.bfloat16,
+        )
+        _load_hunyuan_pipeline(model_id, device, dtype)
 
     def generate(
         self,
@@ -111,6 +131,7 @@ class HunyuanCustomAdapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=2)
 def _load_hunyuan_pipeline(model_id: str, device: str, dtype):
     """Load HunyuanCustom pipeline via diffusers (lazy)."""
     from diffusers import WanImageToVideoPipeline  # type: ignore[import]

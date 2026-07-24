@@ -17,6 +17,7 @@ import os
 import subprocess
 import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,19 @@ class Sam31SegmentationAdapter:
     def model_release(self) -> str:  # noqa: D102
         return self._release
 
+    def preload(self) -> None:
+        """Load and cache the immutable model during worker startup."""
+        import torch
+
+        checkpoint = self.checkpoint_override or os.environ.get("VTV_SAM_CHECKPOINT")
+        if not checkpoint:
+            raise RuntimeError("SAM3.1 checkpoint is required for worker preload")
+        model_type = os.environ.get("VTV_SAM_MODEL_TYPE", "vit_h")
+        device = os.environ.get(
+            "VTV_SAM_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        _load_sam_model(checkpoint, model_type, device)
+
     def segment(
         self,
         request: SegmentationRequest,
@@ -70,7 +84,7 @@ class Sam31SegmentationAdapter:
         device = os.environ.get("VTV_SAM_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 
         # Try SAM3.1 API first, fall back to segment-anything
-        predictor = _load_sam_predictor(checkpoint, model_type, device)
+        predictor = _new_sam_predictor(checkpoint, model_type, device)
 
         # Extract frames from the source video
         with tempfile.TemporaryDirectory(prefix="vtv_sam_") as tmp:
@@ -117,8 +131,9 @@ class Sam31SegmentationAdapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
-def _load_sam_predictor(checkpoint: str, model_type: str, device: str):
-    """Load SAM3.1 or fall back to segment-anything predictor."""
+@lru_cache(maxsize=2)
+def _load_sam_model(checkpoint: str, model_type: str, device: str):
+    """Load the immutable SAM model and predictor type once per container."""
     try:
         # SAM3.1 ships as ``sam3`` package from the official repo
         from sam3 import SamPredictor, sam_model_registry  # type: ignore[import]
@@ -127,7 +142,13 @@ def _load_sam_predictor(checkpoint: str, model_type: str, device: str):
 
     sam = sam_model_registry[model_type](checkpoint=checkpoint)
     sam.to(device)
-    return SamPredictor(sam)
+    return sam, SamPredictor
+
+
+def _new_sam_predictor(checkpoint: str, model_type: str, device: str):
+    """Create request-local predictor state backed by the cached model."""
+    sam, predictor_type = _load_sam_model(checkpoint, model_type, device)
+    return predictor_type(sam)
 
 
 def _load_image_as_rgb_array(path: Path):

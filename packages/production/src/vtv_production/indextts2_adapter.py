@@ -12,6 +12,7 @@ import hashlib
 import os
 import wave
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 from .contracts import TtsCandidate, TtsRequest
@@ -38,6 +39,16 @@ class IndexTTS2Adapter:
     @property
     def model_release(self) -> str:  # noqa: D102
         return self._release
+
+    def preload(self) -> None:
+        """Load the immutable model once during Modal container startup."""
+        import torch
+
+        model_dir = os.environ.get("VTV_INDEXTTS2_MODEL_DIR", "/models/indextts2")
+        device = os.environ.get(
+            "VTV_INDEXTTS2_DEVICE", "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        _load_indextts2(model_dir, device)
 
     def synthesize(
         self, request: TtsRequest, output_directory: Path
@@ -122,6 +133,7 @@ class IndexTTS2Adapter:
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
+@lru_cache(maxsize=2)
 def _load_indextts2(model_dir: str, device: str):
     """Load IndexTTS2 model (lazy import)."""
     try:

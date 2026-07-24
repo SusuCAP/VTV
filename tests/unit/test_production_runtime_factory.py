@@ -1,6 +1,8 @@
 from uuid import uuid4
 
 import pytest
+from vtv_production import latentsync_adapter
+from vtv_production.latentsync_adapter import LatentSync16Adapter
 from vtv_production_worker.config import Settings
 from vtv_production_worker.factory import create_production_worker_for_job
 from vtv_schemas.jobs import StageJob
@@ -79,3 +81,33 @@ def test_l0_lipsync_factory_uses_local_passthrough_without_registry_runtime() ->
     worker = create_production_worker_for_job(job, Settings())
 
     assert worker.lipsync.model_release == "lipsync-passthrough@1"
+
+
+def test_latentsync_preload_uses_route_model_and_preserves_l1_fallback(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(
+        latentsync_adapter,
+        "_load_infinitetalk",
+        lambda: calls.append("infinitetalk"),
+    )
+    monkeypatch.setattr(
+        latentsync_adapter,
+        "_load_latentsync16",
+        lambda: calls.append("latentsync"),
+    )
+
+    def unavailable_musetalk():
+        calls.append("musetalk")
+        raise ImportError
+
+    monkeypatch.setattr(latentsync_adapter, "_load_musetalk", unavailable_musetalk)
+    monkeypatch.setenv("VTV_MUSETALKS_CHECKPOINT", "/models/musetalk.pt")
+
+    adapter = LatentSync16Adapter()
+    adapter.preload("L3_GENERATIVE_FACE")
+    adapter.preload("L1_FAST")
+    adapter.preload("L0_NONE")
+
+    assert calls == ["infinitetalk", "musetalk", "latentsync"]

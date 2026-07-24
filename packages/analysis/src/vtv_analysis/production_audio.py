@@ -91,6 +91,10 @@ class LazyFasterWhisperBackend:
             )
         return self._model
 
+    def preload(self) -> None:
+        """Load model weights before the first inference request."""
+        self._load_model()
+
     def detect(self, audio_path: Path) -> tuple[RawSpeech, ...]:
         try:
             from faster_whisper.audio import decode_audio
@@ -176,6 +180,10 @@ class LazyPyannoteBackend:
                     raise RuntimeError("torch is required for pyannote device placement") from exc
                 self._pipeline.to(torch.device(self.device))
         return self._pipeline
+
+    def preload(self) -> None:
+        """Load gated diarization weights before the first request."""
+        self._load_pipeline()
 
     def identify(self, audio_path: Path) -> tuple[RawSpeakerTurn, ...]:
         output = self._load_pipeline()(str(audio_path))
