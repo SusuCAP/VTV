@@ -943,6 +943,25 @@ def create_app(
         except ProjectNotFoundError as exc:
             raise HTTPException(status_code=404, detail="project not found") from exc
 
+    @app.get(
+        "/v1/projects/{project_id}/analysis",
+        response_model=list[AnalysisDocumentRead],
+    )
+    async def get_project_analysis(
+        project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        episode_id: Annotated[UUID | None, Query()] = None,
+        document_type: Annotated[str | None, Query(max_length=64)] = None,
+    ) -> list[AnalysisDocumentRead]:
+        """Query full-series analysis results (characters, scenes, transcripts, issues).
+        Spec alias for /analysis-documents — v3.2 §7.2 GET /v1/projects/{id}/analysis."""
+        try:
+            return await repo.list_analysis_documents(
+                workspace, project_id, episode_id, document_type
+            )
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="project not found") from exc
+
     @app.post(
         "/v1/artifact-releases/{release_id}/confirm",
         response_model=ArtifactReleaseRead,
@@ -1156,6 +1175,29 @@ def create_app(
         payload: StageRetryRequest,
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> StageRunRead:
+        try:
+            return await repo.retry_stage(workspace, project_id, stage_run_id, payload.reason)
+        except ProjectNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="stage run not found") from exc
+        except StageNotReadyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post(
+        "/v1/stage-runs/{stage_run_id}:retry",
+        response_model=StageRunRead,
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    async def retry_stage_run_alias(
+        stage_run_id: UUID,
+        payload: StageRetryRequest,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        project_id: Annotated[UUID | None, Query()] = None,
+    ) -> StageRunRead:
+        """Spec-compliant path alias — v3.2 §7.2 POST /v1/stage-runs/{id}:retry."""
+        if project_id is None:
+            raise HTTPException(
+                status_code=422, detail="project_id query parameter required"
+            )
         try:
             return await repo.retry_stage(workspace, project_id, stage_run_id, payload.reason)
         except ProjectNotFoundError as exc:
