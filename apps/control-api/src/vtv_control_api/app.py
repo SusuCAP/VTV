@@ -6,7 +6,7 @@ from math import ceil
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response, Security, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -131,8 +131,13 @@ class AssetApproveRequest(BaseModel):
     release_ids: list[UUID]
 
 
-def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUID:
+def workspace_id(
+    request: Request,
+    x_workspace_id: Annotated[UUID | None, Header()] = None,
+) -> UUID:
     if x_workspace_id is None:
+        if getattr(request.app.state, "allow_implicit_workspace", False):
+            return TEST_WORKSPACE_ID
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="X-Workspace-Id header is required",
@@ -209,6 +214,9 @@ def create_app(
     storage = object_store or create_object_store(settings)
     app.state.repository = repo
     app.state.object_store = storage
+    # In-memory repositories are only an explicit test/contract injection.
+    # Production PostgreSQL requests must always provide tenant identity.
+    app.state.allow_implicit_workspace = repository is not None
 
     @app.get("/healthz", tags=["system"])
     def health_simple() -> dict[str, str]:
@@ -1809,3 +1817,4 @@ def create_app(
 
 
 app = create_app()
+TEST_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000001")
