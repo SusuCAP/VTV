@@ -10,7 +10,7 @@ class OrchestratorLoop:
         self,
         scheduler: Scheduler,
         executor: Callable[[StageJob], StageResult],
-        worker_id: str = "local-mock-worker",
+        worker_id: str = "local-worker",
     ) -> None:
         self._scheduler = scheduler
         self._executor = executor

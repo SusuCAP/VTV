@@ -23,22 +23,12 @@ CREATE TABLE users (
 CREATE INDEX ix_users_workspace ON users(workspace_id);
 CREATE INDEX ix_users_email     ON users(email);
 
--- Seed a default admin user for the default workspace so local development
--- works without an explicit user-management step.
--- The workspace is created by the app on first run; we use a fixed UUID here
--- so the seed is idempotent when the migration is re-applied.
-INSERT INTO users (workspace_id, email, display_name, role)
-SELECT w.id, 'admin@vtv.local', 'Local Admin', 'admin'
-FROM   workspaces w
-ON CONFLICT DO NOTHING;
-
-
 -- ── render_variants ADOPTED partial unique index ──────────────────────────────
 -- §13.3 MANDATORY constraint: only one variant per candidate_group may be in
 -- the ADOPTED state.  This enforces the idempotent "last-writer-wins" adoption
 -- rule at the database level and prevents concurrent workers from double-adopting.
 CREATE UNIQUE INDEX IF NOT EXISTS one_adopted_variant_per_group
     ON render_variants(candidate_group_id)
-    WHERE adoption_status = 'ADOPTED';
+    WHERE status = 'ADOPTED';
 
 COMMIT;

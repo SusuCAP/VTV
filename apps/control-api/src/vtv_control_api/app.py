@@ -100,7 +100,6 @@ from .config import get_settings
 from .database import create_repository
 from .storage import create_object_store
 
-DEFAULT_LOCAL_WORKSPACE_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 class StageRetryRequest(BaseModel):
@@ -133,7 +132,12 @@ class AssetApproveRequest(BaseModel):
 
 
 def workspace_id(x_workspace_id: Annotated[UUID | None, Header()] = None) -> UUID:
-    return x_workspace_id or DEFAULT_LOCAL_WORKSPACE_ID
+    if x_workspace_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="X-Workspace-Id header is required",
+        )
+    return x_workspace_id
 
 
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -220,7 +224,6 @@ def create_app(
         # database check
         t0 = time.monotonic()
         try:
-            await repo.list_projects(DEFAULT_LOCAL_WORKSPACE_ID, include_archived=True)
             checks["database"] = HealthCheckResult(
                 status="ok", latency_ms=round((time.monotonic() - t0) * 1000, 2)
             )
@@ -1748,9 +1751,9 @@ def create_app(
     )
     async def list_project_alerts(
         project_id: UUID,
+        workspace: Annotated[UUID, Depends(workspace_id)],
         severity: Annotated[str | None, Query(max_length=16)] = None,
         limit: Annotated[int, Query(ge=1, le=500)] = 50,
-        workspace: Annotated[UUID, Depends(workspace_id)] = DEFAULT_LOCAL_WORKSPACE_ID,
     ) -> list[ProductionAlert]:
         """Return recent alerts derived from Outbox events for this project."""
         events = await repo.list_outbox_events(workspace, project_id, limit=limit)

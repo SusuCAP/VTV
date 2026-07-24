@@ -254,12 +254,6 @@ function NewProjectPage({ onDone }: { onDone: () => void }) {
 
 // ── 资产确认 ───────────────────────────────────────────────────────────────────
 function AssetConfirmationPage({ projectId }: { projectId: string }) {
-  const chars = [
-    { id: "c1", source: "张伟", localized: "David Zhang", status: "CONFIRMED", episodes: 24 },
-    { id: "c2", source: "李梅", localized: "May Li", status: "DRAFT", episodes: 18 },
-    { id: "c3", source: "王局长", localized: "Director Wang", status: "DRAFT", episodes: 6 },
-  ];
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between px-8 py-5 border-b border-[#2a3347]">
@@ -271,28 +265,9 @@ function AssetConfirmationPage({ projectId }: { projectId: string }) {
         <Button disabled className="opacity-50">全部锁定</Button>
       </div>
       <div className="flex-1 overflow-auto px-8 py-4">
-        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">人物资产 ({chars.length})</h3>
-        <div className="rounded-lg border border-[#2a3347] overflow-hidden">
-          <div className="grid grid-cols-[1fr_1fr_100px_100px_120px] text-[11px] font-medium text-slate-500 bg-[#161b26] px-4 py-2.5 border-b border-[#2a3347]">
-            <span>原始角色</span><span>本土化名称</span><span>出现集数</span><span>状态</span><span>操作</span>
-          </div>
-          {chars.map(c => (
-            <div key={c.id} className="grid grid-cols-[1fr_1fr_100px_100px_120px] items-center px-4 py-3 border-b border-[#2a3347] last:border-0 hover:bg-[#1c2232]/60">
-              <span className="text-sm text-slate-300">{c.source}</span>
-              <span className="text-sm text-indigo-300">{c.localized}</span>
-              <span className="text-xs text-slate-500">{c.episodes} 集</span>
-              <span>{c.status === "CONFIRMED"
-                ? <Badge variant="success">已确认</Badge>
-                : <Badge variant="secondary">草稿</Badge>
-              }</span>
-              <div className="flex gap-1.5">
-                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px]">编辑</Button>
-                {c.status !== "CONFIRMED" && (
-                  <Button size="sm" variant="outline" className="h-6 px-2 text-[11px]">确认</Button>
-                )}
-              </div>
-            </div>
-          ))}
+        <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">人物资产</h3>
+        <div className="rounded-lg border border-dashed border-[#2a3347] px-6 py-12 text-center text-sm text-slate-500">
+          当前项目尚未生成角色资产。完成全剧分析后，角色候选会从控制 API 加载到这里。
         </div>
         <div className="mt-4 rounded-md bg-amber-900/20 border border-amber-700/30 px-4 py-3 flex items-start gap-3">
           <AlertTriangle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />

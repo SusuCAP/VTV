@@ -5,7 +5,6 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from .config import get_settings
-from .mock_worker import execute as execute_mock
 from .modal_executor import ModalStageExecutor
 from .runner import OrchestratorLoop
 from .scheduler import Scheduler
@@ -19,9 +18,7 @@ async def run(database_url: str, max_stages: int, worker_mode: str, work_root: P
         sessions = async_sessionmaker(engine, expire_on_commit=False)
         object_store = create_worker_object_store(get_settings())
         local_router = StageRouter(work_root, object_store=object_store)
-        if worker_mode == "mock":
-            executor = execute_mock
-        elif worker_mode == "modal":
+        if worker_mode == "modal":
             modal_executor = ModalStageExecutor().execute
 
             def executor(job):
@@ -48,7 +45,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run the VTV local orchestrator")
     parser.add_argument("database_url")
     parser.add_argument("--max-stages", type=int, default=1000)
-    parser.add_argument("--worker-mode", choices=("local", "modal", "mock"), default="local")
+    parser.add_argument("--worker-mode", choices=("local", "modal"), default="local")
     parser.add_argument("--work-root", type=Path, default=Path(".vtv-work"))
     args = parser.parse_args()
     asyncio.run(run(args.database_url, args.max_stages, args.worker_mode, args.work_root))

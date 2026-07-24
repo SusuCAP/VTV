@@ -14,8 +14,6 @@ from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
 from vtv_storage import WorkerObjectStoreAdapter
 from vtv_visual_worker import execute as execute_visual
 
-from .mock_worker import execute as execute_mock
-
 MEDIA_STAGES = frozenset({"INGEST_VALIDATE", "PROXY_GENERATE", "SHOT_DETECT"})
 ANALYSIS_STAGES = frozenset({"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"})
 AUDIO_STAGES = frozenset({"AUDIO_STEM_SEPARATION"})
@@ -53,7 +51,7 @@ class StageRouter:
     production_executor: Callable[[StageJob], StageResult] = execute_production
     assembly_executor: Callable[[StageJob], StageResult] = execute_assemble
     visual_executor: Callable[[StageJob], StageResult] = execute_visual
-    fallback_executor: Callable[[StageJob], StageResult] = execute_mock
+    fallback_executor: Callable[[StageJob], StageResult] | None = None
     object_store: WorkerObjectStoreAdapter | None = None
 
     def execute(self, job: StageJob) -> StageResult:
@@ -80,7 +78,19 @@ class StageRouter:
                 return self._upload_outputs(
                     job, self.visual_executor(self._prepare_job(job))
                 )
-            return self.fallback_executor(job)
+            if self.fallback_executor is not None:
+                return self.fallback_executor(job)
+            return StageResult(
+                stage_run_id=job.stage_run_id,
+                stage_attempt_id=job.stage_attempt_id,
+                status="EXECUTION_FAILED",
+                error_class="UnsupportedStageError",
+                error_detail={
+                    "message": f"unsupported stage type: {job.stage_type}",
+                    "retryable": False,
+                },
+                attempt_usage={"worker": "stage-router", "local": True},
+            )
         except Exception as exc:
             return StageResult(
                 stage_run_id=job.stage_run_id,
