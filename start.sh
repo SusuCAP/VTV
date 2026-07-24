@@ -4,11 +4,12 @@
 #  用法: ./start.sh [选项]
 #
 #  选项:
-#    --modal       同时部署所有 Modal Apps（需要 Modal 账号）
-#    --stop        停止所有本地服务
-#    --reset       清空数据库和对象存储并重新初始化
-#    --status      查看各服务运行状态
-#    --help        显示帮助
+#    --modal         同时部署所有 Modal Apps（需要 Modal 账号）
+#    --setup-modal   建立 Modal Secret + Volume（首次使用时运行一次）
+#    --stop          停止所有本地服务
+#    --reset         清空数据库和对象存储并重新初始化
+#    --status        查看各服务运行状态
+#    --help          显示帮助
 # =============================================================================
 set -euo pipefail
 
@@ -41,23 +42,25 @@ S3_SECRET_KEY="${VTV_S3_SECRET_KEY:-change-me-in-non-local-environments}"
 S3_BUCKET="${VTV_S3_BUCKET:-vtv-local}"
 
 # ── 参数解析 ─────────────────────────────────────────────────────────────────
-OPT_MODAL=0; OPT_STOP=0; OPT_RESET=0; OPT_STATUS=0
+OPT_MODAL=0; OPT_STOP=0; OPT_RESET=0; OPT_STATUS=0; OPT_SETUP_MODAL=0
 for arg in "$@"; do
   case $arg in
-    --modal)  OPT_MODAL=1 ;;
-    --stop)   OPT_STOP=1 ;;
-    --reset)  OPT_RESET=1 ;;
-    --status) OPT_STATUS=1 ;;
+    --modal)        OPT_MODAL=1 ;;
+    --setup-modal)  OPT_SETUP_MODAL=1 ;;
+    --stop)         OPT_STOP=1 ;;
+    --reset)        OPT_RESET=1 ;;
+    --status)       OPT_STATUS=1 ;;
     --help|-h)
       echo -e "${BOLD}VTV 一键启动脚本${RESET}"
       echo ""
       echo "用法: ./start.sh [选项]"
       echo ""
-      echo "  （无选项）   启动 PostgreSQL + MinIO，应用迁移，启动控制 API + 编排器"
-      echo "  --modal      同时部署所有 Modal Apps（analysis/audio/visual/production/assemble）"
-      echo "  --stop       停止所有本地服务"
-      echo "  --reset      清空数据并重新初始化（危险！）"
-      echo "  --status     查看各服务运行状态"
+      echo "  （无选项）     启动 PostgreSQL + MinIO，应用迁移，启动控制 API + 编排器"
+      echo "  --setup-modal  建立 Modal Secret + Volume（首次使用时运行一次）"
+      echo "  --modal        同时部署所有 Modal Apps（analysis/audio/visual/production/assemble）"
+      echo "  --stop         停止所有本地服务"
+      echo "  --reset        清空数据并重新初始化（危险！）"
+      echo "  --status       查看各服务运行状态"
       exit 0
       ;;
     *) err "未知选项: $arg"; exit 1 ;;
@@ -178,6 +181,18 @@ except Exception as e:
     print(f"warn: {e}", file=sys.stderr)
 PYEOF
 ok "Bucket 就绪"
+
+# =============================================================================
+#  建立 Modal 资源（可选，首次使用时运行一次）
+# =============================================================================
+if [[ $OPT_SETUP_MODAL -eq 1 ]]; then
+  sep
+  echo -e "${BOLD}建立 Modal Secret + Volume${RESET}"
+  sep
+  uv run python scripts/setup_modal.py \
+    && ok "Modal 资源建立完成" \
+    || warn "Modal 资源建立过程中有警告，请检查输出"
+fi
 
 # =============================================================================
 #  部署 Modal Apps（可选）
