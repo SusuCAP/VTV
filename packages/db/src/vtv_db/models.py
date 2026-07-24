@@ -652,7 +652,11 @@ class OrphanAsset(TimestampMixin, Base):
 
 class OutboxEvent(TimestampMixin, Base):
     __tablename__ = "outbox_events"
-    __table_args__ = (Index("ix_outbox_unpublished", "published_at", "created_at"),)
+    __table_args__ = (
+        Index("ix_outbox_unpublished", "published_at", "created_at"),
+        Index("ix_outbox_dispatch", "status", "available_at", "created_at"),
+        UniqueConstraint("dedupe_key", name="uq_outbox_events_dedupe_key"),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     workspace_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), nullable=False)
@@ -660,6 +664,11 @@ class OutboxEvent(TimestampMixin, Base):
     aggregate_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True))
     event_type: Mapped[str] = mapped_column(String(100))
     payload: Mapped[dict] = mapped_column(JSONB)
+    dedupe_key: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(32), default="PENDING")
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     publish_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
