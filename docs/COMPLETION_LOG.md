@@ -17,6 +17,17 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P11-A/B — VoxCPM2 + Fish Audio TTS + MatAnyone2 分割适配器
+- 提交：`54666b2`
+- 改动：
+  - `voxcpm2_adapter.py`：HTTP 接口，30语言，`VTV_VOXCPM2_ENDPOINT/API_KEY`
+  - `fish_audio_adapter.py`：Fish Audio S2 Pro API，80+语言，`VTV_FISH_AUDIO_API_KEY`
+  - `matanyone2_adapter.py`：软抠像（头发/半透明），`VTV_MATANYONE2_MODEL_ID`
+  - 工厂接入：`adapter_mode=voxcpm2/fish_audio` + `segmentation_adapter_mode=matanyone2`
+- P10-D 确认：Rights Release 门禁已在 `_rights_commit_failure()` 实现，无需额外改动
+- 验收：449 tests pass；ruff clean
+- 文档勾选：P10-D ✅  P11-A ✅  P11-B ✅
+
 ### 2026-07-24 P10-C — 缺失数据库迁移（characters / locations / continuity / governance）
 - 提交：`5e86b27`
 - 改动：新增 4 个迁移文件（0014–0017）共 7 张表
