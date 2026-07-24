@@ -2,26 +2,25 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: vtv
-      POSTGRES_PASSWORD: vtv
-      POSTGRES_DB: vtv
+      POSTGRES_USER: ${VTV_POSTGRES_USER:?Set VTV_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${VTV_POSTGRES_PASSWORD:?Set VTV_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${VTV_POSTGRES_DB:?Set VTV_POSTGRES_DB}
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vtv -d vtv"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 3s
       timeout: 3s
       retries: 20
     volumes:
       - vtv-postgres:/var/lib/postgresql/data
-      - ./infra/postgres/init-test-db.sql:/docker-entrypoint-initdb.d/10-test-db.sql:ro
 
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-01-20T14-49-07Z
     command: server /data --console-address :9001
     environment:
-      MINIO_ROOT_USER: vtv
-      MINIO_ROOT_PASSWORD: change-me-in-non-local-environments
+      MINIO_ROOT_USER: ${VTV_S3_ACCESS_KEY:?Set VTV_S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${VTV_S3_SECRET_KEY:?Set VTV_S3_SECRET_KEY}
     ports:
       - "9000:9000"
       - "9001:9001"

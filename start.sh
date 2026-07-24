@@ -12,6 +12,9 @@ bad() { echo -e "${R}✗${D} $*" >&2; exit 1; }
 log() { echo -e "${C}▶${D} $*"; }
 
 : "${VTV_DATABASE_URL:?Set VTV_DATABASE_URL before starting VTV}"
+: "${VTV_POSTGRES_USER:?Set VTV_POSTGRES_USER before starting VTV}"
+: "${VTV_POSTGRES_PASSWORD:?Set VTV_POSTGRES_PASSWORD before starting VTV}"
+: "${VTV_POSTGRES_DB:?Set VTV_POSTGRES_DB before starting VTV}"
 : "${VTV_S3_ENDPOINT:?Set VTV_S3_ENDPOINT before starting VTV}"
 : "${VTV_S3_ACCESS_KEY:?Set VTV_S3_ACCESS_KEY before starting VTV}"
 : "${VTV_S3_SECRET_KEY:?Set VTV_S3_SECRET_KEY before starting VTV}"
