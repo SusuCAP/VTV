@@ -17,6 +17,12 @@
 
 <!-- 新记录追加到此处以下 -->
 
+### 2026-07-24 P11-D — Vision Golden Dataset 测试 + 计划勾选
+- 提交：`f26bcc8`
+- 改动：`tests/golden/test_vision_golden.py`：VisionAnalysisPipeline 回归测试，Qwen 适配器，person_count ±1 容差，无素材时自动跳过
+- 验收：449 tests pass；ruff clean；vite build ✓
+- 文档勾选：P11-D ✅  P10–P11 全部完成
+
 ### 2026-07-24 P11-C — Mac 客户端 4 个缺失页面
 - 提交：`8fd44eb`
 - 改动：
