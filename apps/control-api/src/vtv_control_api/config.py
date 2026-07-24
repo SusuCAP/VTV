@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="VTV_", env_file=".env", extra="ignore")
 
-    environment: str = "local"
+    environment: str = "production"
     api_title: str = "VTV Control API"
     api_version: str = "0.1.0"
     database_url: str | None = None

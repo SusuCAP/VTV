@@ -175,6 +175,10 @@ def create_app(
     object_store: ObjectStoreAdapter | None = None,
 ) -> FastAPI:
     settings = get_settings()
+    if repository is None and settings.environment != "local" and not settings.api_key:
+        raise RuntimeError(
+            "VTV_API_KEY is required when starting the production control API"
+        )
 
     # P9-B: configure structured logging at app startup
     from .logging import configure_logging
