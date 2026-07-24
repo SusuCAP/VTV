@@ -125,8 +125,6 @@ __all__ = [
     "VisionBackendOutput",
     "VisionModelBackend",
     "DINOv3Adapter",
-    "GeminiVLMAdapter",
 ]
 
 from .dino_adapter import DINOv3Adapter
-from .gemini_vlm_adapter import GeminiVLMAdapter
