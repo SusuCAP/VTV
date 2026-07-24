@@ -84,6 +84,7 @@ from vtv_schemas.rights import (
     RightsReleaseCreate,
     RightsReleaseRead,
 )
+from vtv_schemas.runtime_profiles import RuntimeProfileCreate, RuntimeProfileRead
 from vtv_schemas.uploads import MultipartInit, UploadPart, UploadRead
 
 from .dag import EPISODE_INGEST_DAG, build_project_analysis_dag
@@ -523,6 +524,17 @@ class ProjectRepository(Protocol):
     async def list_benchmark_releases(
         self, workspace_id: UUID, model_release_id: UUID
     ) -> list[BenchmarkReleaseRead]: ...
+
+    async def create_runtime_profile(
+        self,
+        workspace_id: UUID,
+        payload: RuntimeProfileCreate,
+    ) -> RuntimeProfileRead: ...
+
+    async def list_runtime_profiles(
+        self,
+        profile_name: str | None = None,
+    ) -> list[RuntimeProfileRead]: ...
 
     async def create_model_release(
         self, workspace_id: UUID, payload: ModelReleaseCreate
@@ -1045,6 +1057,91 @@ class SqlAlchemyProjectRepository:
     ) -> None:
         self._sessions = session_factory
         self._id_factory = id_factory
+
+    async def create_runtime_profile(
+        self,
+        workspace_id: UUID,
+        payload: RuntimeProfileCreate,
+    ) -> RuntimeProfileRead:
+        async with self._sessions.begin() as session:
+            await session.execute(
+                insert(Workspace)
+                .values(id=workspace_id, name=f"Workspace {workspace_id}")
+                .on_conflict_do_nothing(index_elements=[Workspace.id])
+            )
+            profile_id = self._id_factory()
+            values = {
+                "id": profile_id,
+                "profile_name": payload.profile_name,
+                "profile_version": payload.profile_version,
+                "profile_class": payload.profile_class,
+                "supported_gpu_types": payload.supported_gpu_types,
+                "minimum_cuda_version": payload.minimum_cuda_version,
+                "image_digest": payload.image_digest,
+                "framework_versions": payload.framework_versions,
+                "supported_operators": payload.supported_operators,
+                "self_test_status": payload.self_test_status,
+                "numerical_regression_status": payload.numerical_regression_status,
+                "oom_test_status": payload.oom_test_status,
+                "rollback_verified": payload.rollback_verified,
+                "validation_evidence": (
+                    payload.validation_evidence.model_dump(mode="json")
+                    if payload.validation_evidence is not None
+                    else {}
+                ),
+                "validated_at": payload.validated_at,
+                "validated_by": payload.validated_by,
+                "notes": payload.notes,
+            }
+            try:
+                row = (
+                    await session.execute(
+                        insert(runtime_profiles).values(**values).returning(
+                            runtime_profiles
+                        )
+                    )
+                ).mappings().one()
+            except IntegrityError as exc:
+                raise ModelReleaseConflictError(
+                    "runtime profile version or image snapshot already exists"
+                ) from exc
+            session.add(
+                OutboxEvent(
+                    workspace_id=workspace_id,
+                    aggregate_type="runtime_profile",
+                    aggregate_id=profile_id,
+                    event_type="runtime_profile.created",
+                    dedupe_key=(
+                        f"runtime_profile.created:{payload.profile_name}:"
+                        f"v{payload.profile_version}"
+                    ),
+                    payload={
+                        "runtime_profile_id": str(profile_id),
+                        "profile_name": payload.profile_name,
+                        "profile_version": payload.profile_version,
+                        "verified": payload.validated_at is not None,
+                    },
+                )
+            )
+            return _runtime_profile_read(row)
+
+    async def list_runtime_profiles(
+        self,
+        profile_name: str | None = None,
+    ) -> list[RuntimeProfileRead]:
+        async with self._sessions() as session:
+            query = select(runtime_profiles)
+            if profile_name is not None:
+                query = query.where(runtime_profiles.c.profile_name == profile_name)
+            rows = (
+                await session.execute(
+                    query.order_by(
+                        runtime_profiles.c.profile_name,
+                        runtime_profiles.c.profile_version.desc(),
+                    )
+                )
+            ).mappings()
+            return [_runtime_profile_read(row) for row in rows]
 
     async def create_benchmark_release(
         self, workspace_id: UUID, model_release_id: UUID, payload: BenchmarkReleaseCreate
@@ -6445,6 +6542,16 @@ async def _model_access_gate_reasons(
                 failures.append("RUNTIME_PROFILE_NOT_VALIDATED")
             if not runtime["framework_versions"]:
                 failures.append("FRAMEWORK_LOCK_MISSING")
+            if runtime["self_test_status"] != "PASS":
+                failures.append("RUNTIME_SELF_TEST_NOT_PASSED")
+            if runtime["numerical_regression_status"] != "PASS":
+                failures.append("NUMERICAL_REGRESSION_NOT_PASSED")
+            if runtime["oom_test_status"] != "PASS":
+                failures.append("OOM_TEST_NOT_PASSED")
+            if not runtime["rollback_verified"]:
+                failures.append("RUNTIME_ROLLBACK_NOT_VERIFIED")
+            if not runtime["validation_evidence"]:
+                failures.append("RUNTIME_VALIDATION_EVIDENCE_MISSING")
             if _version_tuple(runtime["minimum_cuda_version"]) < _version_tuple(
                 profile["min_cuda_version"]
             ):
@@ -6509,6 +6616,29 @@ def _model_access_profile_read(row) -> ModelAccessProfileRead:
         self_test_status=row["self_test_status"],
         rollback_verified=row["rollback_verified"],
         verified_at=row["verified_at"],
+        created_at=row["created_at"],
+    )
+
+
+def _runtime_profile_read(row) -> RuntimeProfileRead:
+    return RuntimeProfileRead(
+        id=row["id"],
+        profile_name=row["profile_name"],
+        profile_version=row["profile_version"],
+        profile_class=row["profile_class"],
+        supported_gpu_types=row["supported_gpu_types"],
+        minimum_cuda_version=row["minimum_cuda_version"],
+        image_digest=row["image_digest"],
+        framework_versions=row["framework_versions"],
+        supported_operators=row["supported_operators"],
+        self_test_status=row["self_test_status"],
+        numerical_regression_status=row["numerical_regression_status"],
+        oom_test_status=row["oom_test_status"],
+        rollback_verified=row["rollback_verified"],
+        validation_evidence=row["validation_evidence"] or None,
+        validated_at=row["validated_at"],
+        validated_by=row["validated_by"],
+        notes=row["notes"],
         created_at=row["created_at"],
     )
 

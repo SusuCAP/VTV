@@ -45,6 +45,11 @@ CLAIM_READY_STAGE = text(
               AND rp.image_digest IS NOT NULL
               AND rp.validated_at IS NOT NULL
               AND rp.framework_versions <> '{}'::jsonb
+              AND rp.self_test_status = 'PASS'
+              AND rp.numerical_regression_status = 'PASS'
+              AND rp.oom_test_status = 'PASS'
+              AND rp.rollback_verified
+              AND rp.validation_evidence <> '{}'::jsonb
               AND map.required_packages <> '[]'::jsonb
               AND map.reproducibility_config ->> 'runtime_fingerprint'
                     = br.runtime_fingerprint

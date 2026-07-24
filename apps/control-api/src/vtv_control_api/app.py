@@ -89,6 +89,7 @@ from vtv_schemas.rights import (
     RightsReleaseRead,
     RightsRevoke,
 )
+from vtv_schemas.runtime_profiles import RuntimeProfileCreate, RuntimeProfileRead
 from vtv_schemas.uploads import (
     MultipartComplete,
     MultipartInit,
@@ -311,6 +312,28 @@ def create_app(
         workspace: Annotated[UUID, Depends(workspace_id)],
     ) -> ProjectRead:
         return await repo.create_project(workspace, payload)
+
+    @app.post(
+        "/v1/runtime-profiles",
+        response_model=RuntimeProfileRead,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_runtime_profile(
+        payload: RuntimeProfileCreate,
+        workspace: Annotated[UUID, Depends(workspace_id)],
+    ) -> RuntimeProfileRead:
+        try:
+            return await repo.create_runtime_profile(workspace, payload)
+        except ModelReleaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/v1/runtime-profiles", response_model=list[RuntimeProfileRead])
+    async def list_runtime_profiles(
+        workspace: Annotated[UUID, Depends(workspace_id)],
+        profile_name: Annotated[str | None, Query(max_length=128)] = None,
+    ) -> list[RuntimeProfileRead]:
+        del workspace
+        return await repo.list_runtime_profiles(profile_name)
 
     @app.post(
         "/v1/model-releases",
