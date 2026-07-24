@@ -114,6 +114,14 @@ def test_manifest_is_deterministic_and_closes_provenance_chain() -> None:
     assert first.assets[1].sha256 in first.edit_chain[0].output_sha256s
 
 
+def test_manifest_fingerprint_excludes_mutable_c2pa_state() -> None:
+    values = _manifest_values()
+    pending = DeliveryManifestBuilder.build(**{**values, "c2pa_status": "PENDING"})
+    embedded = DeliveryManifestBuilder.build(**{**values, "c2pa_status": "EMBEDDED"})
+
+    assert pending.fingerprint == embedded.fingerprint
+
+
 def test_manifest_rejects_untraceable_master_and_shot_gap() -> None:
     values = _manifest_values()
     values["edit_chain"] = (

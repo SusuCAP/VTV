@@ -114,8 +114,9 @@ class TestC2paSignRequest:
             manifest_fingerprint=_sha("b"),
             master_object_uri="s3://bucket/master.mp4",
             output_prefix="s3://bucket/c2pa/",
+            signer_id="kms:delivery-signing",
         )
-        assert req.signer_id == "vtv.passthrough-signer.v1"
+        assert req.signer_id == "kms:delivery-signing"
 
     def test_empty_uri_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -124,6 +125,7 @@ class TestC2paSignRequest:
                 manifest_fingerprint=_sha("b"),
                 master_object_uri="",
                 output_prefix="s3://bucket/c2pa/",
+                signer_id="kms:delivery-signing",
             )
 
     def test_bad_fingerprint_rejected(self) -> None:
@@ -133,6 +135,7 @@ class TestC2paSignRequest:
                 manifest_fingerprint="not-a-sha256",
                 master_object_uri="s3://bucket/master.mp4",
                 output_prefix="s3://bucket/c2pa/",
+                signer_id="kms:delivery-signing",
             )
 
 
@@ -141,7 +144,7 @@ class TestC2paContentCredentials:
         creds = C2paContentCredentials(
             delivery_id=uuid4(),
             manifest_fingerprint=_sha("c"),
-            signer="vtv.passthrough-signer.v1",
+            signer="kms:delivery-signing",
             signed_at=datetime.now(UTC),
             credential_uri="s3://bucket/credentials.json",
         )
@@ -152,7 +155,7 @@ class TestC2paContentCredentials:
         creds = C2paContentCredentials(
             delivery_id=uuid4(),
             manifest_fingerprint=_sha("c"),
-            signer="vtv.passthrough-signer.v1",
+            signer="kms:delivery-signing",
             signed_at=datetime.now(UTC),
             assertions=("c2pa.created", "c2pa.edited"),
             credential_uri="s3://bucket/credentials.json",
@@ -167,7 +170,7 @@ class TestC2paSignResult:
         creds = C2paContentCredentials(
             delivery_id=delivery_id,
             manifest_fingerprint=fingerprint,
-            signer="vtv.passthrough-signer.v1",
+            signer="kms:delivery-signing",
             signed_at=datetime.now(UTC),
             credential_uri="s3://bucket/cred.json",
         )
@@ -187,7 +190,7 @@ class TestC2paSignResult:
         creds = C2paContentCredentials(
             delivery_id=delivery_id,
             manifest_fingerprint=fingerprint,
-            signer="vtv.passthrough-signer.v1",
+            signer="kms:delivery-signing",
             signed_at=datetime.now(UTC),
             credential_uri="s3://bucket/cred.json",
         )

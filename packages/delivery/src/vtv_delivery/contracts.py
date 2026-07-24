@@ -156,7 +156,10 @@ class DeliveryManifest(BaseModel):
 
     @property
     def fingerprint(self) -> str:
-        payload = self.model_dump(mode="json", exclude={"generated_at"})
+        payload = self.model_dump(
+            mode="json",
+            exclude={"generated_at", "c2pa_status"},
+        )
         canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         return sha256(canonical.encode()).hexdigest()
 

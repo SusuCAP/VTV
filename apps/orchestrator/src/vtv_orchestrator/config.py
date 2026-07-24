@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     s3_bucket: str = "vtv-local"
     # HuggingFace token for gated models (pyannote, etc.)
     hf_token: str | None = None
+    # Stable identity exposed by the configured C2PA KMS/HSM signer process.
+    c2pa_signer_id: str | None = None
 
     # Nested model-runtime settings (read from same env prefix)
     model_runtime: ModelRuntimeSettings = ModelRuntimeSettings()

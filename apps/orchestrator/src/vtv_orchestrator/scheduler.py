@@ -29,6 +29,7 @@ from vtv_db.models import (
     StageRun,
 )
 from vtv_db.queries import CLAIM_READY_STAGE, COMMIT_OUTPUT_READY, PROMOTE_READY_DEPENDENTS
+from vtv_delivery import DeliveryManifestBuilder
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult
 
 from .config import Settings, get_settings, model_runtime_for_stage
@@ -251,7 +252,7 @@ class Scheduler:
             return True
 
     async def build_job(self, claim: ClaimedStage) -> StageJob:
-        async with self._sessions() as session:
+        async with self._sessions.begin() as session:
             dependency_ids = select(StageDependency.depends_on_stage_run_id).where(
                 StageDependency.stage_run_id == claim.stage_run_id
             )
@@ -578,6 +579,14 @@ class Scheduler:
                 .with_for_update()
             )
             await self._create_draft_releases(session, claim, release_specs)
+        if claim.stage_type == "C2PA_SIGN":
+            await self._complete_c2pa_delivery(
+                session,
+                claim,
+                result,
+                assets,
+                assets_by_sha,
+            )
         # After DELIVERY_EVIDENCE, schedule C2PA_SIGN if requested
         if (
             claim.stage_type == "DELIVERY_EVIDENCE"
@@ -585,6 +594,96 @@ class Scheduler:
             and claim.params.get("c2pa_requested", False)
         ):
             await self._create_c2pa_sign_stage(session, claim)
+
+    async def _complete_c2pa_delivery(
+        self,
+        session: AsyncSession,
+        claim: ClaimedStage,
+        result: StageResult,
+        assets: list[MediaAsset],
+        assets_by_sha: dict[str, MediaAsset],
+    ) -> None:
+        try:
+            delivery_id = UUID(str(claim.params["c2pa_delivery_id"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("C2PA sign request identity is invalid") from exc
+        delivery = await session.scalar(
+            select(Delivery)
+            .where(
+                Delivery.id == delivery_id,
+                Delivery.workspace_id == claim.workspace_id,
+                Delivery.project_id == claim.project_id,
+            )
+            .with_for_update()
+        )
+        if delivery is None:
+            raise ValueError("C2PA delivery no longer exists")
+        if delivery.c2pa_status != "SIGNING":
+            raise ValueError(
+                f"C2PA delivery cannot complete from {delivery.c2pa_status}"
+            )
+        credentials = [
+            artifact
+            for artifact in result.domain_artifacts
+            if artifact.document_type == "C2PA_CREDENTIALS"
+        ]
+        if len(credentials) != 1:
+            raise ValueError("C2PA stage must emit exactly one credentials document")
+        expected_fingerprint = credentials[0].payload.get("manifest_fingerprint")
+        if not isinstance(expected_fingerprint, str):
+            raise ValueError("C2PA credentials are missing the signed fingerprint")
+        if delivery.manifest_fingerprint != expected_fingerprint:
+            raise ValueError("C2PA signed a stale delivery manifest fingerprint")
+        credential_asset = assets_by_sha.get(credentials[0].source_asset_sha256)
+        if credential_asset is None:
+            raise ValueError("C2PA credentials asset was not committed")
+        signed_masters = [
+            asset
+            for asset in assets
+            if asset.metadata_json.get("role") == "C2PA_SIGNED_MASTER"
+        ]
+        if len(signed_masters) != 1:
+            raise ValueError("C2PA stage must emit exactly one signed master")
+        signed_master = signed_masters[0]
+        for role, asset in (
+            ("C2PA_CREDENTIALS", credential_asset),
+            ("C2PA_SIGNED_MASTER", signed_master),
+        ):
+            await session.execute(
+                insert(DeliveryAsset)
+                .values(
+                    delivery_id=delivery.id,
+                    asset_id=asset.id,
+                    role=role,
+                )
+                .on_conflict_do_nothing()
+            )
+        if delivery.manifest is None:
+            raise ValueError("C2PA delivery manifest is missing")
+        manifest_values = dict(delivery.manifest)
+        manifest_values["c2pa_status"] = "EMBEDDED"
+        manifest = DeliveryManifestBuilder.build(**manifest_values)
+        if manifest.fingerprint != expected_fingerprint:
+            raise ValueError("C2PA status update changed the signed manifest fingerprint")
+        delivery.manifest = manifest.model_dump(mode="json")
+        delivery.manifest_fingerprint = manifest.fingerprint
+        delivery.c2pa_status = "SIGNED"
+        delivery.state_version += 1
+        session.add(
+            OutboxEvent(
+                workspace_id=claim.workspace_id,
+                aggregate_type="delivery",
+                aggregate_id=delivery.id,
+                event_type="c2pa.signing_completed",
+                payload={
+                    "delivery_id": str(delivery.id),
+                    "manifest_fingerprint": manifest.fingerprint,
+                    "credential_uri": credential_asset.object_uri,
+                    "signed_master_uri": signed_master.object_uri,
+                    "stage_run_id": str(claim.stage_run_id),
+                },
+            )
+        )
 
     async def _create_c2pa_sign_stage(
         self,
@@ -601,6 +700,29 @@ class Scheduler:
         )
         if existing is not None:
             return
+        signer_id = (self._settings.c2pa_signer_id or "").strip()
+        if not signer_id:
+            raise ValueError(
+                "C2PA signing was requested but VTV_C2PA_SIGNER_ID is not configured"
+            )
+        delivery = await session.scalar(
+            select(Delivery)
+            .where(
+                Delivery.project_id == claim.project_id,
+                Delivery.episode_id == claim.episode_id,
+                Delivery.status == "APPROVED",
+                Delivery.c2pa_requested.is_(True),
+            )
+            .order_by(Delivery.version.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if delivery is None:
+            raise ValueError("C2PA signing requires an approved delivery")
+        if delivery.c2pa_status not in {"PENDING", "SIGN_FAILED"}:
+            raise ValueError(
+                f"delivery cannot queue C2PA signing from {delivery.c2pa_status}"
+            )
         c2pa_run = StageRun(
             id=uuid4(),
             project_id=claim.project_id,
@@ -617,6 +739,8 @@ class Scheduler:
                 "assembly_job_id": str(claim.job_id) if claim.job_id else None,
                 "episode_id": str(claim.episode_id) if claim.episode_id else None,
                 "delivery_evidence_stage_run_id": str(claim.stage_run_id),
+                "c2pa_delivery_id": str(delivery.id),
+                "c2pa_signer_id": signer_id,
             },
         )
         session.add(c2pa_run)
@@ -816,6 +940,57 @@ class Scheduler:
                     finished_at=func.now(),
                 )
             )
+            if claim.stage_type == "C2PA_SIGN":
+                await self._fail_c2pa_delivery(session, claim, result)
+
+    async def _fail_c2pa_delivery(
+        self,
+        session: AsyncSession,
+        claim: ClaimedStage,
+        result: StageResult,
+    ) -> None:
+        delivery_value = claim.params.get("c2pa_delivery_id")
+        try:
+            delivery_id = UUID(str(delivery_value))
+        except (TypeError, ValueError):
+            return
+        delivery = await session.scalar(
+            select(Delivery)
+            .where(
+                Delivery.id == delivery_id,
+                Delivery.workspace_id == claim.workspace_id,
+                Delivery.project_id == claim.project_id,
+            )
+            .with_for_update()
+        )
+        if delivery is None or delivery.c2pa_status != "SIGNING":
+            return
+        if delivery.manifest is not None:
+            manifest_values = dict(delivery.manifest)
+            manifest_values["c2pa_status"] = "FAILED"
+            manifest = DeliveryManifestBuilder.build(**manifest_values)
+            if (
+                delivery.manifest_fingerprint is not None
+                and manifest.fingerprint != delivery.manifest_fingerprint
+            ):
+                raise ValueError("C2PA failure state changed the manifest fingerprint")
+            delivery.manifest = manifest.model_dump(mode="json")
+            delivery.manifest_fingerprint = manifest.fingerprint
+        delivery.c2pa_status = "SIGN_FAILED"
+        delivery.state_version += 1
+        session.add(
+            OutboxEvent(
+                workspace_id=claim.workspace_id,
+                aggregate_type="delivery",
+                aggregate_id=delivery.id,
+                event_type="c2pa.signing_failed",
+                payload={
+                    "delivery_id": str(delivery.id),
+                    "stage_run_id": str(claim.stage_run_id),
+                    "error_class": result.error_class,
+                },
+            )
+        )
 
 
 async def _rights_commit_failure(
@@ -1135,18 +1310,42 @@ async def _resolve_c2pa_sign_params(
     """Resolve delivery information for a C2PA_SIGN stage at claim time."""
     if claim.episode_id is None:
         raise ValueError("C2PA_SIGN requires an episode_id on the stage run")
+    delivery_id = claim.params.get("c2pa_delivery_id")
+    try:
+        delivery_uuid = UUID(str(delivery_id))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("C2PA_SIGN requires an immutable c2pa_delivery_id") from exc
     delivery = await session.scalar(
         select(Delivery)
         .where(
+            Delivery.id == delivery_uuid,
             Delivery.project_id == claim.project_id,
             Delivery.episode_id == claim.episode_id,
             Delivery.status == "APPROVED",
         )
-        .order_by(Delivery.version.desc())
-        .limit(1)
+        .with_for_update()
     )
     if delivery is None:
         raise ValueError("C2PA_SIGN: no approved delivery found for episode")
+    if delivery.c2pa_status in {"PENDING", "SIGN_FAILED"}:
+        delivery.c2pa_status = "SIGNING"
+        delivery.state_version += 1
+        session.add(
+            OutboxEvent(
+                workspace_id=claim.workspace_id,
+                aggregate_type="delivery",
+                aggregate_id=delivery.id,
+                event_type="c2pa.signing_started",
+                payload={
+                    "delivery_id": str(delivery.id),
+                    "stage_run_id": str(claim.stage_run_id),
+                },
+            )
+        )
+    elif delivery.c2pa_status != "SIGNING":
+        raise ValueError(
+            f"C2PA_SIGN: delivery cannot sign from {delivery.c2pa_status}"
+        )
     if delivery.manifest_fingerprint is None:
         raise ValueError("C2PA_SIGN: approved delivery has no manifest fingerprint")
     master_link = await session.scalar(

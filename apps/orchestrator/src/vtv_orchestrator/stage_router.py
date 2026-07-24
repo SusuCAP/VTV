@@ -47,7 +47,7 @@ def _execute_visual(job: StageJob) -> StageResult:
 def _execute_c2pa(job: StageJob) -> StageResult:
     from vtv_c2pa import C2paWorker
 
-    return C2paWorker().execute(job)
+    return C2paWorker.from_environment().execute(job)
 
 MEDIA_STAGES = frozenset({"INGEST_VALIDATE", "PROXY_GENERATE", "SHOT_DETECT"})
 ANALYSIS_STAGES = frozenset({"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"})
