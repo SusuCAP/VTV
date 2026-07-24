@@ -31,6 +31,43 @@ export type ApiJob = {
   completed_stages: number;
 };
 
+export type ApiDelivery = {
+  id: string;
+  project_id: string;
+  episode_id: string | null;
+  status: string;
+  created_at: string;
+  approved_at: string | null;
+};
+
+export type ApiJobProgress = {
+  job_id: string;
+  status: string;
+  total_stages: number;
+  completed_stages: number;
+  failed_stages: number;
+  running_stages: number;
+  progress: number;
+};
+
+export type ApiCreateProject = {
+  name: string;
+  target_market: string;
+  locale: string;
+  quality_profile: string;
+  budget_currency: string;
+  budget_warning_at: number;
+  budget_hard_limit: number;
+  output_spec: {
+    aspect_ratio: string;
+    width: number;
+    height: number;
+    fps: number;
+    video_codec: string;
+    audio_codec: string;
+  };
+};
+
 export type ApiSnapshot = {
   project: ApiProject;
   episodes: ApiEpisode[];
@@ -60,6 +97,17 @@ export async function loadLatestProject(): Promise<ApiSnapshot | null> {
   return { project, episodes, jobs };
 }
 
+export async function loadAllProjects(): Promise<ApiProject[]> {
+  return request<ApiProject[]>("/v1/projects");
+}
+
+export async function createProject(payload: ApiCreateProject): Promise<ApiProject> {
+  return request<ApiProject>("/v1/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function startProjectAnalysis(projectId: string): Promise<string> {
   const accepted = await request<{ job_id: string }>(
     `/v1/projects/${projectId}/analysis-jobs`,
@@ -67,3 +115,42 @@ export async function startProjectAnalysis(projectId: string): Promise<string> {
   );
   return accepted.job_id;
 }
+
+export async function pauseProject(projectId: string, reason: string): Promise<ApiProject> {
+  return request<ApiProject>(`/v1/projects/${projectId}:pause`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function resumeProject(projectId: string): Promise<ApiProject> {
+  return request<ApiProject>(`/v1/projects/${projectId}:resume`, { method: "POST" });
+}
+
+export async function cancelProject(projectId: string, reason: string): Promise<ApiProject> {
+  return request<ApiProject>(`/v1/projects/${projectId}:cancel`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export async function getJobProgress(projectId: string, jobId: string): Promise<ApiJobProgress> {
+  return request<ApiJobProgress>(`/v1/projects/${projectId}/jobs/${jobId}/progress`);
+}
+
+export async function listDeliveries(projectId: string): Promise<ApiDelivery[]> {
+  return request<ApiDelivery[]>(`/v1/projects/${projectId}/deliveries`);
+}
+
+export async function approveDelivery(deliveryId: string): Promise<ApiDelivery> {
+  return request<ApiDelivery>(`/v1/deliveries/${deliveryId}/approve`, { method: "POST" });
+}
+
+export async function getDeliveryPackage(deliveryId: string): Promise<{
+  download_url: string;
+  manifest_url: string;
+  sha256: string;
+}> {
+  return request(`/v1/deliveries/${deliveryId}/package`);
+}
+
