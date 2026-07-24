@@ -4,15 +4,50 @@ from hashlib import sha256
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from vtv_analysis_worker import execute as execute_analysis
-from vtv_assemble_worker import execute as execute_assemble
-from vtv_audio_worker import execute as execute_audio
-from vtv_c2pa import C2paWorker
-from vtv_media_worker import execute as execute_media
-from vtv_production_worker import execute as execute_production
 from vtv_schemas.jobs import AssetRef, StageJob, StageResult, VariantResult
 from vtv_storage import WorkerObjectStoreAdapter
-from vtv_visual_worker import execute as execute_visual
+
+
+def _execute_media(job: StageJob) -> StageResult:
+    from vtv_media_worker import execute
+
+    return execute(job)
+
+
+def _execute_analysis(job: StageJob) -> StageResult:
+    from vtv_analysis_worker import execute
+
+    return execute(job)
+
+
+def _execute_audio(job: StageJob) -> StageResult:
+    from vtv_audio_worker import execute
+
+    return execute(job)
+
+
+def _execute_production(job: StageJob) -> StageResult:
+    from vtv_production_worker import execute
+
+    return execute(job)
+
+
+def _execute_assemble(job: StageJob) -> StageResult:
+    from vtv_assemble_worker import execute
+
+    return execute(job)
+
+
+def _execute_visual(job: StageJob) -> StageResult:
+    from vtv_visual_worker import execute
+
+    return execute(job)
+
+
+def _execute_c2pa(job: StageJob) -> StageResult:
+    from vtv_c2pa import C2paWorker
+
+    return C2paWorker().execute(job)
 
 MEDIA_STAGES = frozenset({"INGEST_VALIDATE", "PROXY_GENERATE", "SHOT_DETECT"})
 ANALYSIS_STAGES = frozenset({"ASR_ALIGN", "VISION_ANALYSIS", "PROJECT_SYNTHESIS"})
@@ -45,12 +80,12 @@ VISUAL_STAGES = frozenset(
 @dataclass(frozen=True, slots=True)
 class StageRouter:
     work_root: Path
-    media_executor: Callable[[StageJob], StageResult] = execute_media
-    analysis_executor: Callable[[StageJob], StageResult] = execute_analysis
-    audio_executor: Callable[[StageJob], StageResult] = execute_audio
-    production_executor: Callable[[StageJob], StageResult] = execute_production
-    assembly_executor: Callable[[StageJob], StageResult] = execute_assemble
-    visual_executor: Callable[[StageJob], StageResult] = execute_visual
+    media_executor: Callable[[StageJob], StageResult] = _execute_media
+    analysis_executor: Callable[[StageJob], StageResult] = _execute_analysis
+    audio_executor: Callable[[StageJob], StageResult] = _execute_audio
+    production_executor: Callable[[StageJob], StageResult] = _execute_production
+    assembly_executor: Callable[[StageJob], StageResult] = _execute_assemble
+    visual_executor: Callable[[StageJob], StageResult] = _execute_visual
     fallback_executor: Callable[[StageJob], StageResult] | None = None
     object_store: WorkerObjectStoreAdapter | None = None
 
@@ -72,7 +107,7 @@ class StageRouter:
                 )
             if job.stage_type in C2PA_STAGES:
                 return self._upload_outputs(
-                    job, C2paWorker().execute(self._prepare_job(job))
+                    job, _execute_c2pa(self._prepare_job(job))
                 )
             if job.stage_type in VISUAL_STAGES:
                 return self._upload_outputs(
