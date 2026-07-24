@@ -86,6 +86,7 @@ class StageRouter:
     production_executor: Callable[[StageJob], StageResult] = _execute_production
     assembly_executor: Callable[[StageJob], StageResult] = _execute_assemble
     visual_executor: Callable[[StageJob], StageResult] = _execute_visual
+    c2pa_executor: Callable[[StageJob], StageResult] = _execute_c2pa
     fallback_executor: Callable[[StageJob], StageResult] | None = None
     object_store: WorkerObjectStoreAdapter | None = None
 
@@ -107,7 +108,7 @@ class StageRouter:
                 )
             if job.stage_type in C2PA_STAGES:
                 return self._upload_outputs(
-                    job, _execute_c2pa(self._prepare_job(job))
+                    job, self.c2pa_executor(self._prepare_job(job))
                 )
             if job.stage_type in VISUAL_STAGES:
                 return self._upload_outputs(

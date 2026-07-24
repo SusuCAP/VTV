@@ -185,7 +185,9 @@ class Scheduler:
             elif claim.stage_type == "SHOT_ROUTING":
                 params = await _resolve_shot_routing_params(session, claim)
             elif claim.stage_type == "C2PA_SIGN":
-                params = await _resolve_c2pa_sign_params(session, claim)
+                params, master_asset = await _resolve_c2pa_sign_params(session, claim)
+                if all(asset.id != master_asset.id for asset in assets):
+                    assets.append(master_asset)
         return StageJob(
             stage_run_id=claim.stage_run_id,
             stage_attempt_id=claim.stage_attempt_id,
@@ -987,7 +989,7 @@ async def _invalidate_release_graph(
 async def _resolve_c2pa_sign_params(
     session: AsyncSession,
     claim: ClaimedStage,
-) -> dict:
+) -> tuple[dict, MediaAsset]:
     """Resolve delivery information for a C2PA_SIGN stage at claim time."""
     if claim.episode_id is None:
         raise ValueError("C2PA_SIGN requires an episode_id on the stage run")
@@ -1024,6 +1026,7 @@ async def _resolve_c2pa_sign_params(
         )
     return {
         **claim.params,
+        "master_sha256": master_asset.sha256,
         "c2pa_sign_request": {
             "delivery_id": str(delivery.id),
             "manifest_fingerprint": delivery.manifest_fingerprint,
@@ -1031,7 +1034,7 @@ async def _resolve_c2pa_sign_params(
             "output_prefix": f"c2pa/{claim.project_id}/{claim.stage_run_id}",
             "signer_id": signer_id,
         },
-    }
+    }, master_asset
 
 
 async def _resolve_shot_routing_params(
