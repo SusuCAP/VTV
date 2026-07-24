@@ -38,6 +38,7 @@ export type ApiDelivery = {
   status: string;
   created_at: string;
   approved_at: string | null;
+  state_version: number;
 };
 
 export type ApiJobProgress = {
@@ -55,10 +56,8 @@ export type ApiCreateProject = {
   target_market: string;
   locale: string;
   quality_profile: string;
-  budget_currency: string;
-  budget_warning_at: number;
-  budget_hard_limit: number;
-  output_spec: {
+  budget: { currency: string; warning_at: number; hard_limit: number };
+  output: {
     aspect_ratio: string;
     width: number;
     height: number;
@@ -75,9 +74,17 @@ export type ApiSnapshot = {
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const workspaceId = import.meta.env.VITE_WORKSPACE_ID;
+  if (!workspaceId) throw new Error("VITE_WORKSPACE_ID is required");
+  const apiKey = import.meta.env.VITE_CONTROL_API_KEY;
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Workspace-Id": workspaceId,
+      ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      ...init?.headers,
+    },
   });
   if (!response.ok) {
     const detail = await response.text();
@@ -142,8 +149,15 @@ export async function listDeliveries(projectId: string): Promise<ApiDelivery[]> 
   return request<ApiDelivery[]>(`/v1/projects/${projectId}/deliveries`);
 }
 
-export async function approveDelivery(deliveryId: string): Promise<ApiDelivery> {
-  return request<ApiDelivery>(`/v1/deliveries/${deliveryId}/approve`, { method: "POST" });
+export async function approveDelivery(
+  deliveryId: string,
+  expectedStateVersion: number,
+  actorId = "mac-client",
+): Promise<ApiDelivery> {
+  return request<ApiDelivery>(`/v1/deliveries/${deliveryId}/approve`, {
+    method: "POST",
+    body: JSON.stringify({ expected_state_version: expectedStateVersion, actor_id: actorId }),
+  });
 }
 
 export async function getDeliveryPackage(deliveryId: string): Promise<{
@@ -153,4 +167,3 @@ export async function getDeliveryPackage(deliveryId: string): Promise<{
 }> {
   return request(`/v1/deliveries/${deliveryId}/package`);
 }
-

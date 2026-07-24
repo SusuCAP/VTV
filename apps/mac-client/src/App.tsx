@@ -186,10 +186,12 @@ function NewProjectPage({ onDone }: { onDone: () => void }) {
         target_market: market.split("-")[1] ?? market,
         locale: localeMap[market] ?? "en-US",
         quality_profile: quality,
-        budget_currency: "USD",
-        budget_warning_at: Math.round(Number(budget) * 0.8),
-        budget_hard_limit: Number(budget),
-        output_spec: { aspect_ratio: "9:16", width: 1080, height: 1920, fps: 24, video_codec: "h264", audio_codec: "aac" },
+        budget: {
+          currency: "USD",
+          warning_at: Math.round(Number(budget) * 0.8),
+          hard_limit: Number(budget),
+        },
+        output: { aspect_ratio: "9:16", width: 1080, height: 1920, fps: 24, video_codec: "h264", audio_codec: "aac" },
       };
       await createProject(p);
       onDone();
@@ -366,7 +368,9 @@ function DeliveryPage({ projectId }: { projectId: string }) {
 
   const approve = async (id: string) => {
     try {
-      const u = await approveDelivery(id);
+      const current = deliveries.find(d => d.id === id);
+      if (!current) throw new Error("交付记录已刷新，请重试");
+      const u = await approveDelivery(id, current.state_version);
       setDeliveries(prev => prev.map(d => d.id === id ? u : d));
       setNotice(`交付 ${id.slice(0, 8)} 已批准`);
     } catch (e) { setNotice(e instanceof Error ? e.message : "操作失败"); }
@@ -485,7 +489,7 @@ function ProjectDashboard({
               "text-[11px] font-medium",
               connection === "live" ? "text-emerald-400" : connection === "offline" ? "text-amber-400" : "text-slate-500",
             ].join(" ")}>
-              {connection === "live" ? "● 已连接" : connection === "offline" ? "○ 离线演示" : connection === "empty" ? "○ 尚无项目" : "○ 连接中…"}
+              {connection === "live" ? "● 已连接" : connection === "offline" ? "○ API 不可用" : connection === "empty" ? "○ 尚无项目" : "○ 连接中…"}
             </span>
           </div>
           <h1 className="text-xl font-bold text-white truncate">
