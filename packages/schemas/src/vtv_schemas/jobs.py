@@ -50,6 +50,7 @@ class StageJob(BaseModel):
     output_prefix: str
     model_release_id: UUID | None = None
     runtime_profile_id: str
+    runtime_profile_uuid: UUID | None = None
     observed_control_version: int = Field(ge=1)
     params: dict[str, Any] = Field(default_factory=dict)
     trace_id: str

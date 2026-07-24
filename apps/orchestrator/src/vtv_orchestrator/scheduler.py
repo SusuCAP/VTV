@@ -49,6 +49,7 @@ class ClaimedStage:
     job_id: UUID | None
     idempotency_key: str
     runtime_profile_id: str
+    runtime_profile_uuid: UUID
     model_release_id: UUID | None
     params: dict
 
@@ -114,6 +115,7 @@ class Scheduler:
                 job_id=row["job_id"],
                 idempotency_key=row["idempotency_key"],
                 runtime_profile_id=row["runtime_profile_id"],
+                runtime_profile_uuid=row["runtime_profile_uuid"],
                 model_release_id=row["model_release_id"],
                 params=row["params"],
             )
@@ -208,6 +210,7 @@ class Scheduler:
                 f"/jobs/{claim.job_id}/stages/{claim.stage_run_id}"
             ),
             runtime_profile_id=claim.runtime_profile_id,
+            runtime_profile_uuid=claim.runtime_profile_uuid,
             model_release_id=claim.model_release_id,
             observed_control_version=claim.observed_control_version,
             params=params,
